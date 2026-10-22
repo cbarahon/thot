@@ -1,0 +1,13 @@
+[package]
+name = "thotd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+thot-api = { path = "../../crates/thot-api" }
+thot-engine = { path = "../../crates/thot-engine" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

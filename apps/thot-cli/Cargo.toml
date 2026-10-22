@@ -1,0 +1,20 @@
+[package]
+name = "thot-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "thot"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+thot-core = { path = "../../crates/thot-core" }
+tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+thot-api = { path = "../../crates/thot-api" }
+thot-engine = { path = "../../crates/thot-engine" }
+tower = { version = "0.5", features = ["util"] }

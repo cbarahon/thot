@@ -1,0 +1,10 @@
+[package]
+name = "thot-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thot-core = { path = "../thot-core" }
+sqlx.workspace = true
+thiserror.workspace = true

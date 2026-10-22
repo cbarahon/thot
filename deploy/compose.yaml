@@ -1,0 +1,6 @@
+# Plantilla inicial de despliegue.
+# Completar las imágenes, puertos, volúmenes y configuración
+# cuando estén implementados el engine y el servidor web.
+
+services: {}
+
