@@ -437,7 +437,6 @@ async fn http_request(
     );
     stream.write_all(headers.as_bytes()).await?;
     stream.write_all(payload).await?;
-    stream.shutdown().await?;
 
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await?;
