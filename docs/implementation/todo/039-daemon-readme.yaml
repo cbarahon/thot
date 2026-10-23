@@ -1,0 +1,7 @@
+id: "039-daemon-readme"
+title: "Document native thotd POC setup"
+depends_on: ["033-daemon-wiring"]
+file: "/home/carlos/worktrees/thot/apps/thotd/README.md"
+action: modify
+prompt: |-
+  Document how to configure and run thotd natively on the VirtualBox host for this POC. Explain 127.0.0.1:8081, database/project/delivery/artifact roots, dedicated OS account and VBOX_USER_HOME, VBoxManage path/version, service limits, secret reference provisioning, preflight, and that student mapping is deferred. Do not document secret values or Docker-based VirtualBox control. Edit only this file.

@@ -1,0 +1,7 @@
+id: "005-core-json-dependency"
+title: "Make JSON values available to core result types"
+depends_on: []
+file: "/home/carlos/worktrees/thot/crates/thot-core/Cargo.toml"
+action: modify
+prompt: |-
+  Add serde_json as a normal dependency of thot-core because normalized test observations use serde_json::Value. Keep the existing Serde dependency and dev dependencies valid, and avoid unrelated manifest changes. Edit only this file.

@@ -1,0 +1,7 @@
+id: "011-vbox-command"
+title: "Implement bounded VBoxManage process execution"
+depends_on: ["010-vbox-module"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/vbox/command.rs"
+action: create
+prompt: |-
+  Implement a reusable VBoxManage command helper. Use an administrator-configured executable and argument arrays, never shell concatenation. Enforce a timeout, kill a timed-out child, cap stdout/stderr, and return exit code, captured output, duration, and timeout/error details. Ensure all calls inherit the configured VBOX_USER_HOME and run under the service account. Do not add VM workflow logic. Edit only this file.

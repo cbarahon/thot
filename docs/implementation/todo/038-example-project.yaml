@@ -1,0 +1,7 @@
+id: "038-example-project"
+title: "Add a safe example VM activity project"
+depends_on: ["025-project-config-loader"]
+file: "/home/carlos/worktrees/thot/examples/vm-activity-poc/project.yaml"
+action: create
+prompt: |-
+  Create a versioned YAML example assessment project that conforms to the VM activity schema. Include the fixed HTTP endpoint/trial policy, SSH username plus a placeholder secret reference, and non-secret test/limit settings. Do not include a password, host filesystem paths, student IDs, or executable shell commands. Keep it as one standalone example file.

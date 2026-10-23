@@ -1,0 +1,7 @@
+id: "004-core-expedient-model"
+title: "Define delivery expedient and run state models"
+depends_on: ["001-core-delivery-model", "003-core-test-results"]
+file: "/home/carlos/worktrees/thot/crates/thot-core/src/expedients.rs"
+action: create
+prompt: |-
+  Define versioned delivery-expedient and assessment-run models. An expedient groups test results for one delivery in one run and includes source provenance, project snapshot/hash, execution environment versions, VM observations, result IDs, artifact references, cleanup manifest/status, timestamps, and overall orchestration status. It must contain no student ID. Use the delivery and test-result types from sibling modules. Do not implement storage or mapping. Edit only this file.

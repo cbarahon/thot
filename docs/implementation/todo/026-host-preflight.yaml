@@ -1,0 +1,7 @@
+id: "026-host-preflight"
+title: "Implement VirtualBox host preflight checks"
+depends_on: ["020-engine-manifest", "025-project-config-loader"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/preflight.rs"
+action: create
+prompt: |-
+  Implement the POC host preflight from service configuration: validate project/delivery/artifact roots and free-space limits; check host ports 8080 and 2222 are available and API port 8081 is distinct; verify VBoxManage path/version and dedicated VBOX_USER_HOME/storage root; ensure required SSH secret reference is configured. Return structured pass/fail diagnostics before any import. Treat firewall/security confirmation as an explicit administrator-provided setting; do not claim to inspect firewall policy automatically. Edit only this file.

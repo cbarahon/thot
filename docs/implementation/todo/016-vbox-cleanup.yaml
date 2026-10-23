@@ -1,0 +1,7 @@
+id: "016-vbox-cleanup"
+title: "Implement manifest-verified idempotent cleanup"
+depends_on: ["011-vbox-command"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/vbox/cleanup.rs"
+action: create
+prompt: |-
+  Implement cleanup for only resources explicitly recorded in the current delivery manifest. Verify VM UUID and canonical storage paths before unregistering/deleting. Power off first, remove VM-owned disks/snapshots and temporary forwarding/known-host resources, then verify the VM is unregistered and run-owned storage is gone. Make repeated cleanup safe and return remaining resources/diagnostics. Never delete by name prefix alone or touch paths outside the delivery root. Edit only this file.

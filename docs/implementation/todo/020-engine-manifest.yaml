@@ -1,0 +1,7 @@
+id: "020-engine-manifest"
+title: "Add engine dependencies for delivery execution"
+depends_on: ["007-workspace-dependencies", "008-runner-manifest", "006-core-exports"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/Cargo.toml"
+action: modify
+prompt: |-
+  Add thot-runner and the minimal workspace dependencies needed by delivery storage/orchestration: Tokio, Serde/JSON, YAML, SHA-256, and UUID IDs. Preserve existing student-import dependencies and avoid unrelated package changes. Edit only this manifest.

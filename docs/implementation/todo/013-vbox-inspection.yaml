@@ -1,0 +1,7 @@
+id: "013-vbox-inspection"
+title: "Inspect VM configuration and enforce import policy"
+depends_on: ["011-vbox-command"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/vbox/inspect.rs"
+action: create
+prompt: |-
+  Implement machine-readable VM inspection for RAM, CPU count, disks/controllers/capacity/paths, and network adapter/forwarding settings. Resolve disk paths and reject any attachment outside the per-delivery storage root. Require NAT forwarding host ports 8080 and 2222 to guest ports 80 and 22, bind forwards to 127.0.0.1, reject bridged adapters, and disable shared folders, clipboard, drag-and-drop, and USB passthrough before first boot. Return normalized observations plus raw diagnostic output. Edit only this file.

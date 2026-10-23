@@ -1,0 +1,7 @@
+id: "001-core-delivery-model"
+title: "Define delivery identity and source metadata"
+depends_on: []
+file: "/home/carlos/worktrees/thot/crates/thot-core/src/deliveries.rs"
+action: create
+prompt: |-
+  Implement the domain types for an imported OVA delivery. Include a stable delivery ID, delivery collection ID, original filename, byte size, SHA-256, immutable source reference, and intake/validation status. Derive Serde traits as appropriate. Keep IDs as opaque strings and do not include student IDs or mapping fields. Keep this file limited to domain data types; do not implement filesystem or database logic. Edit only this file.

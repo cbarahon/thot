@@ -1,0 +1,7 @@
+id: "032-daemon-config"
+title: "Define thotd VM activity service configuration"
+depends_on: ["020-engine-manifest"]
+file: "/home/carlos/worktrees/thot/apps/thotd/src/vm_activity_config.rs"
+action: create
+prompt: |-
+  Add a typed service configuration loader from environment variables for the POC: bind host/port (defaults 127.0.0.1:8081), database URL, project/delivery/artifact roots, VBoxManage path, VBOX_USER_HOME/storage root, size/free-space/output limits, timeouts, SSH secret source, and explicit firewall confirmation. Validate missing/invalid values with actionable errors and never log secret contents. Do not wire services or bind sockets. Edit only this file.

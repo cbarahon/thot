@@ -1,0 +1,7 @@
+id: "025-project-config-loader"
+title: "Load and validate versioned VM project YAML"
+depends_on: ["002-core-project-config", "023-artifact-store", "020-engine-manifest"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/project_config.rs"
+action: create
+prompt: |-
+  Implement loading a project YAML by project ID from the configured project root. Validate safe project paths, schema version, required fixed VM test policy, limits, and SSH secret reference. Reject arbitrary executables/commands, host paths, passwords, unknown versions, and invalid settings. Persist an immutable snapshot and SHA-256 through the artifact store so expedients retain exactly the config used. Never resolve or log the secret value here. Edit only this file.

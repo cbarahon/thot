@@ -1,0 +1,7 @@
+id: "018-http-probe"
+title: "Implement measured HTTP readiness and evidence capture"
+depends_on: ["008-runner-manifest"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/http_probe.rs"
+action: create
+prompt: |-
+  Implement the fixed HTTP probe to http://127.0.0.1:8080/. Poll at the configured interval until response headers arrive or the startup deadline expires. Any HTTP status is ready; do not follow redirects. Measure elapsed time with a monotonic clock at header receipt, then save the body separately with a 10 MiB cap and truncation metadata. Return attempts, status, timing, body artifact reference, and transport errors. Edit only this file.

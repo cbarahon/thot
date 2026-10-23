@@ -1,0 +1,7 @@
+id: "037-cli-main-dispatch"
+title: "Route POC commands through the existing CLI"
+depends_on: ["036-cli-delivery-commands"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/main.rs"
+action: modify
+prompt: |-
+  Add the delivery command and API client modules, dispatch commands beginning with `run` to the new handler, and preserve all existing student import/list/export commands. Set the POC-compatible default API port to 8081 while keeping host/port overrides and config-file precedence. Keep the existing HTTP/student behavior unchanged. Edit only this file.

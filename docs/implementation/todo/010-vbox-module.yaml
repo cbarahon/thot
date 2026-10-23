@@ -1,0 +1,7 @@
+id: "010-vbox-module"
+title: "Set up the local VirtualBox adapter module"
+depends_on: ["009-runner-interface"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/vbox.rs"
+action: create
+prompt: |-
+  Declare the local VirtualBox adapter submodules for command execution, import, inspection, lifecycle, screenshot, cleanup, and the assembled runner. Re-export the public LocalVirtualBoxRunner type. Keep this file as module wiring only. Edit only this file.

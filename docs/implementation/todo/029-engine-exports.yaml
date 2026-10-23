@@ -1,0 +1,7 @@
+id: "029-engine-exports"
+title: "Export delivery execution services"
+depends_on: ["022-delivery-storage-methods", "023-artifact-store", "024-delivery-intake", "025-project-config-loader", "026-host-preflight", "027-delivery-executor", "028-delivery-run-service"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/lib.rs"
+action: modify
+prompt: |-
+  Declare and export the delivery storage repository, intake service, artifact store, project-config loader, preflight service, one-delivery executor, and delivery-run service. Preserve existing student repository/service exports. Keep this file limited to module and public API wiring. Edit only this file.

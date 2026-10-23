@@ -1,0 +1,7 @@
+id: "021-delivery-storage-schema"
+title: "Create SQLite delivery execution storage"
+depends_on: ["020-engine-manifest", "004-core-expedient-model"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_storage.rs"
+action: create
+prompt: |-
+  Create a SQLite delivery repository module that connects to the configured database and initializes tables for delivery collections, deliveries, assessment runs, delivery expedients, individual test results, and artifact metadata. Include foreign keys, unique IDs, a uniqueness constraint preventing duplicate delivery execution within one run, and indexes for status/retrieval. Reuse the existing SQLx conventions. Do not implement student mapping tables. Edit only this file.

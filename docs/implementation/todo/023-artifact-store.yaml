@@ -1,0 +1,7 @@
+id: "023-artifact-store"
+title: "Implement safe atomic expedient and artifact storage"
+depends_on: ["020-engine-manifest", "004-core-expedient-model"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/artifact_store.rs"
+action: create
+prompt: |-
+  Implement a filesystem artifact store rooted at an administrator-configured directory. Create per-project/run/delivery paths, reject traversal and symlink escapes, write versioned delivery JSON atomically via temp-file plus rename, store the immutable project snapshot and bounded logs/evidence, and return relative references with metadata. Preserve source OVA files in the managed delivery store until explicit archive/delete. Do not implement SQLite operations. Edit only this file.

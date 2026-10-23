@@ -1,0 +1,7 @@
+id: "028-delivery-run-service"
+title: "Schedule and manage sequential delivery runs"
+depends_on: ["027-delivery-executor"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs"
+action: create
+prompt: |-
+  Implement the application service for assessment runs. Create a run from project ID and delivery collection, run host preflight before VM work, process each delivery sequentially with concurrency fixed at one, and expose status plus expedients. Persist state transitions, support cancellation between safe workflow steps, and stop automatic retries. A completed delivery must never execute twice within the same run; a deliberate new run creates new expedient/result IDs while retaining old ones. Edit only this file.

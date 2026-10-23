@@ -1,0 +1,7 @@
+id: "008-runner-manifest"
+title: "Create the VM runner crate manifest"
+depends_on: ["007-workspace-dependencies"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/Cargo.toml"
+action: create
+prompt: |-
+  Create the Cargo manifest for thot-runner. Set workspace package metadata and depend only on thot-core plus the shared async-trait, Tokio, error, HTTP, SSH, and serialization dependencies needed by the runner interface and local adapters. Do not add unrelated dependencies. Edit only this file.

@@ -1,0 +1,7 @@
+id: "041-deploy-readme"
+title: "Document host security and deployment preflight"
+depends_on: ["033-daemon-wiring"]
+file: "/home/carlos/worktrees/thot/deploy/README.md"
+action: modify
+prompt: |-
+  Add a native-host deployment section for the VirtualBox POC. Explain the dedicated unprivileged account/profile/storage root, loopback-only 8080/2222 forwarding, thotd API at 8081, free-port checks, disabled shared folders/clipboard/drag-drop/USB, host firewall/eGRESS restrictions, disk/output limits, evidence/source retention, and manifest-based cleanup. Make clear the existing container deployment is not the POC execution boundary. Do not change deployment files. Edit only this file.

@@ -1,0 +1,7 @@
+id: "003-core-test-results"
+title: "Define normalized individual test results"
+depends_on: []
+file: "/home/carlos/worktrees/thot/crates/thot-core/src/test_results.rs"
+action: create
+prompt: |-
+  Define the individual normalized test-result model. Each result needs globally unique test_result_id, test_id, run_id, delivery_id, expedient_id, status, start/end timestamps, monotonic duration, diagnostics, structured JSON observation, and evidence references. Define statuses that distinguish passed, failed, skipped, timed_out, not_run, error, and cancelled. Do not add student_id or mapping behavior. Keep this file to types and small serialization helpers; edit only this file.

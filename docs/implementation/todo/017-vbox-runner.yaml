@@ -1,0 +1,7 @@
+id: "017-vbox-runner"
+title: "Compose the VirtualBox backend implementation"
+depends_on: ["012-vbox-import", "013-vbox-inspection", "014-vbox-lifecycle", "015-vbox-screenshot", "016-vbox-cleanup"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/vbox/runner.rs"
+action: create
+prompt: |-
+  Implement LocalVirtualBoxRunner and its async execution-backend trait implementation by composing the sibling import, inspection, lifecycle, screenshot, and cleanup modules. Keep the configured VBoxManage path, VBOX_USER_HOME, timeout, storage root, and output limits in explicit constructor/config fields. Do not duplicate command parsing or bypass the helper. Edit only this file.

@@ -1,0 +1,7 @@
+id: "031-api-router"
+title: "Compose delivery routes with existing student API"
+depends_on: ["030-api-delivery-routes"]
+file: "/home/carlos/worktrees/thot/crates/thot-api/src/lib.rs"
+action: modify
+prompt: |-
+  Integrate the delivery-run routes into the existing Axum router while preserving health and student import/list routes. Extend router state/signature to receive the delivery-run service from thotd. Keep HTTP handlers thin and map validation/not-found/internal errors to consistent status codes and JSON. Do not move business logic into this file. Edit only this file.

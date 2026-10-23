@@ -1,0 +1,7 @@
+id: "042-lockfile"
+title: "Regenerate workspace dependency lockfile"
+depends_on: ["007-workspace-dependencies", "008-runner-manifest", "020-engine-manifest", "034-cli-http-client-dependency"]
+file: "/home/carlos/worktrees/thot/Cargo.lock"
+action: modify
+prompt: |-
+  After workspace and crate manifests are finalized, regenerate Cargo.lock from those manifests with Cargo. Do not hand-edit dependency checksums or package metadata. Keep this task limited to Cargo.lock; do not modify manifests or source files.

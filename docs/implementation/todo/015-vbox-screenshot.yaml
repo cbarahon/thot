@@ -1,0 +1,7 @@
+id: "015-vbox-screenshot"
+title: "Capture VM display evidence"
+depends_on: ["011-vbox-command"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/vbox/screenshot.rs"
+action: create
+prompt: |-
+  Implement screenshot capture for a running VM using the VBoxManage screenshot operation supported by the configured VirtualBox version. Write only to the current delivery evidence directory, enforce output limits, and return path, timestamp, command result, and diagnostics. Report unsupported command/state as an explicit error; do not silently substitute another capture. Edit only this file.

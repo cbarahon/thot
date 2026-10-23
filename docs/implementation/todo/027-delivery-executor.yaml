@@ -1,0 +1,7 @@
+id: "027-delivery-executor"
+title: "Execute one delivery and persist every test result"
+depends_on: ["009-runner-interface", "022-delivery-storage-methods", "023-artifact-store", "024-delivery-intake", "025-project-config-loader", "026-host-preflight"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_executor.rs"
+action: create
+prompt: |-
+  Implement the workflow for one delivery using the runner backend, delivery repository, and artifact store. Create/persist the expedient before VM resources; persist each result as it completes with unique test_result_id values. Run import and inspection, all three HTTP trials even after a trial failure, then one separate diagnostic boot for screenshot and SSH df collection. Always attempt manifest-scoped cleanup in a finally-style path and record cleanup independently. Do not automatically retry; preserve partial results and explicit statuses. Never attach student IDs. Edit only this file.

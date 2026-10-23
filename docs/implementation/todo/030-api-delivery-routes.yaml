@@ -1,0 +1,7 @@
+id: "030-api-delivery-routes"
+title: "Implement versioned delivery run API handlers"
+depends_on: ["029-engine-exports"]
+file: "/home/carlos/worktrees/thot/crates/thot-api/src/delivery_runs.rs"
+action: create
+prompt: |-
+  Implement Axum routes for POST /api/v1/runs, GET /api/v1/runs/{run_id}, GET /api/v1/expedients/{expedient_id}, POST /api/v1/expedients/{expedient_id}/cleanup, and POST /api/v1/runs/{run_id}/cancel. Accept project ID plus a delivery directory within the configured root; return stable IDs and structured errors. Retrieval must return test_result IDs and evidence references. Do not accept roster IDs, credentials, arbitrary commands, or unrestricted paths. Keep existing student API endpoints untouched. Edit only this file.

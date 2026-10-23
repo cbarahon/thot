@@ -1,0 +1,7 @@
+id: "036-cli-delivery-commands"
+title: "Implement run and expedient CLI command handling"
+depends_on: ["035-cli-api-client"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/delivery_commands.rs"
+action: create
+prompt: |-
+  Implement handlers for `run create --project ID --deliveries DIR`, `run status RUN_ID`, `run expedient EXPEDIENT_ID`, `run cancel RUN_ID`, and `run cleanup EXPEDIENT_ID` using the API client. Validate required arguments and print readable JSON/status output. Do not add student mapping commands, credentials, or local VBoxManage execution. Edit only this file.

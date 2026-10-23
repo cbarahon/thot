@@ -1,0 +1,7 @@
+id: "022-delivery-storage-methods"
+title: "Add delivery and result persistence methods"
+depends_on: ["021-delivery-storage-schema"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_storage.rs"
+action: modify
+prompt: |-
+  Extend this repository with focused async methods to register/reuse a delivery by collection/source reference/content hash, create/update runs and expedients, persist each test result incrementally, retrieve runs/expedients/results, and mark cleanup pending/completed. Preserve prior expedients on re-execution, never overwrite prior test_result IDs, and provide transactions where a run and its child records must be created atomically. Do not add mapping logic or touch other files.

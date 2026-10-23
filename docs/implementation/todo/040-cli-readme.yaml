@@ -1,0 +1,7 @@
+id: "040-cli-readme"
+title: "Document delivery execution commands"
+depends_on: ["037-cli-main-dispatch"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/README.md"
+action: modify
+prompt: |-
+  Document the POC CLI commands for creating a run from a project and delivery directory, checking status, retrieving a delivery expedient by ID, cancelling a run, and cleaning up an interrupted delivery. State that files are tested per delivery without roster matching and that later mapping uses individual test_result_id values. Preserve existing student command documentation. Edit only this file.

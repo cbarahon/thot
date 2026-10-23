@@ -1,0 +1,7 @@
+id: "033-daemon-wiring"
+title: "Wire delivery services into thotd startup"
+depends_on: ["029-engine-exports", "031-api-router", "032-daemon-config", "017-vbox-runner", "018-http-probe", "019-ssh-probe"]
+file: "/home/carlos/worktrees/thot/apps/thotd/src/main.rs"
+action: modify
+prompt: |-
+  Compose the new POC services at startup: load the VM activity configuration, connect the delivery repository, create artifact/intake/project/preflight/runner/executor/run services, and pass them to the API router alongside the existing student service. Bind the local API on the configured 127.0.0.1:8081 default. Preserve current logging and student imports; fail startup clearly if required POC configuration is invalid. Edit only this file.

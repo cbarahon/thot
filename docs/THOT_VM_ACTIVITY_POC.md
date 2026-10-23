@@ -1,0 +1,377 @@
+# Thot POC: Automated Testing of Student VirtualBox Appliances
+
+**Status:** POC specification  
+**Scope:** One teacher, one host, VirtualBox execution, technical observations, and evidence collection per OVA delivery. Student mapping, scoring, grading, rubric aggregation, learning-outcome calculation, remote VM hosts, and concurrent VM execution are out of scope.
+
+## 1. Purpose
+
+This POC validates whether Thot can automatically inspect student virtual machines submitted as Open Virtualization Format archives (`.ova`) using the host's installed VirtualBox. It implements one local VM execution adapter behind Thot's runner boundary; it does not add a general remote-execution service.
+
+Students must create a VM with specified characteristics and publish a web service on guest TCP port `80`. The host reaches it through the OVA's NAT forward on `127.0.0.1:8080`. The teacher places the OVA files in a delivery directory. Thot's roster import already exists, but the execution phase does not use it.
+
+For each valid OVA delivery, Thot imports the OVA into a dedicated VirtualBox profile, records VM configuration, measures HTTP response time in three separate power-off/start trials, saves each response, captures a VM screenshot, inspects guest filesystem usage over SSH, and removes all temporary VM resources created by the run. It retains a machine-readable delivery expedient and evidence even when steps fail. The POC records VM characteristics but does not compare RAM, CPU, or disk values against assignment targets. Each trial uses a full VM power-off followed by a new start; guest disk caches and other guest state are not reset between trials. A delivery may later be mapped to multiple students; execution happens once per delivery, before that mapping.
+
+## 2. Actors and responsibilities
+
+- **Teacher:** Places OVA files in a delivery directory, configures the activity, reviews delivery expedients, and later performs the separate student-mapping phase.
+- **Thot engine (`thotd`):** Orchestrates one delivery at a time, records observations and timings, persists progress, and attempts cleanup on every exit path.
+- **Local VirtualBox adapter:** A `thotd` component that invokes `VBoxManage` on the same host and as the same OS user/profile used for all VM operations. It accepts structured operations and arguments, not arbitrary commands from the activity file.
+- **Submission storage:** Provides the OVA files to the import process.
+- **VirtualBox:** Imports, configures, starts, inspects, and deletes the test VMs.
+- **Guest VM:** Runs the student's operating system, web service, and SSH server.
+
+## 3. Inputs and assumptions
+
+Required inputs:
+- A delivery directory containing one or more `.ova` files. Filenames do not encode student IDs and are not used for identity matching.
+- A versioned assessment project YAML for this POC, including the SSH secret reference. Host-specific limits and paths belong in `thotd` service configuration, not in the project.
+
+The execution phase does not load or require a student roster. It discovers every `.ova` file directly inside the selected directory; non-OVA files and nested directories are ignored. Intake registers each file as a distinct persisted delivery and assigns its `delivery_id` once. Re-scanning an unchanged file in the same delivery collection reuses that ID; changed content creates a new delivery record, and two different files remain two deliveries even when their hashes match. The original filename and SHA-256 are recorded; filenames are descriptive metadata only. Each delivery is tested once in a run, even if a later mapping associates its test results with multiple students. Invalid files produce a rejected-delivery expedient and are not imported; other valid deliveries continue. Later mapping creates associations from individual `test_result_id` values to student IDs, so a test result can be used for multiple students without being rerun.
+
+### SSH credentials
+
+The guest must provide SSH and a GNU-compatible `df -B1` command. Run `df` with `LC_ALL=C` so output parsing is locale-independent. The guest account name is `tvadmin`. Supply its password through the host's secret mechanism at run time (for example, a protected environment secret); do not put the password in the project/activity YAML, CLI arguments, database, report, or logs. Restrict access to the secret and evidence directories using host OS permissions. Use a per-VM known-hosts file for the expected loopback guest endpoint; do not disable host-key checking globally.
+
+### Network assumptions
+
+The OVA must have a NAT adapter and forward host TCP ports `8080` and `2222` to guest TCP ports `80` and `22`, respectively. Before starting a VM, the adapter verifies these rules and restricts their host bind address to `127.0.0.1`; it rejects bridged or otherwise unsupported adapters. The POC processes one VM at a time because these fixed host ports cannot be shared by concurrent VMs. The host must have both ports free before a run. HTTP probes use `http://127.0.0.1:8080/`; SSH uses `127.0.0.1:2222`.
+
+## 4. Functional workflow
+
+Each assessment run has a unique run ID and a child delivery expedient for every `.ova` file discovered in the delivery directory, including rejected files. Deliveries are processed sequentially with a global concurrency of one. This avoids port collisions and bounds disk, memory, and CPU use on the teacher's host. A delivery result is technical evidence, not a grade, and contains no student identity.
+
+### Step 1 — Resolve and stage the OVA
+
+1. Enumerate each `.ova` file directly in the selected directory and register it as a delivery, assigning a unique persisted `delivery_id` independent of any student. Reuse this ID for the same unchanged file in the same delivery collection so later runs and mapping phases can reference it.
+2. Check readability, OVA validity, size, and estimated imported disk footprint plus the configured free-space reserve.
+3. Record the original filename, size, and SHA-256 in the delivery expedient.
+4. Create a unique VM name from the run ID and delivery ID, using a sanitized identifier and a length limit.
+5. Stage or expose the OVA to the component that performs the import; keep the source in the configured delivery store and record its immutable reference and SHA-256 in the expedient. Do not modify the source during execution. Assign a unique `expedient_id` to this execution result and a unique `test_result_id` to every individual test result. Later mapping targets test results; `delivery_id` identifies the source artifact and `expedient_id` groups that run's results.
+
+Discovery, validation, and staging failures must be written to that delivery's expedient without attempting an import. Do not block other valid deliveries unless the project or host preflight itself fails.
+
+### Step 2 — Prepare an isolated VirtualBox environment
+
+Run `thotd` directly on the VirtualBox host under a dedicated, unprivileged OS account with a dedicated VirtualBox profile (`VBOX_USER_HOME`) and storage root. The profile must be validated against the pinned VirtualBox version before the POC is used. The VM registry and storage root are separate from the teacher's normal profile. Do not run `thotd` in a container for this POC: a container-local `VBoxManage` does not control the host registry, and broad host mounts would defeat the intended boundary.
+
+Register VMs in `/thot` for visibility. The group and name prefix are labels, not an isolation boundary. Use the dedicated profile/storage root and a cleanup manifest per delivery. Persist the delivery expedient before importing; as soon as the VM UUID is known, persist it and its storage path. Record the VM name, UUID, storage location, profile, and host VirtualBox version.
+
+Before first boot, disable shared folders, shared clipboard, drag-and-drop, and USB passthrough. Do not attach host directories or devices to an imported guest. If the installed VirtualBox version cannot enforce this policy, fail preflight.
+
+### Step 3 — Import the OVA
+
+Invoke `VBoxManage` through the local VirtualBox adapter using an executable path configured by the host administrator. Record exit code, bounded stdout/stderr, and duration. Identify the imported VM by UUID and verify registration before any later operation. If import partially fails, discover only resources written to this run's isolated storage directory and include them in cleanup. Never infer ownership from a name alone.
+
+### Step 4 — Record VM configuration
+
+Before starting the VM, collect:
+
+- VM name and UUID.
+- Configured RAM in MB.
+- Configured virtual CPU count.
+- Attached virtual disks, controller/attachment details where available, virtual capacity, and disk image paths.
+- Network adapters: slot, enabled state, attachment mode (NAT, bridged, host-only, internal, etc.), and relevant network or forwarding details.
+
+Verify that every attached disk image resolves inside the current run's storage root. If an attachment points outside it, do not start the VM or delete that external path; report the issue and clean up only resources recorded as run-owned.
+
+Keep **virtual disk capacity** distinct from **actual guest filesystem usage**. Prefer structured, normalized fields, while retaining raw command output as diagnostic evidence where useful.
+
+### Step 5 — Measure HTTP startup time three times
+
+Run three separate startup trials against the same imported VM. Each trial is a full start/readiness/measurement/shutdown cycle:
+
+1. Confirm the VM is powered off and not in a saved state.
+2. Record a monotonic timestamp immediately before requesting startup.
+3. Start the VM headlessly unless a visible console is required.
+4. Poll `http://127.0.0.1:8080/` once per second, with a startup timeout from host configuration (180 seconds by default).
+5. Readiness means that HTTP response headers are received. Any HTTP status code counts as service-ready; status and body are observations, not correctness checks. Do not follow redirects in this POC.
+6. Record the time response headers arrive and calculate elapsed time using a monotonic clock from immediately before the start request. This measures time to first HTTP response, not the time to download the complete page.
+7. After recording readiness time, save the response body as HTML evidence and record URL, status code, response size, and result. Limit a response body to 10 MiB; record truncation if reached.
+8. Shut down the guest and wait until it is powered off before the next trial.
+
+If readiness is not reached, record `timed_out`, elapsed time, poll count, and diagnostics; never present a timeout as a successful measurement. VirtualBox reporting that the VM is running is not sufficient. Attempt all three trials even if one times out or fails, unless the run is cancelled or a host-level failure makes further VM operations unsafe. Request guest shutdown after every trial; after 30 seconds, force power off and record that fallback. A saved state is discarded, not resumed.
+
+The three trials share the same imported guest disk, so guest-side changes and caches may carry across trials. The report must state that fact; no snapshot restore or disk reset is performed.
+
+### Step 6 — Capture a screenshot
+
+After all three trials, perform one separate diagnostic boot. Capture the VM display while the VM is running using the screenshot command supported by the pinned VirtualBox version. Record the exact capture time, command result, and diagnostics. If the VM cannot start or the command is unsupported, record `failed` or `not_run` with a reason; do not substitute a screenshot from a startup trial. The diagnostic boot is excluded from startup measurements.
+
+### Step 7 — Inspect guest disk usage over SSH
+
+During the diagnostic boot, connect to `127.0.0.1:2222` using the configured credentials. Use a 15-second connection timeout and 15-second command timeout. The SSH client must be a library or otherwise ensure that the password is not exposed in process arguments. Use an initially empty known-hosts file scoped to this VM: accept and record the first host key only for this loopback endpoint and reject a changed key during the diagnostic connection. Remove the file after the VM is cleaned up. Run the fixed, non-interactive command:
+
+```bash
+LC_ALL=C df -B1
+```
+
+Retain raw stdout/stderr and parse the output into filesystem records where possible: device, total bytes, used bytes, available bytes, use percentage, and mount point. Record SSH connection duration, command duration, exit code, and any connection/authentication failure. A missing SSH service or authentication failure is an operation failure, not a skipped check.
+
+`df` measures filesystem usage inside the guest. It does not measure the OVA file size or the host-side virtual disk image size. Retain all rows, including pseudo filesystems, and parse recognized output rows; keep raw stdout/stderr when parsing fails. The diagnostic boot is shut down and powered off before cleanup.
+
+### Step 8 — Shut down and clean up
+
+Cleanup is mandatory after successful and failed runs and is run in a `finally`-style path independent of test outcomes:
+
+1. Request graceful guest shutdown where feasible.
+2. Wait for a configured grace period, then use a documented forced power-off fallback if necessary.
+3. Unregister the VM and delete its test-owned files, virtual disks, and snapshots (for example, with `VBoxManage unregistervm --delete` where appropriate).
+4. Remove temporary port-forwarding rules, temporary host-only resources, per-VM known-hosts files, and other resources created exclusively for the run.
+5. Verify the VM is no longer registered and its run-specific storage directory is removed.
+6. Record cleanup status and any remaining resources. A run is not reported as clean if registration or run-owned storage remains.
+
+Cleanup must be idempotent and must only target resources recorded in the current delivery's manifest. Never delete a VM solely because its name looks similar. The manifest is flushed before import and after every resource-creating operation. Automatic recovery after host power loss is out of scope; on engine restart, interrupted deliveries are marked `interrupted_cleanup_pending` and their UUIDs/paths are exposed for an operator-controlled cleanup command. That command verifies manifest ownership before deletion. New runs are blocked if the dedicated profile contains an unaccounted VM or storage entry.
+
+### Step 9 — Persist the report
+
+Write a versioned machine-readable delivery expedient and evidence under the assessment run, with a child directory per delivery. Persist the expedient before creating host resources and atomically update it after each step. Record `passed`, `failed`, `skipped`, `timed_out`, `not_run`, and `error` distinctly; record cleanup independently. Overall run status describes orchestration (`completed`, `completed_with_errors`, `cancelled`, `failed`, or `interrupted_cleanup_pending`) and does not aggregate or infer student performance.
+
+## 5. Tests to implement
+
+| ID | Test | Required output |
+|---|---|---|
+| `OVA-001` | Discover and validate delivery | Delivery ID, source filename, size, SHA-256, validation status |
+| `VBOX-001` | Import OVA | VM name/UUID, status, duration, command diagnostics |
+| `VBOX-002` | Inspect configuration | RAM, CPUs, virtual disks, network modes and details |
+| `WEB-001` | HTTP startup trial 1 | Start/readiness times, elapsed time, HTTP status, HTML evidence, status |
+| `WEB-002` | HTTP startup trial 2 | Same fields as trial 1 |
+| `WEB-003` | HTTP startup trial 3 | Same fields as trial 1 |
+| `VBOX-003` | Diagnostic boot and screenshot | Boot status, image evidence, timestamp, status and diagnostics |
+| `SSH-001` | Collect `df` output | Raw output, parsed filesystem rows, timings and status |
+| `CLEAN-001` | Power off and delete | Shutdown method, unregister/delete verification, diagnostics |
+
+These are technical tests and measurements only. No marks, student association, or pass/fail judgement of student work are calculated in this POC.
+
+## 6. Expected output
+
+Suggested evidence layout:
+
+```text
+results/
+    └── <project-id>/
+        └── <run-id>/
+            ├── run.json
+            └── deliveries/
+                └── <delivery-id>/
+                    ├── delivery.json
+                    ├── manifest.json
+                    ├── logs/
+                    │   ├── import.stdout.txt
+                    │   ├── import.stderr.txt
+                    │   ├── vm-inspection.txt
+                    │   ├── ssh-df.stdout.txt
+                    │   ├── ssh-df.stderr.txt
+                    │   └── cleanup.log
+                    └── evidence/
+                        ├── screenshot.png
+                        ├── web-trial-1.html
+                        ├── web-trial-2.html
+                        └── web-trial-3.html
+```
+
+The directory layout is illustrative; the storage implementation may differ if all evidence remains linked to the run.
+
+### Example `delivery.json` (delivery expedient)
+
+Values below are illustrative, not measured results.
+
+```json
+{
+  "schema_version": 1,
+  "project_id": "vm-creation-poc",
+  "delivery_id": "delivery-7a31",
+  "expedient_id": "expedient-9c42",
+  "run_id": "run-2026-001",
+  "execution_context": {
+    "project_schema_version": 1,
+    "project_snapshot_ref": "configuration/project.yaml",
+    "project_config_sha256": null,
+    "engine_version": null,
+    "host_os": null,
+    "virtualbox_version": null
+  },
+  "source": {
+    "filename": "submission-042.ova",
+    "size_bytes": 0,
+    "sha256": null,
+    "source_ref": "submission-store/batch-42/submission-042.ova"
+  },
+  "vm": {
+    "name": "thot-run-2026-001-delivery-7a31",
+    "uuid": null,
+    "group": "/thot",
+    "ram_mb": null,
+    "cpus": null,
+    "disks": [],
+    "network_adapters": []
+  },
+  "web_startup_trials": [
+    {
+      "trial": 1,
+      "status": "passed",
+      "started_at": null,
+      "ready_at": null,
+      "elapsed_ms": null,
+      "http_status": null,
+      "html_evidence": "evidence/web-trial-1.html",
+      "error": null
+    },
+    {
+      "trial": 2,
+      "status": "passed",
+      "started_at": null,
+      "ready_at": null,
+      "elapsed_ms": null,
+      "http_status": null,
+      "html_evidence": "evidence/web-trial-2.html",
+      "error": null
+    },
+    {
+      "trial": 3,
+      "status": "passed",
+      "started_at": null,
+      "ready_at": null,
+      "elapsed_ms": null,
+      "http_status": null,
+      "html_evidence": "evidence/web-trial-3.html",
+      "error": null
+    }
+  ],
+  "screenshot": {
+    "status": "passed",
+    "path": "evidence/screenshot.png",
+    "captured_at": null
+  },
+  "guest_filesystems": {
+    "status": "passed",
+    "command": "LC_ALL=C df -B1",
+    "raw_output_path": "logs/ssh-df.stdout.txt",
+    "filesystems": []
+  },
+  "cleanup": {
+    "status": "passed",
+    "vm_unregistered": true,
+    "run_storage_removed": true,
+    "details": []
+  },
+  "test_results": [
+    { "test_result_id": "result-ova-001", "test_id": "OVA-001", "status": "passed", "details_ref": "/source" },
+    { "test_result_id": "result-vbox-001", "test_id": "VBOX-001", "status": "passed", "details_ref": "/vm" },
+    { "test_result_id": "result-vbox-002", "test_id": "VBOX-002", "status": "passed", "details_ref": "/vm" },
+    { "test_result_id": "result-web-001", "test_id": "WEB-001", "status": "passed", "details_ref": "/web_startup_trials/0" },
+    { "test_result_id": "result-web-002", "test_id": "WEB-002", "status": "passed", "details_ref": "/web_startup_trials/1" },
+    { "test_result_id": "result-web-003", "test_id": "WEB-003", "status": "passed", "details_ref": "/web_startup_trials/2" },
+    { "test_result_id": "result-vbox-003", "test_id": "VBOX-003", "status": "passed", "details_ref": "/screenshot" },
+    { "test_result_id": "result-ssh-001", "test_id": "SSH-001", "status": "passed", "details_ref": "/guest_filesystems" },
+    { "test_result_id": "result-clean-001", "test_id": "CLEAN-001", "status": "passed", "details_ref": "/cleanup" }
+  ],
+  "overall_status": "completed",
+  "started_at": null,
+  "finished_at": null
+}
+```
+
+In this expedient, `passed` means only that the operation completed according to its technical success condition; it is not a grade. The expedient has no student ID. Recommended statuses include `passed`, `failed`, `timed_out`, `skipped`, `not_run`, and `error`.
+
+Report requirements:
+- Include per-step timestamps, durations, status, diagnostics, project/configuration version, and runner/VirtualBox version.
+- Give every individual result a unique `test_result_id`, retain its `test_id`, status, timestamps, duration, diagnostics, and structured observation/evidence reference. Include `delivery_id`, `expedient_id`, source filename, size and SHA-256, immutable source reference, and execution run ID as provenance.
+- Keep raw evidence and normalized fields.
+- Use relative evidence paths where practical.
+- Never include the SSH password in reports or logs.
+- Distinguish operation failures from observations that may later be judged incorrect.
+- Record cleanup status even when earlier tests fail.
+- Version the report schema.
+
+### Delivery expedient and later mapping
+
+`delivery_id` identifies the imported OVA artifact. `expedient_id` identifies the immutable result bundle from running this POC against that delivery under a particular project and run. Every individual test outcome inside that bundle has its own globally unique `test_result_id`; that is the unit of later student mapping. The expedient must be sufficient for later evaluation without importing or booting the VM again. It contains:
+
+- Source filename, byte size, SHA-256, immutable source reference, `delivery_id`, `expedient_id`, and `run_id`.
+- Project ID, immutable project/configuration snapshot reference, schema version and hash, test definitions/version, engine version, host OS, and VirtualBox version. Retain the referenced snapshot with the expedient; the hash alone is not enough to reproduce later evaluation.
+- Normalized VM configuration and network details.
+- Each test observation and status, timestamps, monotonic durations, HTTP response status/body references, parsed filesystem rows, and explicit error/timeout/skip reasons.
+- Relative references to raw command output, screenshot, HTML evidence, and their metadata; the cleanup manifest and final cleanup verification.
+
+The expedient contains no student ID and is not rewritten by later mapping. The later mapping phase stores associations from `test_result_id` to one or more student IDs. Multiple students can reference the same test result, and a delivery's results can be mapped individually. Mapping must not copy the test result or trigger execution again. An explicit re-execution creates a new `expedient_id` and new `test_result_id` values while preserving the prior results.
+
+There are no automatic test retries. Failures and timeouts are saved as results and can also be mapped later. Re-execution requires an explicit new run, creates a new expedient, and leaves prior results available for mapping. Keep the source OVA in the configured delivery store for as long as its expedient is retained.
+
+## 7. POC architecture and deployment
+
+The POC uses the project boundaries in `docs/architecture.md`, with one concrete local VM adapter. It specializes the general assessment-run model for the pre-mapping phase: the scheduler's work item is a delivery, tests run sequentially per delivery, and a test result has `run_id`, `delivery_id`, `expedient_id`, and `test_result_id` but no `student_id`. The later mapping phase adds student-to-test-result associations without changing the stored execution result. There is one versioned assessment project YAML; it selects this fixed VM activity and references a host-managed SSH secret. It does not accept arbitrary commands, runtime-specific host paths, or credentials. The service configuration supplies local paths, resource limits, and timeouts.
+
+```mermaid
+flowchart LR
+    TEACHER[Teacher] --> CLI[thot CLI]
+    CLI -->|REST / JSON| API[thotd on VirtualBox host]
+    API --> SCHED[Single-delivery scheduler]
+    SCHED --> VMADAPTER[Local VirtualBox adapter]
+    VMADAPTER -->|structured VBoxManage calls| VBOX[VirtualBox under dedicated OS account/profile]
+    VBOX --> GUEST[Student guest VM]
+    API --> STORE[(SQLite run state)]
+    API --> FILES[(Filesystem: OVA staging, reports, logs, evidence)]
+    VMADAPTER -->|HTTP :8080 / SSH :2222| GUEST
+```
+
+Deployment decisions for this POC:
+
+- Install and run `thotd` natively on the same host that owns VirtualBox. Use the dedicated OS account and `VBOX_USER_HOME` described above for every VirtualBox command. A container, remote host agent, and remote VM provider are deferred.
+- Bind the POC `thotd` REST API to `127.0.0.1:8081`. The architecture document's sample API port `8080` conflicts with the VM's HTTP forward, so the POC uses `8081`; the CLI points to this local address. Remote API clients are out of scope.
+- The teacher starts a run through the existing CLI/API path, selecting an imported project and a delivery directory accessible to `thotd`. The server accepts only paths under an administrator-configured delivery root. The CLI does not run VirtualBox commands itself. Roster access and student association are not needed in this execution phase.
+- The POC CLI surface supports creating a delivery run, checking run status, retrieving an expedient by `expedient_id`, and invoking manifest-verified cleanup for an interrupted delivery (for example, `thot run create --project ID --deliveries DIR`, `thot run status RUN_ID`, `thot run expedient EXPEDIENT_ID`, and `thot run cleanup EXPEDIENT_ID`).
+- The project is versioned YAML and contains the fixed test policy and non-secret timeouts/limits. SSH password is supplied separately through the host secret mechanism. No arbitrary shell command or executable is accepted from project YAML; the VM adapter implements the listed operations.
+- `thotd` persists run/delivery state in SQLite and delivery expedients, cleanup manifests, bounded command logs, and evidence in the configured filesystem store. Artifact paths are relative to a delivery directory. Restrict the store to the teacher and service account; retain source OVAs, expedients, and evidence until the teacher explicitly archives or deletes the run. There is no automatic expiry in the POC.
+- The static web UI and `lighttpd` are not required to complete this POC. The CLI and REST API provide run creation, status, and report retrieval.
+
+The local adapter invokes only a fixed allow-list of `VBoxManage` operations using executable-plus-argument arrays. It normalizes results and artifacts for the engine; scheduling, run state, and persistence remain owned by `thotd`. Use the same OS user, executable, profile, and storage root for import, inspect, start, screenshot, shutdown, and delete.
+
+## 8. Reliability, isolation and safety
+
+Treat student OVAs and guest systems as untrusted.
+
+- Give test VMs the minimum privileges and network access needed.
+- Do not expose the teacher's normal VMs, personal files, or host services to the guest.
+- Disable shared folders, shared clipboard, drag-and-drop, and USB passthrough; do not attach host directories or devices to imported guests.
+- Use a dedicated storage root and run ownership metadata.
+- Validate OVA size and available disk space before import.
+- Set timeouts for import, startup, HTTP polling, SSH, commands, shutdown, and cleanup.
+- Limit HTTP response and command-output sizes.
+- Sanitize IDs and filenames. Prefer structured process arguments to shell string concatenation.
+- Avoid exposing passwords on process command lines where possible.
+- Restrict network modes and do not use bridged networking unless required.
+- Make cleanup repeatable and recoverable after crashes.
+- Do not use `/thot` group membership or a name prefix alone as permission to delete a resource.
+- Process one delivery VM at a time in this POC; broader delivery-level concurrency is deferred.
+
+For this POC, the dedicated OS account/profile is an operational separation from the teacher's normal VMs, not a security boundary against a malicious guest or a VirtualBox vulnerability. The host must be dedicated to this workload while student VMs run, and host firewall policy must prevent guest access to unrelated host services and unnecessary outbound destinations while allowing the loopback HTTP/SSH forwards. If that policy cannot be validated, do not run untrusted student OVAs on that host.
+
+The class account is shared for this controlled exercise and is not a security boundary; network isolation remains important.
+
+## 9. POC completion criteria
+
+The POC is complete when, using the CLI/API on the configured VirtualBox host, the teacher can select a project and delivery directory and launch processing without manually importing or operating each VM. The execution phase does not import or consult the roster. The project and host configuration validate before any VM is imported.
+
+For each valid OVA delivery, Thot must produce one delivery expedient containing the stable IDs, immutable source reference and digest, project/test version, normalized observations, and linked evidence listed above, including:
+1. RAM, CPU count, virtual disk metadata, and network adapter information.
+2. Three separate HTTP readiness trials, each with elapsed time and downloaded HTML when successful.
+3. A screenshot or an explicit capture failure.
+4. SSH diagnostics and `df` output, parsed where possible.
+5. Cleanup verification showing the VM unregistered and run-owned files removed.
+6. A versioned machine-readable report linking logs and evidence.
+
+For invalid OVA files or execution failures, Thot must produce a rejected or partial delivery expedient and attempt cleanup of all resources created for that delivery. The teacher's normal VirtualBox inventory and unrelated files must remain untouched. On normal completion, verify the test VM is unregistered and run-owned storage is removed. On a process/host crash, mark cleanup pending and provide the manifest-backed operator cleanup path described above. No student association or grading decision is produced. Completion also requires demonstrating that every valid delivery is tested once per run, each `test_result_id` is stable and independently usable as a future one-to-many student-mapping key, fixed forwarded ports are loopback-only, runs are serialized, and the host profile/storage root are separate from the teacher's normal profile. The mapping operation itself is outside this POC.
+
+## 10. Fixed POC decisions and deployment preflight
+
+The POC contract fixes these choices: every `.ova` file is a distinct delivery regardless of filename or matching hash; execution does not use student IDs or a roster; each delivery is tested once per assessment run and receives a stable `delivery_id` plus a run-specific `expedient_id`; each individual result has a unique `test_result_id`, which later mapping associates with one or more students; there are no automatic retries; explicit re-execution creates new result IDs and preserves old results; one VM runs at a time; HTTP readiness is receipt of response headers from `/` and the body/status are evidence only; all three trials are attempted; screenshot and `df` run during a separate diagnostic boot; all `df` rows are retained; source OVAs, expedients, and evidence remain until explicitly deleted; automatic crash recovery is deferred but a manifest-backed operator cleanup command is required.
+
+Before enabling a run, the host administrator must set and verify the deployment-specific values that cannot safely be guessed in a project file:
+
+- Supported host OS, installed VirtualBox version, `VBoxManage` path, dedicated service account, profile path, and storage root.
+- OVA size limit, free-space reserve, maximum report/log/HTTP body sizes, and the available host capacity. Reject a run before import if any configured limit is exceeded.
+- Startup timeout (180 seconds by default), import timeout (30 minutes), SSH connect/command timeouts (15 seconds each), graceful shutdown period (30 seconds), and any host-specific process termination deadline.
+- Secret source for the SSH password, evidence-store permissions, and firewall rules for loopback forwarding and guest egress.
+- Validation that NAT forwarding can be bound to `127.0.0.1`, the host ports `8080` and `2222` are free, the POC API can bind to `127.0.0.1:8081`, and screenshot capture works with the installed VirtualBox version.
+
+These are host deployment prerequisites, not per-activity choices. A failed preflight prevents VM import and is reported as a run setup error. Changing the host OS/VirtualBox version requires repeating the adapter compatibility checks before use.

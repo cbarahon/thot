@@ -1,0 +1,7 @@
+id: "034-cli-http-client-dependency"
+title: "Add async HTTP client to the CLI"
+depends_on: ["007-workspace-dependencies"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/Cargo.toml"
+action: modify
+prompt: |-
+  Add the workspace HTTP client dependency required by the new delivery-run CLI commands. Preserve existing dependencies and do not alter binary metadata. Edit only this file.

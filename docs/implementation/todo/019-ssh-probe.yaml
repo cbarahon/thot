@@ -1,0 +1,7 @@
+id: "019-ssh-probe"
+title: "Implement scoped password SSH filesystem inspection"
+depends_on: ["008-runner-manifest"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/ssh_probe.rs"
+action: create
+prompt: |-
+  Implement SSH to 127.0.0.1:2222 using an in-process Rust SSH library and a host-provided secret value; never place the password in process arguments, logs, reports, or project YAML. Use a fresh known-hosts file scoped to this VM endpoint, accept and record its first key only for this loopback connection, and reject a changed key. Enforce 15-second connect/command timeouts, run exactly LC_ALL=C df -B1, retain bounded stdout/stderr, parse all filesystem rows where possible, and report parse/auth/connection errors explicitly. Edit only this file.

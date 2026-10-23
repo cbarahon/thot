@@ -1,0 +1,7 @@
+id: "024-delivery-intake"
+title: "Register and validate OVA deliveries"
+depends_on: ["022-delivery-storage-methods", "023-artifact-store", "020-engine-manifest"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_intake.rs"
+action: create
+prompt: |-
+  Implement intake for direct child .ova files in an administrator-allowed delivery directory. Ignore non-OVA files and nested directories, reject unsafe paths/symlinks, enforce configured OVA size/free-space limits, compute SHA-256, register persistent delivery IDs, and reuse IDs for unchanged files in the same collection while keeping distinct paths distinct even for equal hashes. Persist rejected-file expedients and continue other files. Do not consult the roster. Edit only this file.

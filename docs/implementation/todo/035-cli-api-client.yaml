@@ -1,0 +1,7 @@
+id: "035-cli-api-client"
+title: "Implement CLI client for run and expedient API"
+depends_on: ["034-cli-http-client-dependency", "030-api-delivery-routes"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/api_client.rs"
+action: create
+prompt: |-
+  Implement a small async API client configured with host and port that calls the versioned run/expedient/status/cancel/cleanup endpoints and decodes JSON responses/errors. Use the workspace HTTP client; never send passwords or secret values. Keep URL construction safe and report non-success HTTP statuses clearly. Do not parse CLI arguments or edit other files. Edit only this file.

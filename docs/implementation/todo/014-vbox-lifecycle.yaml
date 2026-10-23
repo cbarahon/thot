@@ -1,0 +1,7 @@
+id: "014-vbox-lifecycle"
+title: "Implement VM power and state operations"
+depends_on: ["011-vbox-command"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/vbox/lifecycle.rs"
+action: create
+prompt: |-
+  Implement VirtualBox state checks, headless startup, graceful guest shutdown request, bounded wait for power-off, and forced power-off fallback after the configured grace period. Treat saved state as discardable and never resume it. Return command diagnostics and durations. Use the shared VBoxManage helper and UUID-based ownership. Edit only this file.

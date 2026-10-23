@@ -1,0 +1,7 @@
+id: "007-workspace-dependencies"
+title: "Register runner crate and shared runtime dependencies"
+depends_on: []
+file: "/home/carlos/worktrees/thot/Cargo.toml"
+action: modify
+prompt: |-
+  Add crates/thot-runner to the workspace. Add minimal shared dependencies needed by the POC: hashing, UUID generation, YAML parsing, an async HTTP client with rustls, an async SSH library with password authentication, and async_trait. Extend Tokio features only for filesystem, process, time, and synchronization APIs used by the implementation. Preserve all existing members and dependencies; do not modify other files.

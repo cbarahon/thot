@@ -1,0 +1,7 @@
+id: "012-vbox-import"
+title: "Implement isolated OVA import"
+depends_on: ["011-vbox-command"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/vbox/import.rs"
+action: create
+prompt: |-
+  Implement one VirtualBox OVA import operation using the bounded command helper. Import into the per-delivery storage directory/profile, use structured VBoxManage arguments, capture diagnostics/duration, identify the imported VM by UUID, and verify it is registered before returning success. Record enough ownership information for the cleanup manifest. Never infer ownership from a VM name alone. Edit only this file.

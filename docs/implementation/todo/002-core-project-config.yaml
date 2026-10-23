@@ -1,0 +1,7 @@
+id: "002-core-project-config"
+title: "Define the VM activity project contract"
+depends_on: []
+file: "/home/carlos/worktrees/thot/crates/thot-core/src/vm_activity.rs"
+action: create
+prompt: |-
+  Define Serde data structures for the versioned VM activity project described in docs/THOT_VM_ACTIVITY_POC.md. Include project ID/schema version, fixed HTTP endpoint and trial policy, SSH username and secret reference, and configurable non-secret limits/timeouts. Do not put host filesystem paths, arbitrary commands, a password, roster IDs, or student mappings in the project model. Add run create/status request and response types only if they belong naturally in this same contract file. Do not implement YAML parsing. Edit only this file.

@@ -1,0 +1,7 @@
+id: "006-core-exports"
+title: "Export the new delivery domain modules"
+depends_on: ["001-core-delivery-model", "002-core-project-config", "003-core-test-results", "004-core-expedient-model", "005-core-json-dependency"]
+file: "/home/carlos/worktrees/thot/crates/thot-core/src/lib.rs"
+action: modify
+prompt: |-
+  Declare and re-export the delivery, VM activity project, normalized test-result, and expedient types implemented in sibling modules. Preserve all existing student API types and serialization behavior. Do not add business logic here. Edit only this file.

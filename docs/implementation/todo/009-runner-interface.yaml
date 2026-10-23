@@ -1,0 +1,7 @@
+id: "009-runner-interface"
+title: "Define the execution backend interface"
+depends_on: ["008-runner-manifest", "006-core-exports"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/lib.rs"
+action: create
+prompt: |-
+  Define the public runner interface used by thot-engine for local VM operations. It must cover OVA import, VM inspection, power-on/off and state checks, screenshot capture, cleanup, HTTP readiness probes, and SSH filesystem inspection. Use typed inputs/outputs from thot-core where practical and an async trait. Export the concrete local VirtualBox implementation module. Do not implement command execution here. Edit only this file.
