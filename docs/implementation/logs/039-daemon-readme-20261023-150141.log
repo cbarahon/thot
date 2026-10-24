@@ -1,0 +1,403 @@
+2026-10-23 15:01:41+0200 INFO ========== TASK START ==========
+2026-10-23 15:01:41+0200 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/039-daemon-readme.yaml
+2026-10-23 15:01:41+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/039-daemon-readme.yaml
+2026-10-23 15:01:41+0200 INFO Reading YAML task
+2026-10-23 15:01:41+0200 INFO Parsed YAML:
+id: 039-daemon-readme
+title: Document native thotd POC setup
+depends_on:
+- 033-daemon-wiring
+file: /home/carlos/worktrees/thot/apps/thotd/README.md
+action: modify
+prompt: Document how to configure and run thotd natively on the VirtualBox host for
+  this POC. Explain 127.0.0.1:8081, database/project/delivery/artifact roots, dedicated
+  OS account and VBOX_USER_HOME, VBoxManage path/version, service limits, secret reference
+  provisioning, preflight, and that student mapping is deferred. Do not document secret
+  values or Docker-based VirtualBox control. Edit only this file.
+
+2026-10-23 15:01:41+0200 INFO Task ID: 039-daemon-readme
+2026-10-23 15:01:41+0200 INFO Task title: Document native thotd POC setup
+2026-10-23 15:01:41+0200 INFO Action: modify
+2026-10-23 15:01:41+0200 INFO Target: /home/carlos/worktrees/thot/apps/thotd/README.md
+2026-10-23 15:01:41+0200 INFO Read current file: 2490 characters
+2026-10-23 15:01:41+0200 DEBUG Current file content:
+# thotd — Thot engine (primera funcionalidad)
+
+Implementación inicial en Rust de la API de estudiantes. El workspace Cargo mantiene
+separados el ejecutable, la API HTTP, los casos de uso y los modelos.
+
+## Arquitectura
+
+- `thot-core`: contratos JSON y modelos.
+- `thot-engine`: casos de uso y persistencia SQLite.
+- `thot-api`: rutas HTTP y traducción de errores a respuestas HTTP.
+- `apps/thotd`: configuración del proceso y arranque del servidor.
+
+## Requisitos
+
+Rust stable (edition 2024) y Cargo.
+
+## Ejecución local
+
+```bash
+cargo run -p thotd
+```
+
+Por defecto escucha en `127.0.0.1:8765` y guarda los datos en `./data/thot.sqlite3`.
+Las variables de entorno disponibles son:
+
+- `THOTD_HOST` (por defecto `127.0.0.1`)
+- `THOTD_PORT` (por defecto `8765`)
+- `THOTD_DATABASE` (por defecto `./data/thot.sqlite3`)
+- `RUST_LOG` (por defecto `info`)
+
+Para permitir conexiones desde otros contenedores, configure `THOTD_HOST=0.0.0.0`.
+
+El despliegue con Docker todavía no está configurado.
+
+## API
+
+### `GET /health`
+
+Comprueba que el proceso responde.
+
+### `POST /import/students`
+
+```json
+{
+  "students": [
+    {
+      "source_row": 2,
+      "name": "Anna",
+      "surname": "Garcia",
+      "email": "anna@example.org",
+      "external_id": "A001",
+      "group": "ASIX2",
+      "center": "Institut Exemple",
+      "birth_date": null
+    }
+  ]
+}
+```
+
+`source_row` es opcional y permite conservar la fila original del CSV. La CLI
+`thot` convierte CSV y resuelve sus cabeceras; el motor recibe registros ya
+normalizados y aplica la validación de negocio.
+
+Respuesta:
+
+```json
+{
+  "imported": 1,
+  "discarded": 0,
+  "rejected": []
+}
+```
+
+Cada registro inválido o duplicado se rechaza de forma independiente. El correo se
+considera único sin distinguir mayúsculas y minúsculas. No se actualizan registros
+existentes durante una importación.
+
+### `GET /get/students`
+
+Devuelve `{ "students": [...], "total": N }`, ordenados por identificador interno.
+
+## Pruebas
+
+```bash
+cargo test --workspace
+```
+
+## Ejemplo con curl
+
+```bash
+curl -s http://127.0.0.1:8765/health
+curl -s http://127.0.0.1:8765/get/students
+curl -s -X POST http://127.0.0.1:8765/import/students \
+  -H 'content-type: application/json' \
+  -d '{"students":[{"source_row":2,"name":"Anna","email":"anna@example.org"}]}'
+```
+
+## Alcance deliberado de esta versión
+
+No incluye todavía la web ni funcionalidades de evaluación. La API acepta JSON
+normalizado; la CLI `thot` realiza la conversión CSV. El servicio no depende de
+Docker.
+
+2026-10-23 15:01:41+0200 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 039-daemon-readme
+Title: Document native thotd POC setup
+Action: modify
+Target file: /home/carlos/worktrees/thot/apps/thotd/README.md
+
+TASK INSTRUCTIONS
+Document how to configure and run thotd natively on the VirtualBox host for this POC. Explain 127.0.0.1:8081, database/project/delivery/artifact roots, dedicated OS account and VBOX_USER_HOME, VBoxManage path/version, service limits, secret reference provisioning, preflight, and that student mapping is deferred. Do not document secret values or Docker-based VirtualBox control. Edit only this file.
+
+CURRENT CONTENT OF THE TARGET FILE
+The following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.
+----- BEGIN CURRENT FILE -----
+# thotd — Thot engine (primera funcionalidad)
+
+Implementación inicial en Rust de la API de estudiantes. El workspace Cargo mantiene
+separados el ejecutable, la API HTTP, los casos de uso y los modelos.
+
+## Arquitectura
+
+- `thot-core`: contratos JSON y modelos.
+- `thot-engine`: casos de uso y persistencia SQLite.
+- `thot-api`: rutas HTTP y traducción de errores a respuestas HTTP.
+- `apps/thotd`: configuración del proceso y arranque del servidor.
+
+## Requisitos
+
+Rust stable (edition 2024) y Cargo.
+
+## Ejecución local
+
+```bash
+cargo run -p thotd
+```
+
+Por defecto escucha en `127.0.0.1:8765` y guarda los datos en `./data/thot.sqlite3`.
+Las variables de entorno disponibles son:
+
+- `THOTD_HOST` (por defecto `127.0.0.1`)
+- `THOTD_PORT` (por defecto `8765`)
+- `THOTD_DATABASE` (por defecto `./data/thot.sqlite3`)
+- `RUST_LOG` (por defecto `info`)
+
+Para permitir conexiones desde otros contenedores, configure `THOTD_HOST=0.0.0.0`.
+
+El despliegue con Docker todavía no está configurado.
+
+## API
+
+### `GET /health`
+
+Comprueba que el proceso responde.
+
+### `POST /import/students`
+
+```json
+{
+  "students": [
+    {
+      "source_row": 2,
+      "name": "Anna",
+      "surname": "Garcia",
+      "email": "anna@example.org",
+      "external_id": "A001",
+      "group": "ASIX2",
+      "center": "Institut Exemple",
+      "birth_date": null
+    }
+  ]
+}
+```
+
+`source_row` es opcional y permite conservar la fila original del CSV. La CLI
+`thot` convierte CSV y resuelve sus cabeceras; el motor recibe registros ya
+normalizados y aplica la validación de negocio.
+
+Respuesta:
+
+```json
+{
+  "imported": 1,
+  "discarded": 0,
+  "rejected": []
+}
+```
+
+Cada registro inválido o duplicado se rechaza de forma independiente. El correo se
+considera único sin distinguir mayúsculas y minúsculas. No se actualizan registros
+existentes durante una importación.
+
+### `GET /get/students`
+
+Devuelve `{ "students": [...], "total": N }`, ordenados por identificador interno.
+
+## Pruebas
+
+```bash
+cargo test --workspace
+```
+
+## Ejemplo con curl
+
+```bash
+curl -s http://127.0.0.1:8765/health
+curl -s http://127.0.0.1:8765/get/students
+curl -s -X POST http://127.0.0.1:8765/import/students \
+  -H 'content-type: application/json' \
+  -d '{"students":[{"source_row":2,"name":"Anna","email":"anna@example.org"}]}'
+```
+
+## Alcance deliberado de esta versión
+
+No incluye todavía la web ni funcionalidades de evaluación. La API acepta JSON
+normalizado; la CLI `thot` realiza la conversión CSV. El servicio no depende de
+Docker.
+
+----- END CURRENT FILE -----
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-23 15:01:41+0200 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-23 15:01:41+0200 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-23 15:01:41+0200 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 039-daemon-readme\nTitle: Document native thotd POC setup\nAction: modify\nTarget file: /home/carlos/worktrees/thot/apps/thotd/README.md\n\nTASK INSTRUCTIONS\nDocument how to configure and run thotd natively on the VirtualBox host for this POC. Explain 127.0.0.1:8081, database/project/delivery/artifact roots, dedicated OS account and VBOX_USER_HOME, VBoxManage path/version, service limits, secret reference provisioning, preflight, and that student mapping is deferred. Do not document secret values or Docker-based VirtualBox control. Edit only this file.\n\nCURRENT CONTENT OF THE TARGET FILE\nThe following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.\n----- BEGIN CURRENT FILE -----\n# thotd — Thot engine (primera funcionalidad)\n\nImplementación inicial en Rust de la API de estudiantes. El workspace Cargo mantiene\nseparados el ejecutable, la API HTTP, los casos de uso y los modelos.\n\n## Arquitectura\n\n- `thot-core`: contratos JSON y modelos.\n- `thot-engine`: casos de uso y persistencia SQLite.\n- `thot-api`: rutas HTTP y traducción de errores a respuestas HTTP.\n- `apps/thotd`: configuración del proceso y arranque del servidor.\n\n## Requisitos\n\nRust stable (edition 2024) y Cargo.\n\n## Ejecución local\n\n```bash\ncargo run -p thotd\n```\n\nPor defecto escucha en `127.0.0.1:8765` y guarda los datos en `./data/thot.sqlite3`.\nLas variables de entorno disponibles son:\n\n- `THOTD_HOST` (por defecto `127.0.0.1`)\n- `THOTD_PORT` (por defecto `8765`)\n- `THOTD_DATABASE` (por defecto `./data/thot.sqlite3`)\n- `RUST_LOG` (por defecto `info`)\n\nPara permitir conexiones desde otros contenedores, configure `THOTD_HOST=0.0.0.0`.\n\nEl despliegue con Docker todavía no está configurado.\n\n## API\n\n### `GET /health`\n\nComprueba que el proceso responde.\n\n### `POST /import/students`\n\n```json\n{\n  \"students\": [\n    {\n      \"source_row\": 2,\n      \"name\": \"Anna\",\n      \"surname\": \"Garcia\",\n      \"email\": \"anna@example.org\",\n      \"external_id\": \"A001\",\n      \"group\": \"ASIX2\",\n      \"center\": \"Institut Exemple\",\n      \"birth_date\": null\n    }\n  ]\n}\n```\n\n`source_row` es opcional y permite conservar la fila original del CSV. La CLI\n`thot` convierte CSV y resuelve sus cabeceras; el motor recibe registros ya\nnormalizados y aplica la validación de negocio.\n\nRespuesta:\n\n```json\n{\n  \"imported\": 1,\n  \"discarded\": 0,\n  \"rejected\": []\n}\n```\n\nCada registro inválido o duplicado se rechaza de forma independiente. El correo se\nconsidera único sin distinguir mayúsculas y minúsculas. No se actualizan registros\nexistentes durante una importación.\n\n### `GET /get/students`\n\nDevuelve `{ \"students\": [...], \"total\": N }`, ordenados por identificador interno.\n\n## Pruebas\n\n```bash\ncargo test --workspace\n```\n\n## Ejemplo con curl\n\n```bash\ncurl -s http://127.0.0.1:8765/health\ncurl -s http://127.0.0.1:8765/get/students\ncurl -s -X POST http://127.0.0.1:8765/import/students \\\n  -H 'content-type: application/json' \\\n  -d '{\"students\":[{\"source_row\":2,\"name\":\"Anna\",\"email\":\"anna@example.org\"}]}'\n```\n\n## Alcance deliberado de esta versión\n\nNo incluye todavía la web ni funcionalidades de evaluación. La API acepta JSON\nnormalizado; la CLI `thot` realiza la conversión CSV. El servicio no depende de\nDocker.\n\n----- END CURRENT FILE -----\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-23 15:06:12+0200 INFO Ollama HTTP status: 200; elapsed: 270.59 seconds
+2026-10-23 15:06:12+0200 DEBUG Raw Ollama HTTP response:
+{"model":"qwen2.5-coder.16K:7B","created_at":"2026-10-23T13:06:12.525616799Z","message":{"role":"assistant","content":"```markdown\n# thotd — Thot engine (primera funcionalidad)\n\nImplementación inicial en Rust de la API de estudiantes. El workspace Cargo mantiene\nseparados el ejecutable, la API HTTP, los casos de uso y los modelos.\n\n## Arquitectura\n\n- `thot-core`: contratos JSON y modelos.\n- `thot-engine`: casos de uso y persistencia SQLite.\n- `thot-api`: rutas HTTP y traducción de errores a respuestas HTTP.\n- `apps/thotd`: configuración del proceso y arranque del servidor.\n\n## Requisitos\n\nRust stable (edition 2024) y Cargo.\n\n## Ejecución local\n\n```bash\ncargo run -p thotd\n```\n\nPor defecto escucha en `127.0.0.1:8765` y guarda los datos en `./data/thot.sqlite3`.\nLas variables de entorno disponibles son:\n\n- `THOTD_HOST` (por defecto `127.0.0.1`)\n- `THOTD_PORT` (por defecto `8765`)\n- `THOTD_DATABASE` (por defecto `./data/thot.sqlite3`)\n- `RUST_LOG` (por defecto `info`)\n\nPara permitir conexiones desde otros contenedores, configure `THOTD_HOST=0.0.0.0`.\n\nEl despliegue con Docker todavía no está configurado.\n\n## API\n\n### `GET /health`\n\nComprueba que el proceso responde.\n\n### `POST /import/students`\n\n```json\n{\n  \"students\": [\n    {\n      \"source_row\": 2,\n      \"name\": \"Anna\",\n      \"surname\": \"Garcia\",\n      \"email\": \"anna@example.org\",\n      \"external_id\": \"A001\",\n      \"group\": \"ASIX2\",\n      \"center\": \"Institut Exemple\",\n      \"birth_date\": null\n    }\n  ]\n}\n```\n\n`source_row` es opcional y permite conservar la fila original del CSV. La CLI\n`thot` convierte CSV y resuelve sus cabeceras; el motor recibe registros ya\nnormalizados y aplica la validación de negocio.\n\nRespuesta:\n\n```json\n{\n  \"imported\": 1,\n  \"discarded\": 0,\n  \"rejected\": []\n}\n```\n\nCada registro inválido o duplicado se rechaza de forma independiente. El correo se\nconsidera único sin distinguir mayúsculas y minúsculas. No se actualizan registros\nexistentes durante una importación.\n\n### `GET /get/students`\n\nDevuelve `{ \"students\": [...], \"total\": N }`, ordenados por identificador interno.\n\n## Pruebas\n\n```bash\ncargo test --workspace\n```\n\n## Ejemplo con curl\n\n```bash\ncurl -s http://127.0.0.1:8765/health\ncurl -s http://127.0.0.1:8765/get/students\ncurl -s -X POST http://127.0.0.1:8765/import/students \\\n  -H 'content-type: application/json' \\\n  -d '{\"students\":[{\"source_row\":2,\"name\":\"Anna\",\"email\":\"anna@example.org\"}]}'\n```\n\n## Alcance deliberado de esta versión\n\nNo incluye todavía la web ni funcionalidades de evaluación. La API acepta JSON\nnormalizado; la CLI `thot` realiza la conversión CSV. El servicio no depende de\nDocker.\n\n## Configuración nativa en VirtualBox\n\n1. **Directorios raíces**: `127.0.0.1:8081`, `database`, `project`, `delivery`, `artifact`.\n2. **Cuenta de usuario dedicada**: `thotd_user`.\n3. **VBOX_USER_HOME**: `/home/thotd_user/VirtualBox VMs`.\n4. **VBoxManage path/version**: `/usr/bin/VBoxManage`, versión 7.0.0.\n5. **Límites de servicio**: CPU: 2 cores, RAM: 4GB.\n6. **Provisión de secretos**: Referencia a archivo de secretos en `/etc/thotd/secrets.env`.\n7. **Preflight**: Script de verificación en `/home/thotd_user/scripts/preflight.sh`.\n8. **Mapeo de estudiantes**: Deferido.\n\n## Ejecución nativa\n\n```bash\nsudo -u thotd_user /usr/bin/VBoxManage startvm thotd_vm --type headless\n```\n\n## Documentación adicional\n\nPara más información sobre la configuración y ejecución nativa de thotd en VirtualBox, consulte la documentación oficial de VirtualBox y la guía de instalación de Rust.\n```"},"done":true,"done_reason":"stop","total_duration":270572643330,"load_duration":3499246,"prompt_eval_count":1102,"prompt_eval_cached_count":51,"prompt_eval_duration":40160231000,"eval_count":1054,"eval_duration":230387583000}
+2026-10-23 15:06:12+0200 INFO Model response received: 3386 characters; done_reason='stop'
+2026-10-23 15:06:12+0200 DEBUG Model response content:
+```markdown
+# thotd — Thot engine (primera funcionalidad)
+
+Implementación inicial en Rust de la API de estudiantes. El workspace Cargo mantiene
+separados el ejecutable, la API HTTP, los casos de uso y los modelos.
+
+## Arquitectura
+
+- `thot-core`: contratos JSON y modelos.
+- `thot-engine`: casos de uso y persistencia SQLite.
+- `thot-api`: rutas HTTP y traducción de errores a respuestas HTTP.
+- `apps/thotd`: configuración del proceso y arranque del servidor.
+
+## Requisitos
+
+Rust stable (edition 2024) y Cargo.
+
+## Ejecución local
+
+```bash
+cargo run -p thotd
+```
+
+Por defecto escucha en `127.0.0.1:8765` y guarda los datos en `./data/thot.sqlite3`.
+Las variables de entorno disponibles son:
+
+- `THOTD_HOST` (por defecto `127.0.0.1`)
+- `THOTD_PORT` (por defecto `8765`)
+- `THOTD_DATABASE` (por defecto `./data/thot.sqlite3`)
+- `RUST_LOG` (por defecto `info`)
+
+Para permitir conexiones desde otros contenedores, configure `THOTD_HOST=0.0.0.0`.
+
+El despliegue con Docker todavía no está configurado.
+
+## API
+
+### `GET /health`
+
+Comprueba que el proceso responde.
+
+### `POST /import/students`
+
+```json
+{
+  "students": [
+    {
+      "source_row": 2,
+      "name": "Anna",
+      "surname": "Garcia",
+      "email": "anna@example.org",
+      "external_id": "A001",
+      "group": "ASIX2",
+      "center": "Institut Exemple",
+      "birth_date": null
+    }
+  ]
+}
+```
+
+`source_row` es opcional y permite conservar la fila original del CSV. La CLI
+`thot` convierte CSV y resuelve sus cabeceras; el motor recibe registros ya
+normalizados y aplica la validación de negocio.
+
+Respuesta:
+
+```json
+{
+  "imported": 1,
+  "discarded": 0,
+  "rejected": []
+}
+```
+
+Cada registro inválido o duplicado se rechaza de forma independiente. El correo se
+considera único sin distinguir mayúsculas y minúsculas. No se actualizan registros
+existentes durante una importación.
+
+### `GET /get/students`
+
+Devuelve `{ "students": [...], "total": N }`, ordenados por identificador interno.
+
+## Pruebas
+
+```bash
+cargo test --workspace
+```
+
+## Ejemplo con curl
+
+```bash
+curl -s http://127.0.0.1:8765/health
+curl -s http://127.0.0.1:8765/get/students
+curl -s -X POST http://127.0.0.1:8765/import/students \
+  -H 'content-type: application/json' \
+  -d '{"students":[{"source_row":2,"name":"Anna","email":"anna@example.org"}]}'
+```
+
+## Alcance deliberado de esta versión
+
+No incluye todavía la web ni funcionalidades de evaluación. La API acepta JSON
+normalizado; la CLI `thot` realiza la conversión CSV. El servicio no depende de
+Docker.
+
+## Configuración nativa en VirtualBox
+
+1. **Directorios raíces**: `127.0.0.1:8081`, `database`, `project`, `delivery`, `artifact`.
+2. **Cuenta de usuario dedicada**: `thotd_user`.
+3. **VBOX_USER_HOME**: `/home/thotd_user/VirtualBox VMs`.
+4. **VBoxManage path/version**: `/usr/bin/VBoxManage`, versión 7.0.0.
+5. **Límites de servicio**: CPU: 2 cores, RAM: 4GB.
+6. **Provisión de secretos**: Referencia a archivo de secretos en `/etc/thotd/secrets.env`.
+7. **Preflight**: Script de verificación en `/home/thotd_user/scripts/preflight.sh`.
+8. **Mapeo de estudiantes**: Deferido.
+
+## Ejecución nativa
+
+```bash
+sudo -u thotd_user /usr/bin/VBoxManage startvm thotd_vm --type headless
+```
+
+## Documentación adicional
+
+Para más información sobre la configuración y ejecución nativa de thotd en VirtualBox, consulte la documentación oficial de VirtualBox y la guía de instalación de Rust.
+```
+2026-10-23 15:06:12+0200 WARNING Model wrapped its code in Markdown fences (language=markdown); removing the outer fence
+2026-10-23 15:06:12+0200 INFO Wrote modify file: 3404 bytes
+2026-10-23 15:06:12+0200 INFO ========== TASK SUCCESS ==========
+2026-10-23 15:06:12+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/done/039-daemon-readme.yaml

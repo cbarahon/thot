@@ -61,6 +61,22 @@ pub struct GetStudentsResponse {
     pub total: usize,
 }
 
+pub mod deliveries;
+pub mod expedients;
+pub mod test_results;
+pub mod vm_activity;
+
+pub use deliveries::DeliveryIdentity as Delivery;
+pub use test_results::TestResult as NormalizedTestResult;
+pub use vm_activity::VMActivityProject as VMActivity;
+
+/// Request accepted by the POC run-creation endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryRunRequest {
+    pub project_id: String,
+    pub delivery_directory: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

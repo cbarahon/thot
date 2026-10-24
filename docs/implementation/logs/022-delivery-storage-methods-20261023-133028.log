@@ -1,0 +1,38 @@
+2026-10-23 13:30:28+0200 INFO ========== TASK START ==========
+2026-10-23 13:30:28+0200 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/022-delivery-storage-methods.yaml
+2026-10-23 13:30:28+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/022-delivery-storage-methods.yaml
+2026-10-23 13:30:28+0200 INFO Reading YAML task
+2026-10-23 13:30:28+0200 INFO Parsed YAML:
+id: 022-delivery-storage-methods
+title: Add delivery and result persistence methods
+depends_on:
+- 021-delivery-storage-schema
+file: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_storage.rs
+action: modify
+prompt: Extend this repository with focused async methods to register/reuse a delivery
+  by collection/source reference/content hash, create/update runs and expedients,
+  persist each test result incrementally, retrieve runs/expedients/results, and mark
+  cleanup pending/completed. Preserve prior expedients on re-execution, never overwrite
+  prior test_result IDs, and provide transactions where a run and its child records
+  must be created atomically. Do not add mapping logic or touch other files.
+
+2026-10-23 13:30:28+0200 INFO Task ID: 022-delivery-storage-methods
+2026-10-23 13:30:28+0200 INFO Task title: Add delivery and result persistence methods
+2026-10-23 13:30:28+0200 INFO Action: modify
+2026-10-23 13:30:28+0200 INFO Target: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_storage.rs
+2026-10-23 13:30:28+0200 ERROR ========== TASK FAILURE: FileNotFoundError: Modify action requires an existing target: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_storage.rs ==========
+Traceback (most recent call last):
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 384, in process_one
+    apply_task(
+    ~~~~~~~~~~^
+        task,
+        ^^^^^
+    ...<4 lines>...
+        logger=logger,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 297, in apply_task
+    raise FileNotFoundError(f"Modify action requires an existing target: {target}")
+FileNotFoundError: Modify action requires an existing target: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_storage.rs
+2026-10-23 13:30:28+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/failure/022-delivery-storage-methods.yaml

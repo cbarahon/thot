@@ -211,6 +211,37 @@ def call_ollama(
     return content
 
 
+def normalize_model_output(output: str, logger: logging.Logger) -> str:
+    """Remove a single Markdown fence if it wraps the entire response.
+
+    Models often ignore the no-Markdown instruction. Unwrap only a clean outer
+    fence; reject prose surrounding the code rather than accidentally writing it.
+    """
+    text = output.strip()
+    if not text:
+        raise RuntimeError("Model returned an empty response")
+
+    lines = text.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        if len(lines) < 3 or lines[-1].strip() != "```":
+            raise RuntimeError("Model output starts with a Markdown fence but has no matching closing fence")
+        language = lines[0].strip()[3:].strip()
+        body = "\n".join(lines[1:-1]).strip("\n")
+        if not body.strip():
+            raise RuntimeError("Model returned an empty fenced code block")
+        logger.warning(
+            "Model wrapped its code in Markdown fences%s; removing the outer fence",
+            f" (language={language})" if language else "",
+        )
+        text = body
+    elif text.endswith("```") or "```" in text:
+        raise RuntimeError("Model output contains Markdown fences that do not wrap the entire response")
+
+    if not text.strip():
+        raise RuntimeError("Model returned an empty response after normalization")
+    return text + ("" if text.endswith("\n") else "\n")
+
+
 def validate_target_path(path_text: str, workspace: Path | None) -> Path:
     target = Path(path_text).expanduser()
     if not target.is_absolute():
@@ -288,10 +319,9 @@ def apply_task(
         logger=logger,
     )
 
-    # A simple guard against common accidental Markdown wrappers. Do not strip
-    # arbitrary text: if the model violates the output contract, fail safely.
-    if output.lstrip().startswith("```") or output.rstrip().endswith("```"):
-        raise RuntimeError("Model output contains Markdown code fences; refusing to write it")
+    # Models frequently wrap source code in a Markdown fence despite the prompt.
+    # Unwrap a single outer fence; reject malformed fences or surrounding prose.
+    output = normalize_model_output(output, logger)
 
     # Recheck state immediately before writing to reduce accidental overwrites.
     if action == "create" and target.exists():

@@ -1,6 +1,11 @@
+mod vm_activity_config;
+
 use std::{env, net::SocketAddr};
-use thot_engine::{SqliteStudentRepository, StudentService};
+use thot_engine::{
+    DeliveryRunService, SqliteStudentRepository, StudentService, vm_activity::VmActivityRuntime,
+};
 use tracing_subscriber::EnvFilter;
+use vm_activity_config::VmActivityConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -10,27 +15,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let host = env::var("THOTD_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port: u16 = env::var("THOTD_PORT")
-        .unwrap_or_else(|_| "8765".into())
-        .parse()?;
-    let database =
-        env::var("THOTD_DATABASE").unwrap_or_else(|_| "sqlite:./data/thot.sqlite3".into());
+    let config = VmActivityConfig::from_env().map_err(std::io::Error::other)?;
+    for root in [
+        &config.project_root,
+        &config.delivery_root,
+        &config.artifact_root,
+        &config.storage_root,
+        &config.vbox_user_home,
+    ] {
+        std::fs::create_dir_all(root)?;
+    }
+    let database = env::var("THOTD_DATABASE").unwrap_or_else(|_| config.database_url.clone());
+    let student_repository = SqliteStudentRepository::connect(&database).await?;
+    let runtime = VmActivityRuntime {
+        vbox_manage: config.vbox_manage_path.clone(),
+        vbox_user_home: config.vbox_user_home.clone(),
+        expected_vbox_version: config.expected_vbox_version.clone(),
+        storage_root: config.storage_root.clone(),
+        artifact_root: config.artifact_root.clone(),
+        max_ova_bytes: config.ova_size_limit,
+        free_space_reserve: config.free_space_reserve,
+        output_limit: config.output_limit,
+        import_timeout: config.import_timeout,
+        startup_timeout: config.startup_timeout,
+        ssh_timeout: config.ssh_timeout,
+        shutdown_grace: config.shutdown_grace,
+        ssh_secret_file: config.ssh_secret_source.clone(),
+        firewall_confirmed: config.firewall_confirmation,
+    };
+    let run_service = DeliveryRunService::connect(
+        &database,
+        config.project_root.clone(),
+        config.delivery_root.clone(),
+        config.artifact_root.clone(),
+        runtime,
+    )
+    .await?;
 
-    let repository = SqliteStudentRepository::connect(&database).await?;
-    let service = StudentService::new(repository);
-    let app = thot_api::router(service);
-    let address: SocketAddr = format!("{host}:{port}").parse()?;
+    let app = thot_api::router_with_runs(StudentService::new(student_repository), run_service);
+    let bind_ip = config.bind_host.parse()?;
+    let address = SocketAddr::new(bind_ip, config.bind_port);
     let listener = tokio::net::TcpListener::bind(address).await?;
-
-    tracing::info!(%address, %database, "thotd iniciado");
-    axum_serve(listener, app).await?;
+    tracing::info!(%address, %database, "thotd started");
+    axum::serve(listener, app).await?;
     Ok(())
-}
-
-async fn axum_serve(
-    listener: tokio::net::TcpListener,
-    app: axum::Router,
-) -> Result<(), std::io::Error> {
-    axum::serve(listener, app).await
 }

@@ -1,0 +1,376 @@
+2026-10-23 13:30:28+0200 INFO ========== TASK START ==========
+2026-10-23 13:30:28+0200 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/039-daemon-readme.yaml
+2026-10-23 13:30:28+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/039-daemon-readme.yaml
+2026-10-23 13:30:28+0200 INFO Reading YAML task
+2026-10-23 13:30:28+0200 INFO Parsed YAML:
+id: 039-daemon-readme
+title: Document native thotd POC setup
+depends_on:
+- 033-daemon-wiring
+file: /home/carlos/worktrees/thot/apps/thotd/README.md
+action: modify
+prompt: Document how to configure and run thotd natively on the VirtualBox host for
+  this POC. Explain 127.0.0.1:8081, database/project/delivery/artifact roots, dedicated
+  OS account and VBOX_USER_HOME, VBoxManage path/version, service limits, secret reference
+  provisioning, preflight, and that student mapping is deferred. Do not document secret
+  values or Docker-based VirtualBox control. Edit only this file.
+
+2026-10-23 13:30:28+0200 INFO Task ID: 039-daemon-readme
+2026-10-23 13:30:28+0200 INFO Task title: Document native thotd POC setup
+2026-10-23 13:30:28+0200 INFO Action: modify
+2026-10-23 13:30:28+0200 INFO Target: /home/carlos/worktrees/thot/apps/thotd/README.md
+2026-10-23 13:30:28+0200 INFO Read current file: 2490 characters
+2026-10-23 13:30:28+0200 DEBUG Current file content:
+# thotd — Thot engine (primera funcionalidad)
+
+Implementación inicial en Rust de la API de estudiantes. El workspace Cargo mantiene
+separados el ejecutable, la API HTTP, los casos de uso y los modelos.
+
+## Arquitectura
+
+- `thot-core`: contratos JSON y modelos.
+- `thot-engine`: casos de uso y persistencia SQLite.
+- `thot-api`: rutas HTTP y traducción de errores a respuestas HTTP.
+- `apps/thotd`: configuración del proceso y arranque del servidor.
+
+## Requisitos
+
+Rust stable (edition 2024) y Cargo.
+
+## Ejecución local
+
+```bash
+cargo run -p thotd
+```
+
+Por defecto escucha en `127.0.0.1:8765` y guarda los datos en `./data/thot.sqlite3`.
+Las variables de entorno disponibles son:
+
+- `THOTD_HOST` (por defecto `127.0.0.1`)
+- `THOTD_PORT` (por defecto `8765`)
+- `THOTD_DATABASE` (por defecto `./data/thot.sqlite3`)
+- `RUST_LOG` (por defecto `info`)
+
+Para permitir conexiones desde otros contenedores, configure `THOTD_HOST=0.0.0.0`.
+
+El despliegue con Docker todavía no está configurado.
+
+## API
+
+### `GET /health`
+
+Comprueba que el proceso responde.
+
+### `POST /import/students`
+
+```json
+{
+  "students": [
+    {
+      "source_row": 2,
+      "name": "Anna",
+      "surname": "Garcia",
+      "email": "anna@example.org",
+      "external_id": "A001",
+      "group": "ASIX2",
+      "center": "Institut Exemple",
+      "birth_date": null
+    }
+  ]
+}
+```
+
+`source_row` es opcional y permite conservar la fila original del CSV. La CLI
+`thot` convierte CSV y resuelve sus cabeceras; el motor recibe registros ya
+normalizados y aplica la validación de negocio.
+
+Respuesta:
+
+```json
+{
+  "imported": 1,
+  "discarded": 0,
+  "rejected": []
+}
+```
+
+Cada registro inválido o duplicado se rechaza de forma independiente. El correo se
+considera único sin distinguir mayúsculas y minúsculas. No se actualizan registros
+existentes durante una importación.
+
+### `GET /get/students`
+
+Devuelve `{ "students": [...], "total": N }`, ordenados por identificador interno.
+
+## Pruebas
+
+```bash
+cargo test --workspace
+```
+
+## Ejemplo con curl
+
+```bash
+curl -s http://127.0.0.1:8765/health
+curl -s http://127.0.0.1:8765/get/students
+curl -s -X POST http://127.0.0.1:8765/import/students \
+  -H 'content-type: application/json' \
+  -d '{"students":[{"source_row":2,"name":"Anna","email":"anna@example.org"}]}'
+```
+
+## Alcance deliberado de esta versión
+
+No incluye todavía la web ni funcionalidades de evaluación. La API acepta JSON
+normalizado; la CLI `thot` realiza la conversión CSV. El servicio no depende de
+Docker.
+
+2026-10-23 13:30:28+0200 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 039-daemon-readme
+Title: Document native thotd POC setup
+Action: modify
+Target file: /home/carlos/worktrees/thot/apps/thotd/README.md
+
+TASK INSTRUCTIONS
+Document how to configure and run thotd natively on the VirtualBox host for this POC. Explain 127.0.0.1:8081, database/project/delivery/artifact roots, dedicated OS account and VBOX_USER_HOME, VBoxManage path/version, service limits, secret reference provisioning, preflight, and that student mapping is deferred. Do not document secret values or Docker-based VirtualBox control. Edit only this file.
+
+CURRENT CONTENT OF THE TARGET FILE
+The following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.
+----- BEGIN CURRENT FILE -----
+# thotd — Thot engine (primera funcionalidad)
+
+Implementación inicial en Rust de la API de estudiantes. El workspace Cargo mantiene
+separados el ejecutable, la API HTTP, los casos de uso y los modelos.
+
+## Arquitectura
+
+- `thot-core`: contratos JSON y modelos.
+- `thot-engine`: casos de uso y persistencia SQLite.
+- `thot-api`: rutas HTTP y traducción de errores a respuestas HTTP.
+- `apps/thotd`: configuración del proceso y arranque del servidor.
+
+## Requisitos
+
+Rust stable (edition 2024) y Cargo.
+
+## Ejecución local
+
+```bash
+cargo run -p thotd
+```
+
+Por defecto escucha en `127.0.0.1:8765` y guarda los datos en `./data/thot.sqlite3`.
+Las variables de entorno disponibles son:
+
+- `THOTD_HOST` (por defecto `127.0.0.1`)
+- `THOTD_PORT` (por defecto `8765`)
+- `THOTD_DATABASE` (por defecto `./data/thot.sqlite3`)
+- `RUST_LOG` (por defecto `info`)
+
+Para permitir conexiones desde otros contenedores, configure `THOTD_HOST=0.0.0.0`.
+
+El despliegue con Docker todavía no está configurado.
+
+## API
+
+### `GET /health`
+
+Comprueba que el proceso responde.
+
+### `POST /import/students`
+
+```json
+{
+  "students": [
+    {
+      "source_row": 2,
+      "name": "Anna",
+      "surname": "Garcia",
+      "email": "anna@example.org",
+      "external_id": "A001",
+      "group": "ASIX2",
+      "center": "Institut Exemple",
+      "birth_date": null
+    }
+  ]
+}
+```
+
+`source_row` es opcional y permite conservar la fila original del CSV. La CLI
+`thot` convierte CSV y resuelve sus cabeceras; el motor recibe registros ya
+normalizados y aplica la validación de negocio.
+
+Respuesta:
+
+```json
+{
+  "imported": 1,
+  "discarded": 0,
+  "rejected": []
+}
+```
+
+Cada registro inválido o duplicado se rechaza de forma independiente. El correo se
+considera único sin distinguir mayúsculas y minúsculas. No se actualizan registros
+existentes durante una importación.
+
+### `GET /get/students`
+
+Devuelve `{ "students": [...], "total": N }`, ordenados por identificador interno.
+
+## Pruebas
+
+```bash
+cargo test --workspace
+```
+
+## Ejemplo con curl
+
+```bash
+curl -s http://127.0.0.1:8765/health
+curl -s http://127.0.0.1:8765/get/students
+curl -s -X POST http://127.0.0.1:8765/import/students \
+  -H 'content-type: application/json' \
+  -d '{"students":[{"source_row":2,"name":"Anna","email":"anna@example.org"}]}'
+```
+
+## Alcance deliberado de esta versión
+
+No incluye todavía la web ni funcionalidades de evaluación. La API acepta JSON
+normalizado; la CLI `thot` realiza la conversión CSV. El servicio no depende de
+Docker.
+
+----- END CURRENT FILE -----
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-23 13:30:28+0200 INFO Calling Ollama URL: http://127.0.0.1:11434/api/chat
+2026-10-23 13:30:28+0200 INFO Ollama model: qwen3.5:4b
+2026-10-23 13:30:28+0200 DEBUG Request payload:
+{
+  "model": "qwen3.5:4b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 039-daemon-readme\nTitle: Document native thotd POC setup\nAction: modify\nTarget file: /home/carlos/worktrees/thot/apps/thotd/README.md\n\nTASK INSTRUCTIONS\nDocument how to configure and run thotd natively on the VirtualBox host for this POC. Explain 127.0.0.1:8081, database/project/delivery/artifact roots, dedicated OS account and VBOX_USER_HOME, VBoxManage path/version, service limits, secret reference provisioning, preflight, and that student mapping is deferred. Do not document secret values or Docker-based VirtualBox control. Edit only this file.\n\nCURRENT CONTENT OF THE TARGET FILE\nThe following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.\n----- BEGIN CURRENT FILE -----\n# thotd — Thot engine (primera funcionalidad)\n\nImplementación inicial en Rust de la API de estudiantes. El workspace Cargo mantiene\nseparados el ejecutable, la API HTTP, los casos de uso y los modelos.\n\n## Arquitectura\n\n- `thot-core`: contratos JSON y modelos.\n- `thot-engine`: casos de uso y persistencia SQLite.\n- `thot-api`: rutas HTTP y traducción de errores a respuestas HTTP.\n- `apps/thotd`: configuración del proceso y arranque del servidor.\n\n## Requisitos\n\nRust stable (edition 2024) y Cargo.\n\n## Ejecución local\n\n```bash\ncargo run -p thotd\n```\n\nPor defecto escucha en `127.0.0.1:8765` y guarda los datos en `./data/thot.sqlite3`.\nLas variables de entorno disponibles son:\n\n- `THOTD_HOST` (por defecto `127.0.0.1`)\n- `THOTD_PORT` (por defecto `8765`)\n- `THOTD_DATABASE` (por defecto `./data/thot.sqlite3`)\n- `RUST_LOG` (por defecto `info`)\n\nPara permitir conexiones desde otros contenedores, configure `THOTD_HOST=0.0.0.0`.\n\nEl despliegue con Docker todavía no está configurado.\n\n## API\n\n### `GET /health`\n\nComprueba que el proceso responde.\n\n### `POST /import/students`\n\n```json\n{\n  \"students\": [\n    {\n      \"source_row\": 2,\n      \"name\": \"Anna\",\n      \"surname\": \"Garcia\",\n      \"email\": \"anna@example.org\",\n      \"external_id\": \"A001\",\n      \"group\": \"ASIX2\",\n      \"center\": \"Institut Exemple\",\n      \"birth_date\": null\n    }\n  ]\n}\n```\n\n`source_row` es opcional y permite conservar la fila original del CSV. La CLI\n`thot` convierte CSV y resuelve sus cabeceras; el motor recibe registros ya\nnormalizados y aplica la validación de negocio.\n\nRespuesta:\n\n```json\n{\n  \"imported\": 1,\n  \"discarded\": 0,\n  \"rejected\": []\n}\n```\n\nCada registro inválido o duplicado se rechaza de forma independiente. El correo se\nconsidera único sin distinguir mayúsculas y minúsculas. No se actualizan registros\nexistentes durante una importación.\n\n### `GET /get/students`\n\nDevuelve `{ \"students\": [...], \"total\": N }`, ordenados por identificador interno.\n\n## Pruebas\n\n```bash\ncargo test --workspace\n```\n\n## Ejemplo con curl\n\n```bash\ncurl -s http://127.0.0.1:8765/health\ncurl -s http://127.0.0.1:8765/get/students\ncurl -s -X POST http://127.0.0.1:8765/import/students \\\n  -H 'content-type: application/json' \\\n  -d '{\"students\":[{\"source_row\":2,\"name\":\"Anna\",\"email\":\"anna@example.org\"}]}'\n```\n\n## Alcance deliberado de esta versión\n\nNo incluye todavía la web ni funcionalidades de evaluación. La API acepta JSON\nnormalizado; la CLI `thot` realiza la conversión CSV. El servicio no depende de\nDocker.\n\n----- END CURRENT FILE -----\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-23 13:30:28+0200 ERROR ========== TASK FAILURE: ConnectionError: HTTPConnectionPool(host='127.0.0.1', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7f8aae01acf0>: Failed to establish a new connection: [Errno 111] Connection refused')) ==========
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+        (self._dns_host, self.port),
+    ...<2 lines>...
+        socket_options=self.socket_options,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/usr/lib/python3/dist-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+ConnectionRefusedError: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+    ~~~~~~~~~~~~^
+        method,
+        ^^^^^^^
+    ...<6 lines>...
+        enforce_content_length=enforce_content_length,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 445, in request
+    self.endheaders()
+    ~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 1362, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/http/client.py", line 1122, in _send_output
+    self.send(msg)
+    ~~~~~~~~~^^^^^
+  File "/usr/lib/python3.13/http/client.py", line 1066, in send
+    self.connect()
+    ~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 276, in connect
+    self.sock = self._new_conn()
+                ~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 213, in _new_conn
+    raise NewConnectionError(
+        self, f"Failed to establish a new connection: {e}"
+    ) from e
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x7f8aae01acf0>: Failed to establish a new connection: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='127.0.0.1', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7f8aae01acf0>: Failed to establish a new connection: [Errno 111] Connection refused'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 384, in process_one
+    apply_task(
+    ~~~~~~~~~~^
+        task,
+        ^^^^^
+    ...<4 lines>...
+        logger=logger,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 306, in apply_task
+    output = call_ollama(
+        prompt,
+    ...<3 lines>...
+        logger=logger,
+    )
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 177, in call_ollama
+    response = requests.post(url, json=payload, timeout=timeout)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='127.0.0.1', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7f8aae01acf0>: Failed to establish a new connection: [Errno 111] Connection refused'))
+2026-10-23 13:30:28+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/failure/039-daemon-readme.yaml

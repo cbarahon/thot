@@ -8,3 +8,14 @@ license.workspace = true
 thot-core = { path = "../thot-core" }
 sqlx.workspace = true
 thiserror.workspace = true
+thot-runner = { path = "../thot-runner" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+ssh2.workspace = true

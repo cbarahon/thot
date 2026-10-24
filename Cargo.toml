@@ -6,6 +6,7 @@ members = [
   "crates/thot-api",
   "apps/thotd",
   "apps/thot-cli",
+  "crates/thot-runner",
 ]
 
 [workspace.package]
@@ -22,3 +23,11 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = "0.3"
+ssh2 = "0.9.6"
+serde_yaml = "0.9"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4", "serde"] }

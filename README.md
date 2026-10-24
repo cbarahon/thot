@@ -1,33 +1,38 @@
 # Thot
 
-Sistema de corrección y evaluación automatizada.
+Automated assessment engine and CLI. The current POC imports VirtualBox OVAs,
+collects technical observations and evidence, and creates delivery expedients
+before student mapping or grading.
 
 ## Estructura
 
 - `apps/thotd/`: ejecutable del servicio de motor.
-- `apps/thot-cli/`: CLI `thot` para importar estudiantes desde CSV y consultar estudiantes.
-- `crates/`: componentes Rust reutilizables del motor.
+- `apps/thot-cli/`: CLI `thot` for student CSV operations and VM activity runs.
+- `crates/`: reusable domain, API, engine, and runner components.
 - `web/`: interfaz web, todavía no implementada.
-- `runners/`: entornos de ejecución de pruebas, todavía no implementados.
-- `deploy/`: configuración de despliegue, todavía no completada.
+- `runners/`: future runner integrations.
+- `deploy/`: native VirtualBox POC installation guide and deployment assets.
 - `dev/`: herramientas y automatización de desarrollo.
 - `docs/`: documentación del proyecto.
 
-## Funcionalidad disponible
+## VM activity POC
 
-`thotd` importa registros de estudiantes enviados como JSON y permite consultar
-los estudiantes guardados. La importación descarta registros inválidos o
-duplicados de forma individual y devuelve el motivo de cada descarte.
+The POC uses a native Linux host with a dedicated unprivileged service account,
+VirtualBox profile, and VM storage root. `thotd` runs on the host at
+`127.0.0.1:8081`; guest HTTP/SSH forwards use loopback ports 8080 and 2222.
+The CLI can create sequential runs, inspect run status and expedients, and
+request manifest-checked cleanup. Student association and grading are outside
+this POC.
 
-El servicio escucha por defecto en `127.0.0.1:8765` y guarda los datos en
-`./data/thot.sqlite3`. La CLI `thot` importa CSV y consulta estudiantes. La
-interfaz web todavía no está implementada.
+Read [`docs/THOT_VM_ACTIVITY_POC.md`](docs/THOT_VM_ACTIVITY_POC.md) for the
+activity contract and [`deploy/README.md`](deploy/README.md) for production
+artifact installation, host configuration, and manual acceptance steps. The
+static web UI is not required for this POC.
 
 ## Desarrollo
 
 ```bash
 make build
-make test
 ```
 
 El ejecutable y las pruebas usan el workspace Cargo del repositorio. `target/`

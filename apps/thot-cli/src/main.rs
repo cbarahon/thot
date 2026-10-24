@@ -1,3 +1,6 @@
+mod api_client;
+mod delivery_commands;
+
 use std::{
     collections::HashMap,
     error::Error,
@@ -12,7 +15,7 @@ use tokio::{
 };
 
 const DEFAULT_HOST: &str = "localhost";
-const DEFAULT_PORT: u16 = 8765;
+const DEFAULT_PORT: u16 = 8081;
 
 #[derive(Debug, Default)]
 struct CliOptions {
@@ -23,9 +26,9 @@ struct CliOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Settings {
-    host: String,
-    port: u16,
+pub(crate) struct Settings {
+    pub(crate) host: String,
+    pub(crate) port: u16,
 }
 
 #[derive(Debug, Default)]
@@ -49,6 +52,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     let settings = resolve_settings(&options, &cwd, home_dir().as_deref())?;
     match options.command.as_slice() {
+        [run, ..] if run == "run" => {
+            delivery_commands::handle(&options.command[1..], &settings).await?;
+        }
         [import, students, path] if import == "import" && students == "students" => {
             let (records, malformed) = read_students_csv(Path::new(path))?;
             let payload = serde_json::to_vec(&serde_json::json!({ "students": records }))?;
@@ -629,7 +635,7 @@ fn optional_display(value: &Option<String>) -> String {
 
 fn print_usage() {
     println!(
-        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: localhost)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8765)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
+        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot [-h servidor] [-p puerto] run create --project ID --deliveries DIR\n  thot [-h servidor] [-p puerto] run status RUN_ID\n  thot [-h servidor] [-p puerto] run expedient EXPEDIENT_ID\n  thot [-h servidor] [-p puerto] run cancel RUN_ID\n  thot [-h servidor] [-p puerto] run cleanup EXPEDIENT_ID\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
     );
 }
 

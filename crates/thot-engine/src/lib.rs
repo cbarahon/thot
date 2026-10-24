@@ -1,8 +1,11 @@
-//! Casos de uso y almacenamiento. La capa HTTP no accede directamente a SQL.
+//! Application services and persistence for Thot.
 
+pub mod delivery_run_service;
 pub mod storage;
 mod students;
+pub mod vm_activity;
 
+pub use delivery_run_service::{DeliveryRunService, RunRecord};
 pub use storage::SqliteStudentRepository;
 pub use students::StudentService;
 

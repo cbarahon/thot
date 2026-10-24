@@ -1,102 +1,40 @@
-# thotd — Thot engine (primera funcionalidad)
+# `thotd` engine service
 
-Implementación inicial en Rust de la API de estudiantes. El workspace Cargo mantiene
-separados el ejecutable, la API HTTP, los casos de uso y los modelos.
+`thotd` serves the student import API and the local VirtualBox VM activity API.
+For a production host account and native installation, follow
+[`deploy/README.md`](../../deploy/README.md).
 
-## Arquitectura
+## Runtime configuration
 
-- `thot-core`: contratos JSON y modelos.
-- `thot-engine`: casos de uso y persistencia SQLite.
-- `thot-api`: rutas HTTP y traducción de errores a respuestas HTTP.
-- `apps/thotd`: configuración del proceso y arranque del servidor.
+The service defaults to `127.0.0.1:8081` and a SQLite database at
+`/var/lib/thot/thot.sqlite3`.
+VM activity paths default below `/var/lib/thot`, except projects
+(`/etc/thot/projects`) and `VBoxManage` (`/usr/bin/VBoxManage`). Set host paths
+explicitly before running a POC. Important environment variables include:
 
-## Requisitos
+- `THOTD_BIND_HOST`, `THOTD_BIND_PORT`, `THOTD_DATABASE_URL`
+- `THOTD_PROJECT_ROOT`, `THOTD_DELIVERY_ROOT`, `THOTD_ARTIFACT_ROOT`
+- `THOTD_STORAGE_ROOT`, `THOTD_VBOX_USER_HOME`, `THOTD_VBOX_MANAGE_PATH`
+- `THOTD_EXPECTED_VBOX_VERSION`, `THOTD_OVA_SIZE_LIMIT`, `THOTD_FREE_SPACE_RESERVE`
+- `THOTD_STARTUP_TIMEOUT`, `THOTD_IMPORT_TIMEOUT`, `THOTD_SSH_TIMEOUT`, `THOTD_SHUTDOWN_GRACE`
+- `THOTD_SSH_SECRET_FILE`, `THOTD_FIREWALL_CONFIRMATION`
 
-Rust stable (edition 2024) y Cargo.
+The API bind address must be loopback. The activity run preflight checks that
+the configured VirtualBox version matches, ports 8080 and 2222 are free, the
+dedicated profile has no unaccounted VMs, and the protected SSH secret file is
+available. `THOTD_FIREWALL_CONFIRMATION=true` is an administrator assertion
+after manually checking firewall and guest egress rules.
 
-## Ejecución local
+## API routes
 
-```bash
-cargo run -p thotd
-```
+- `GET /health`
+- `POST /import/students`, `GET /get/students`
+- `POST /api/v1/runs`
+- `GET /api/v1/runs/{run_id}`, `POST /api/v1/runs/{run_id}/cancel`
+- `GET /api/v1/expedients/{expedient_id}`
+- `POST /api/v1/expedients/{expedient_id}/cleanup`
 
-Por defecto escucha en `127.0.0.1:8765` y guarda los datos en `./data/thot.sqlite3`.
-Las variables de entorno disponibles son:
-
-- `THOTD_HOST` (por defecto `127.0.0.1`)
-- `THOTD_PORT` (por defecto `8765`)
-- `THOTD_DATABASE` (por defecto `./data/thot.sqlite3`)
-- `RUST_LOG` (por defecto `info`)
-
-Para permitir conexiones desde otros contenedores, configure `THOTD_HOST=0.0.0.0`.
-
-El despliegue con Docker todavía no está configurado.
-
-## API
-
-### `GET /health`
-
-Comprueba que el proceso responde.
-
-### `POST /import/students`
-
-```json
-{
-  "students": [
-    {
-      "source_row": 2,
-      "name": "Anna",
-      "surname": "Garcia",
-      "email": "anna@example.org",
-      "external_id": "A001",
-      "group": "ASIX2",
-      "center": "Institut Exemple",
-      "birth_date": null
-    }
-  ]
-}
-```
-
-`source_row` es opcional y permite conservar la fila original del CSV. La CLI
-`thot` convierte CSV y resuelve sus cabeceras; el motor recibe registros ya
-normalizados y aplica la validación de negocio.
-
-Respuesta:
-
-```json
-{
-  "imported": 1,
-  "discarded": 0,
-  "rejected": []
-}
-```
-
-Cada registro inválido o duplicado se rechaza de forma independiente. El correo se
-considera único sin distinguir mayúsculas y minúsculas. No se actualizan registros
-existentes durante una importación.
-
-### `GET /get/students`
-
-Devuelve `{ "students": [...], "total": N }`, ordenados por identificador interno.
-
-## Pruebas
-
-```bash
-cargo test --workspace
-```
-
-## Ejemplo con curl
-
-```bash
-curl -s http://127.0.0.1:8765/health
-curl -s http://127.0.0.1:8765/get/students
-curl -s -X POST http://127.0.0.1:8765/import/students \
-  -H 'content-type: application/json' \
-  -d '{"students":[{"source_row":2,"name":"Anna","email":"anna@example.org"}]}'
-```
-
-## Alcance deliberado de esta versión
-
-No incluye todavía la web ni funcionalidades de evaluación. La API acepta JSON
-normalizado; la CLI `thot` realiza la conversión CSV. El servicio no depende de
-Docker.
+Run creation accepts a project ID and a delivery directory below the configured
+delivery root. It performs project and host preflight before scheduling one
+sequential delivery worker. Results and evidence are persisted under the
+artifact root; run metadata is stored in SQLite.
