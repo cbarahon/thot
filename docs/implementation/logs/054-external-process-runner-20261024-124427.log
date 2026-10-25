@@ -1,0 +1,182 @@
+2026-10-24 12:44:27+0200 INFO ========== TASK START ==========
+2026-10-24 12:44:27+0200 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/054-external-process-runner.yaml
+2026-10-24 12:44:27+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/054-external-process-runner.yaml
+2026-10-24 12:44:27+0200 INFO Reading YAML task
+2026-10-24 12:44:27+0200 INFO Parsed YAML:
+id: 054-external-process-runner
+title: Run external tests with bounded output and timeout
+depends_on: []
+file: /home/carlos/worktrees/thot/crates/thot-runner/src/external.rs
+action: create
+prompt: Add a reusable async external-process runner that accepts an executable, argument
+  vector, working directory, environment additions, timeout, and stdout/stderr byte
+  limits. Return exit code, captured stdout/stderr, elapsed duration, and whether
+  output was truncated. Use a 1 MiB per-stream default when no host limit is supplied.
+  Do not invoke a shell implicitly. Kill the child on timeout and drain both output
+  streams without deadlock. Keep process execution independent of project YAML. Edit
+  only this file.
+
+2026-10-24 12:44:27+0200 INFO Task ID: 054-external-process-runner
+2026-10-24 12:44:27+0200 INFO Task title: Run external tests with bounded output and timeout
+2026-10-24 12:44:27+0200 INFO Action: create
+2026-10-24 12:44:27+0200 INFO Target: /home/carlos/worktrees/thot/crates/thot-runner/src/external.rs
+2026-10-24 12:44:27+0200 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 054-external-process-runner
+Title: Run external tests with bounded output and timeout
+Action: create
+Target file: /home/carlos/worktrees/thot/crates/thot-runner/src/external.rs
+
+TASK INSTRUCTIONS
+Add a reusable async external-process runner that accepts an executable, argument vector, working directory, environment additions, timeout, and stdout/stderr byte limits. Return exit code, captured stdout/stderr, elapsed duration, and whether output was truncated. Use a 1 MiB per-stream default when no host limit is supplied. Do not invoke a shell implicitly. Kill the child on timeout and drain both output streams without deadlock. Keep process execution independent of project YAML. Edit only this file.
+
+The target file does not exist yet. Generate its complete contents.
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-24 12:44:27+0200 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-24 12:44:27+0200 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-24 12:44:27+0200 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 054-external-process-runner\nTitle: Run external tests with bounded output and timeout\nAction: create\nTarget file: /home/carlos/worktrees/thot/crates/thot-runner/src/external.rs\n\nTASK INSTRUCTIONS\nAdd a reusable async external-process runner that accepts an executable, argument vector, working directory, environment additions, timeout, and stdout/stderr byte limits. Return exit code, captured stdout/stderr, elapsed duration, and whether output was truncated. Use a 1 MiB per-stream default when no host limit is supplied. Do not invoke a shell implicitly. Kill the child on timeout and drain both output streams without deadlock. Keep process execution independent of project YAML. Edit only this file.\n\nThe target file does not exist yet. Generate its complete contents.\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-24 12:46:58+0200 INFO Ollama HTTP status: 200; elapsed: 151.08 seconds
+2026-10-24 12:46:58+0200 DEBUG Raw Ollama HTTP response:
+{"model":"qwen2.5-coder.16K:7B","created_at":"2026-10-24T10:46:58.133458682Z","message":{"role":"assistant","content":"```rust\nuse std::process::{Command, Stdio};\nuse std::time::Duration;\nuse tokio::process::CommandExt;\nuse tokio::io::{AsyncReadExt, AsyncWriteExt};\nuse tokio::time::timeout;\n\nconst DEFAULT_OUTPUT_LIMIT: usize = 1 * 1024 * 1024; // 1 MiB\n\n#[derive(Debug)]\npub struct ExternalProcessResult {\n    pub exit_code: i32,\n    pub stdout: Vec\u003cu8\u003e,\n    pub stderr: Vec\u003cu8\u003e,\n    pub elapsed: Duration,\n    pub stdout_truncated: bool,\n    pub stderr_truncated: bool,\n}\n\npub async fn run_external_process(\n    executable: \u0026str,\n    args: \u0026[\u0026str],\n    cwd: Option\u003c\u0026str\u003e,\n    env: Option\u003c\u0026[(String, String)]\u003e,\n    timeout: Option\u003cDuration\u003e,\n    stdout_limit: Option\u003cusize\u003e,\n    stderr_limit: Option\u003cusize\u003e,\n) -\u003e ExternalProcessResult {\n    let mut command = Command::new(executable);\n    command.args(args);\n\n    if let Some(cwd) = cwd {\n        command.current_dir(cwd);\n    }\n\n    if let Some(env) = env {\n        for (key, value) in env {\n            command.env(key, value);\n        }\n    }\n\n    let mut child = command\n        .stdout(Stdio::piped())\n        .stderr(Stdio::piped())\n        .spawn()\n        .expect(\"Failed to start external process\");\n\n    let mut stdout = child.stdout.take().unwrap();\n    let mut stderr = child.stderr.take().unwrap();\n\n    let stdout_limit = stdout_limit.unwrap_or(DEFAULT_OUTPUT_LIMIT);\n    let stderr_limit = stderr_limit.unwrap_or(DEFAULT_OUTPUT_LIMIT);\n\n    let mut stdout_buffer = Vec::with_capacity(stdout_limit);\n    let mut stderr_buffer = Vec::with_capacity(stderr_limit);\n\n    let mut stdout_truncated = false;\n    let mut stderr_truncated = false;\n\n    tokio::select! {\n        result = timeout(timeout.unwrap_or(Duration::MAX), async move {\n            let mut buf = [0; 1024];\n            loop {\n                match stdout.read(\u0026mut buf).await {\n                    Ok(0) =\u003e break,\n                    Ok(n) =\u003e {\n                        if stdout_buffer.len() + n \u003e stdout_limit {\n                            stdout_truncated = true;\n                            break;\n                        }\n                        stdout_buffer.extend_from_slice(\u0026buf[..n]);\n                    }\n                    Err(_) =\u003e break,\n                }\n            }\n\n            loop {\n                match stderr.read(\u0026mut buf).await {\n                    Ok(0) =\u003e break,\n                    Ok(n) =\u003e {\n                        if stderr_buffer.len() + n \u003e stderr_limit {\n                            stderr_truncated = true;\n                            break;\n                        }\n                        stderr_buffer.extend_from_slice(\u0026buf[..n]);\n                    }\n                    Err(_) =\u003e break,\n                }\n            }\n\n            child.wait().await.expect(\"Failed to wait for external process\")\n        }) =\u003e {\n            match result {\n                Ok(status) =\u003e ExternalProcessResult {\n                    exit_code: status.code().unwrap_or(-1),\n                    stdout: stdout_buffer,\n                    stderr: stderr_buffer,\n                    elapsed: status.elapsed(),\n                    stdout_truncated,\n                    stderr_truncated,\n                },\n                Err(_) =\u003e ExternalProcessResult {\n                    exit_code: -1,\n                    stdout: stdout_buffer,\n                    stderr: stderr_buffer,\n                    elapsed: Duration::ZERO,\n                    stdout_truncated,\n                    stderr_truncated,\n                },\n            }\n        }\n    }\n}\n```"},"done":true,"done_reason":"stop","total_duration":151072990126,"load_duration":2707066,"prompt_eval_count":303,"prompt_eval_cached_count":4,"prompt_eval_duration":11229698000,"eval_count":711,"eval_duration":139565581000}
+2026-10-24 12:46:58+0200 INFO Model response received: 3485 characters; done_reason='stop'
+2026-10-24 12:46:58+0200 DEBUG Model response content:
+```rust
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use tokio::process::CommandExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::timeout;
+
+const DEFAULT_OUTPUT_LIMIT: usize = 1 * 1024 * 1024; // 1 MiB
+
+#[derive(Debug)]
+pub struct ExternalProcessResult {
+    pub exit_code: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub elapsed: Duration,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+}
+
+pub async fn run_external_process(
+    executable: &str,
+    args: &[&str],
+    cwd: Option<&str>,
+    env: Option<&[(String, String)]>,
+    timeout: Option<Duration>,
+    stdout_limit: Option<usize>,
+    stderr_limit: Option<usize>,
+) -> ExternalProcessResult {
+    let mut command = Command::new(executable);
+    command.args(args);
+
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+
+    if let Some(env) = env {
+        for (key, value) in env {
+            command.env(key, value);
+        }
+    }
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to start external process");
+
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+
+    let stdout_limit = stdout_limit.unwrap_or(DEFAULT_OUTPUT_LIMIT);
+    let stderr_limit = stderr_limit.unwrap_or(DEFAULT_OUTPUT_LIMIT);
+
+    let mut stdout_buffer = Vec::with_capacity(stdout_limit);
+    let mut stderr_buffer = Vec::with_capacity(stderr_limit);
+
+    let mut stdout_truncated = false;
+    let mut stderr_truncated = false;
+
+    tokio::select! {
+        result = timeout(timeout.unwrap_or(Duration::MAX), async move {
+            let mut buf = [0; 1024];
+            loop {
+                match stdout.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if stdout_buffer.len() + n > stdout_limit {
+                            stdout_truncated = true;
+                            break;
+                        }
+                        stdout_buffer.extend_from_slice(&buf[..n]);
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if stderr_buffer.len() + n > stderr_limit {
+                            stderr_truncated = true;
+                            break;
+                        }
+                        stderr_buffer.extend_from_slice(&buf[..n]);
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            child.wait().await.expect("Failed to wait for external process")
+        }) => {
+            match result {
+                Ok(status) => ExternalProcessResult {
+                    exit_code: status.code().unwrap_or(-1),
+                    stdout: stdout_buffer,
+                    stderr: stderr_buffer,
+                    elapsed: status.elapsed(),
+                    stdout_truncated,
+                    stderr_truncated,
+                },
+                Err(_) => ExternalProcessResult {
+                    exit_code: -1,
+                    stdout: stdout_buffer,
+                    stderr: stderr_buffer,
+                    elapsed: Duration::ZERO,
+                    stdout_truncated,
+                    stderr_truncated,
+                },
+            }
+        }
+    }
+}
+```
+2026-10-24 12:46:58+0200 WARNING Model wrapped its code in Markdown fences (language=rust); removing the outer fence
+2026-10-24 12:46:58+0200 INFO Wrote create file: 3474 bytes
+2026-10-24 12:46:58+0200 INFO ========== TASK SUCCESS ==========
+2026-10-24 12:46:58+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/done/054-external-process-runner.yaml

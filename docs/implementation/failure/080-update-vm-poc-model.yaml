@@ -1,0 +1,7 @@
+id: "080-update-vm-poc-model"
+title: "Recast VM POC around configured tests"
+depends_on: ["071-wire-project-test-runs", "076-example-activity-configuration"]
+file: "/home/carlos/worktrees/thot/docs/THOT_VM_ACTIVITY_POC.md"
+action: modify
+prompt: |-
+  Revise the POC specification to use the project-defined test model and the provided Linux Competition example. Replace the fixed mandatory test sequence and standalone YAML policy with a .thot.zip/.thot.tgz root configuration.yaml, ordered tests, repeats, requirements, parameters, and external professor scripts. Keep the VirtualBox host isolation, manifest ownership, timeout/output limits, and always-attempt-cleanup requirements. Explain the one-at-a-time restriction when fixed forwarded ports are used, and describe test_records/<delivery filename>/<test name>/artifacts plus normalized stdout/stderr/exit_code. Permit the configured public SSH pass parameter as requested. Edit only this file.

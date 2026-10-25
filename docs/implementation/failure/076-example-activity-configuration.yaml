@@ -1,0 +1,7 @@
+id: "076-example-activity-configuration"
+title: "Add a project-defined VM activity example"
+depends_on: ["051-project-configuration-loader", "064-test-platform-dispatch"]
+file: "/home/carlos/worktrees/thot/examples/vm-activity-poc/configuration.yaml"
+action: create
+prompt: |-
+  Create a root-level configuration.yaml example for The Linux Competition using the project test schema. Include activity_name, delivery_folder ./delivery, concurrency 1, timeout 120, VirtualBox/import_ova, extern/tests/vm_start_time.py repeated three times and requiring import_ova, VirtualBox/start_vm, ssh/get_host_info with host/port/user/public pass parameters, VirtualBox/stop_vm, and VirtualBox/destroy_vm. Show parameter examples for vm_name, vbox_group, and vm_path ./vms. Do not include host absolute paths or student identities. Edit only this file.

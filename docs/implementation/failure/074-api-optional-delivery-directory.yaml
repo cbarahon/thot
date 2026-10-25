@@ -1,0 +1,7 @@
+id: "074-api-optional-delivery-directory"
+title: "Pass optional delivery directory to run service"
+depends_on: ["073-optional-delivery-directory-api-model", "071-wire-project-test-runs"]
+file: "/home/carlos/worktrees/thot/crates/thot-api/src/delivery_runs.rs"
+action: modify
+prompt: |-
+  Update the create-run route to pass DeliveryRunRequest's optional delivery_directory to DeliveryRunService. Preserve response codes, error conversion, and all other routes. Edit only this file.

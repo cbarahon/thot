@@ -1,0 +1,7 @@
+id: "062-ssh-host-info-test"
+title: "Implement ssh get_host_info test"
+depends_on: ["056-test-invocation-contract"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/tests/ssh.rs"
+action: create
+prompt: |-
+  Implement ssh/get_host_info using the existing ssh2 dependency. Read host, port, user, and pass from the invocation parameters, connect with a bounded timeout, run safe read-only commands to collect hostname, OS/distribution, RAM, and filesystem capacity/free space, and emit the observation as YAML on stdout. Return normalized status/stdout/stderr/exit_code and diagnostics. Never log parameter values. Honor the invocation timeout and close the SSH session on all paths. Edit only this file.

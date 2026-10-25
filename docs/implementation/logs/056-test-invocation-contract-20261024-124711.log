@@ -1,0 +1,119 @@
+2026-10-24 12:47:11+0200 INFO ========== TASK START ==========
+2026-10-24 12:47:11+0200 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/056-test-invocation-contract.yaml
+2026-10-24 12:47:11+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/056-test-invocation-contract.yaml
+2026-10-24 12:47:11+0200 INFO Reading YAML task
+2026-10-24 12:47:11+0200 INFO Parsed YAML:
+id: 056-test-invocation-contract
+title: Define the engine test invocation contract
+depends_on:
+- 045-project-test-model
+- 046-test-result-process-output
+file: /home/carlos/worktrees/thot/crates/thot-engine/src/test_execution.rs
+action: create
+prompt: Define engine-side types for one expanded test invocation and its normalized
+  outcome. The invocation must carry the configured test reference/name, repeat index,
+  merged string parameters, effective timeout, extracted project root, physical project
+  archive parent directory, delivery OVA path/name, per-delivery report directory,
+  per-test artifacts directory, and a clone of VmActivityRuntime. The outcome must
+  carry TestStatus, stdout, stderr, optional exit_code, diagnostics, structured observation,
+  and evidence paths. Add a helper to produce the repeat display name (for example
+  start_time_01) while leaving a non-repeated test named start_time. Do not schedule,
+  persist, or run tests in this file. Edit only this file.
+
+2026-10-24 12:47:11+0200 INFO Task ID: 056-test-invocation-contract
+2026-10-24 12:47:11+0200 INFO Task title: Define the engine test invocation contract
+2026-10-24 12:47:11+0200 INFO Action: create
+2026-10-24 12:47:11+0200 INFO Target: /home/carlos/worktrees/thot/crates/thot-engine/src/test_execution.rs
+2026-10-24 12:47:11+0200 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 056-test-invocation-contract
+Title: Define the engine test invocation contract
+Action: create
+Target file: /home/carlos/worktrees/thot/crates/thot-engine/src/test_execution.rs
+
+TASK INSTRUCTIONS
+Define engine-side types for one expanded test invocation and its normalized outcome. The invocation must carry the configured test reference/name, repeat index, merged string parameters, effective timeout, extracted project root, physical project archive parent directory, delivery OVA path/name, per-delivery report directory, per-test artifacts directory, and a clone of VmActivityRuntime. The outcome must carry TestStatus, stdout, stderr, optional exit_code, diagnostics, structured observation, and evidence paths. Add a helper to produce the repeat display name (for example start_time_01) while leaving a non-repeated test named start_time. Do not schedule, persist, or run tests in this file. Edit only this file.
+
+The target file does not exist yet. Generate its complete contents.
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-24 12:47:11+0200 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-24 12:47:11+0200 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-24 12:47:11+0200 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 056-test-invocation-contract\nTitle: Define the engine test invocation contract\nAction: create\nTarget file: /home/carlos/worktrees/thot/crates/thot-engine/src/test_execution.rs\n\nTASK INSTRUCTIONS\nDefine engine-side types for one expanded test invocation and its normalized outcome. The invocation must carry the configured test reference/name, repeat index, merged string parameters, effective timeout, extracted project root, physical project archive parent directory, delivery OVA path/name, per-delivery report directory, per-test artifacts directory, and a clone of VmActivityRuntime. The outcome must carry TestStatus, stdout, stderr, optional exit_code, diagnostics, structured observation, and evidence paths. Add a helper to produce the repeat display name (for example start_time_01) while leaving a non-repeated test named start_time. Do not schedule, persist, or run tests in this file. Edit only this file.\n\nThe target file does not exist yet. Generate its complete contents.\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-24 12:48:15+0200 INFO Ollama HTTP status: 200; elapsed: 64.13 seconds
+2026-10-24 12:48:15+0200 DEBUG Raw Ollama HTTP response:
+{"model":"qwen2.5-coder.16K:7B","created_at":"2026-10-24T10:48:15.378227647Z","message":{"role":"assistant","content":"```rust\nuse std::path::PathBuf;\nuse std::time::SystemTime;\n\n#[derive(Debug, Clone)]\npub struct TestInvocation {\n    pub test_reference: String,\n    pub repeat_index: usize,\n    pub merged_params: String,\n    pub effective_timeout: u64,\n    pub project_root: PathBuf,\n    pub project_archive_parent: PathBuf,\n    pub delivery_ova_path: PathBuf,\n    pub per_delivery_report_dir: PathBuf,\n    pub per_test_artifacts_dir: PathBuf,\n    pub vm_activity_runtime: VmActivityRuntime,\n}\n\n#[derive(Debug, Clone)]\npub struct TestOutcome {\n    pub status: TestStatus,\n    pub stdout: String,\n    pub stderr: String,\n    pub exit_code: Option\u003ci32\u003e,\n    pub diagnostics: Vec\u003cString\u003e,\n    pub structured_observation: Option\u003cString\u003e,\n    pub evidence_paths: Vec\u003cPathBuf\u003e,\n}\n\n#[derive(Debug, Clone, Copy)]\npub enum TestStatus {\n    Passed,\n    Failed,\n    Skipped,\n    TimedOut,\n}\n\nimpl TestInvocation {\n    pub fn repeat_display_name(\u0026self) -\u003e String {\n        if self.repeat_index == 0 {\n            self.test_reference.clone()\n        } else {\n            format!(\"{}_{}\", self.test_reference, self.repeat_index + 1)\n        }\n    }\n}\n```"},"done":true,"done_reason":"stop","total_duration":64126180854,"load_duration":4463233,"prompt_eval_count":346,"prompt_eval_cached_count":51,"prompt_eval_duration":11230543000,"eval_count":273,"eval_duration":52873916000}
+2026-10-24 12:48:15+0200 INFO Model response received: 1123 characters; done_reason='stop'
+2026-10-24 12:48:15+0200 DEBUG Model response content:
+```rust
+use std::path::PathBuf;
+use std::time::SystemTime;
+
+#[derive(Debug, Clone)]
+pub struct TestInvocation {
+    pub test_reference: String,
+    pub repeat_index: usize,
+    pub merged_params: String,
+    pub effective_timeout: u64,
+    pub project_root: PathBuf,
+    pub project_archive_parent: PathBuf,
+    pub delivery_ova_path: PathBuf,
+    pub per_delivery_report_dir: PathBuf,
+    pub per_test_artifacts_dir: PathBuf,
+    pub vm_activity_runtime: VmActivityRuntime,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestOutcome {
+    pub status: TestStatus,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub diagnostics: Vec<String>,
+    pub structured_observation: Option<String>,
+    pub evidence_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TestStatus {
+    Passed,
+    Failed,
+    Skipped,
+    TimedOut,
+}
+
+impl TestInvocation {
+    pub fn repeat_display_name(&self) -> String {
+        if self.repeat_index == 0 {
+            self.test_reference.clone()
+        } else {
+            format!("{}_{}", self.test_reference, self.repeat_index + 1)
+        }
+    }
+}
+```
+2026-10-24 12:48:15+0200 WARNING Model wrapped its code in Markdown fences (language=rust); removing the outer fence
+2026-10-24 12:48:15+0200 INFO Wrote create file: 1112 bytes
+2026-10-24 12:48:15+0200 INFO ========== TASK SUCCESS ==========
+2026-10-24 12:48:15+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/done/056-test-invocation-contract.yaml

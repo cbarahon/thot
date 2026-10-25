@@ -9,6 +9,11 @@ pub struct VMActivityProject {
     pub ssh_username: String,
     pub ssh_secret_ref: String,
     pub limits: Limits,
+    pub activity_name: String,
+    pub delivery_folder: String,
+    pub concurrency: u32,
+    pub global_timeout: u32,
+    pub tests: Vec<Test>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -23,6 +28,34 @@ pub struct Limits {
     pub memory: u32,
     pub disk_space: u32,
     pub timeout: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Test {
+    pub name: String,
+    pub test_ref: String,
+    pub requirements: Requirements,
+    #[serde(default = "default_repeat")]
+    pub repeat: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u32>,
+    #[serde(default)]
+    pub string_params: Vec<StringParam>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Requirements {
+    // Define requirements here
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct StringParam {
+    pub key: String,
+    pub value: String,
+}
+
+fn default_repeat() -> u32 {
+    1
 }
 
 #[derive(Serialize, Deserialize, Debug)]

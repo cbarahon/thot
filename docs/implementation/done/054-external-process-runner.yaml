@@ -1,0 +1,7 @@
+id: "054-external-process-runner"
+title: "Run external tests with bounded output and timeout"
+depends_on: []
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/external.rs"
+action: create
+prompt: |-
+  Add a reusable async external-process runner that accepts an executable, argument vector, working directory, environment additions, timeout, and stdout/stderr byte limits. Return exit code, captured stdout/stderr, elapsed duration, and whether output was truncated. Use a 1 MiB per-stream default when no host limit is supplied. Do not invoke a shell implicitly. Kill the child on timeout and drain both output streams without deadlock. Keep process execution independent of project YAML. Edit only this file.

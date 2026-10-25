@@ -1,0 +1,7 @@
+id: "066-test-suite-executor"
+title: "Execute ordered tests with requirements and repeats"
+depends_on: ["051-project-configuration-loader", "064-test-platform-dispatch", "065-test-result-artifact-store"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/test_executor.rs"
+action: create
+prompt: |-
+  Implement sequential execution of a validated project's test list for one delivery. Expand repeat N into names such as name_01..name_N. Before each invocation, require every named prerequisite test to have passed; otherwise persist a Skipped result and reason. A prerequisite with repeats passes only when all its repetitions passed. Apply per-test timeout or the project's global timeout, merge shared VM context (including the actual generated VM name from import_ova) with configured parameters, and persist each result immediately through test_result_store. Continue independent later tests after failures. Edit only this file.

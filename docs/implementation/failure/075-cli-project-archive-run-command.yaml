@@ -1,0 +1,7 @@
+id: "075-cli-project-archive-run-command"
+title: "Support archive projects and configured delivery folders in CLI"
+depends_on: ["073-optional-delivery-directory-api-model", "074-api-optional-delivery-directory"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/delivery_commands.rs"
+action: modify
+prompt: |-
+  Update run create parsing so `thot run create --project ID` is valid and omits delivery_directory, letting configuration.yaml choose the folder. Continue accepting `--deliveries DIR` as an optional override and send it only when present. Preserve status, expedient, cancel, and cleanup commands. Mention that ID resolves to an installed .thot.zip or .thot.tgz project archive in the usage error. Edit only this file.

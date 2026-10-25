@@ -1,0 +1,7 @@
+id: "055-export-external-process-runner"
+title: "Export the external process runner"
+depends_on: ["054-external-process-runner"]
+file: "/home/carlos/worktrees/thot/crates/thot-runner/src/lib.rs"
+action: modify
+prompt: |-
+  Export the external process runner module and its public result/configuration types. Preserve existing VBox modules and APIs. Edit only this file.

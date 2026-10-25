@@ -1,0 +1,7 @@
+id: "059-virtualbox-start-test"
+title: "Implement VirtualBox start_vm test"
+depends_on: ["057-virtualbox-test-module"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/tests/virtualbox/start_vm.rs"
+action: create
+prompt: |-
+  Implement VirtualBox/start_vm using the shared platform helper and LocalVirtualBoxRunner. Resolve vm_name from explicit parameters or the successful import_ova result, start the VM headlessly with structured arguments, and return normalized status, stdout, stderr, exit_code, duration observation, and diagnostics. Honor the invocation timeout and do not run if the VM name is unavailable. Edit only this file.

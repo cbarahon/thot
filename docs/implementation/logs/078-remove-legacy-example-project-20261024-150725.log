@@ -1,0 +1,23 @@
+2026-10-24 15:07:25+0200 INFO ========== TASK START ==========
+2026-10-24 15:07:25+0200 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/078-remove-legacy-example-project.yaml
+2026-10-24 15:07:25+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/078-remove-legacy-example-project.yaml
+2026-10-24 15:07:25+0200 INFO Reading YAML task
+2026-10-24 15:07:25+0200 INFO Parsed YAML:
+id: 078-remove-legacy-example-project
+title: Remove the fixed-schema YAML example
+depends_on:
+- 076-example-activity-configuration
+file: /home/carlos/worktrees/thot/examples/vm-activity-poc/project.yaml
+action: delete
+prompt: Delete the obsolete standalone project.yaml example because the project bundle
+  now uses root configuration.yaml inside a .thot.zip or .thot.tgz archive. Do not
+  edit other files. This task has no source file contents to preserve.
+
+2026-10-24 15:07:25+0200 INFO Task ID: 078-remove-legacy-example-project
+2026-10-24 15:07:25+0200 INFO Task title: Remove the fixed-schema YAML example
+2026-10-24 15:07:25+0200 INFO Action: delete
+2026-10-24 15:07:25+0200 INFO Target: /home/carlos/worktrees/thot/examples/vm-activity-poc/project.yaml
+2026-10-24 15:07:25+0200 INFO Delete action: Ollama will not be called
+2026-10-24 15:07:25+0200 INFO Deleted target file
+2026-10-24 15:07:25+0200 INFO ========== TASK SUCCESS ==========
+2026-10-24 15:07:25+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/done/078-remove-legacy-example-project.yaml

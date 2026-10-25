@@ -1,0 +1,7 @@
+id: "071-wire-project-test-runs"
+title: "Run project archives through the configurable executor"
+depends_on: ["053-load-project-archives", "067-delivery-test-executor", "068-export-test-execution-modules", "069-remove-project-ssh-secret-prerequisite", "070-manifest-project-vm-path"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs"
+action: modify
+prompt: |-
+  Change run creation to load the project archive before choosing deliveries. Use the caller's optional delivery-directory override when present; otherwise resolve configuration.delivery_folder relative to the project archive's parent. Reject absolute paths, traversal, symlinks, missing directories, and paths outside the allowed project/activity directory. Run VirtualBox preflight only when the project references VirtualBox tests. Replace the fixed vm_activity::execute_delivery call with delivery_executor, preserving run/expedient database records, cancellation checks, immutable source retention, and partial error status. Edit only this file.

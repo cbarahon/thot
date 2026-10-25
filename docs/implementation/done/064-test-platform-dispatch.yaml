@@ -1,0 +1,7 @@
+id: "064-test-platform-dispatch"
+title: "Dispatch built-in and external tests by reference"
+depends_on: ["058-virtualbox-import-test", "059-virtualbox-start-test", "060-virtualbox-stop-test", "061-virtualbox-destroy-test", "062-ssh-host-info-test", "063-external-test-adapter"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/tests/mod.rs"
+action: create
+prompt: |-
+  Create the test platform dispatcher. Route extern/... references to the external adapter, VirtualBox/import_ova, VirtualBox/start_vm, VirtualBox/stop_vm, and VirtualBox/destroy_vm to their operation modules, and ssh/get_host_info to the SSH implementation. Reject unknown platform/test pairs with a normalized Error outcome. Keep dispatch explicit and allow-listed; do not accept executable names from configuration. Edit only this file.

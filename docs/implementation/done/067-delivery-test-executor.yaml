@@ -1,0 +1,7 @@
+id: "067-delivery-test-executor"
+title: "Run a test suite for one delivery and always clean up"
+depends_on: ["066-test-suite-executor", "061-virtualbox-destroy-test"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_executor.rs"
+action: create
+prompt: |-
+  Implement execution for one delivery using the configured test executor and the existing VM runtime. Create the versioned expedient before tests, retain source filename/hash/project snapshot provenance, run tests in declared order, and preserve partial results. In a finally-style path always invoke manifest-scoped cleanup for resources created by the delivery, even if a declared destroy_vm test ran or another test failed. Record cleanup independently and never assign student IDs. Edit only this file.

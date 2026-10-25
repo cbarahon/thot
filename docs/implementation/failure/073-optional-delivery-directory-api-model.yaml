@@ -1,0 +1,7 @@
+id: "073-optional-delivery-directory-api-model"
+title: "Make run delivery directory optional"
+depends_on: ["045-project-test-model"]
+file: "/home/carlos/worktrees/thot/crates/thot-core/src/lib.rs"
+action: modify
+prompt: |-
+  Change DeliveryRunRequest.delivery_directory to an optional string with a Serde default so API clients can use configuration.delivery_folder. Preserve project_id and accept existing requests that still provide delivery_directory. Do not change route or service code. Edit only this file.

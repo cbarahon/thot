@@ -16,6 +16,9 @@ pub struct TestResult {
     pub diagnostics: String,
     pub observation: HashMap<String, serde_json::Value>,
     pub evidence: Vec<String>,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]

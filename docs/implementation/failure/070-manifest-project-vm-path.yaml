@@ -1,0 +1,7 @@
+id: "070-manifest-project-vm-path"
+title: "Clean up project-selected VM paths safely"
+depends_on: ["053-load-project-archives", "058-virtualbox-import-test", "067-delivery-test-executor"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/vm_activity.rs"
+action: modify
+prompt: |-
+  Adapt cleanup_from_manifest for the new project-selected vm_path and optional vm_name. Validate the recorded VM name, UUID, and canonical storage directory against the immutable project snapshot/configuration and the delivery's ownership manifest before shutdown, unregister, or deletion. Preserve idempotency and refuse paths outside the configured project-relative VM directory; never infer ownership from a name/group prefix. Keep the operator cleanup endpoint compatible. Edit only this file.

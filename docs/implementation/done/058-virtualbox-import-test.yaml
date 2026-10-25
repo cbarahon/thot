@@ -1,0 +1,7 @@
+id: "058-virtualbox-import-test"
+title: "Implement VirtualBox import_ova test"
+depends_on: ["057-virtualbox-test-module"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/tests/virtualbox/import_ova.rs"
+action: create
+prompt: |-
+  Implement the VirtualBox/import_ova built-in test. Import the current delivery OVA with VBoxManage argument arrays, applying optional vm_name, vbox_group, and vm_path parameters and the module defaults. Record a cleanup manifest before import and update it immediately after resource creation with VM name, UUID when available, and owned storage path. Return normalized status/stdout/stderr/exit_code plus YAML-formatted VM name/UUID observation. Never delete resources here; cleanup is handled by destroy_vm and the delivery-finally path. Edit only this file.

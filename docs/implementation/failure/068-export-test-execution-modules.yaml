@@ -1,0 +1,7 @@
+id: "068-export-test-execution-modules"
+title: "Export generic test execution modules"
+depends_on: ["056-test-invocation-contract", "064-test-platform-dispatch", "066-test-suite-executor", "067-delivery-test-executor"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/lib.rs"
+action: modify
+prompt: |-
+  Export the new test_execution, tests, test_executor, test_result_store, and delivery_executor modules from thot-engine. Preserve existing public modules and exports. Edit only this file.

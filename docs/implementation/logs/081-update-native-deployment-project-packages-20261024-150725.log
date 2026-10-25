@@ -1,0 +1,628 @@
+2026-10-24 15:07:25+0200 INFO ========== TASK START ==========
+2026-10-24 15:07:25+0200 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/081-update-native-deployment-project-packages.yaml
+2026-10-24 15:07:25+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/081-update-native-deployment-project-packages.yaml
+2026-10-24 15:07:25+0200 INFO Reading YAML task
+2026-10-24 15:07:25+0200 INFO Parsed YAML:
+id: 081-update-native-deployment-project-packages
+title: Document archive project installation and external tests
+depends_on:
+- 071-wire-project-test-runs
+- 076-example-activity-configuration
+- 077-example-start-time-script
+file: /home/carlos/worktrees/thot/deploy/README.md
+action: modify
+prompt: Update native-host deployment instructions to install a .thot.zip or .thot.tgz
+  project archive containing root configuration.yaml and extern/ scripts, and place
+  the configured delivery and writable vm_path directories relative to the archive
+  as specified. Explain that teacher-supplied extern tests run as child processes
+  with bounded timeout/output and require trusted project authorship. Retain dedicated
+  VirtualBox profile, loopback forwarding, firewall, disk, and manifest cleanup guidance.
+  Remove obsolete instructions requiring a standalone fixed-schema YAML and mandatory
+  THOTD_SSH_SECRET_FILE; the SSH example credentials come from test parameters. Edit
+  only this file.
+
+2026-10-24 15:07:25+0200 INFO Task ID: 081-update-native-deployment-project-packages
+2026-10-24 15:07:25+0200 INFO Task title: Document archive project installation and external tests
+2026-10-24 15:07:25+0200 INFO Action: modify
+2026-10-24 15:07:25+0200 INFO Target: /home/carlos/worktrees/thot/deploy/README.md
+2026-10-24 15:07:25+0200 INFO Read current file: 9609 characters
+2026-10-24 15:07:25+0200 DEBUG Current file content:
+# Native VirtualBox POC deployment
+
+The VM activity runs `thotd` natively on the VirtualBox host. The existing
+container deployment template is not the execution boundary for this POC:
+`VBoxManage` inside a container would use a different VM registry unless the
+host profile and devices were mounted into it, which this deployment does not
+do. Do not run the POC through Docker or Podman.
+
+## Build production artifacts
+
+Build on a Linux machine compatible with the target host. Rust and Cargo are
+needed only on this build machine. The target host receives the two release
+binaries and configuration, not the source tree or Cargo development files.
+
+```sh
+cargo build --release --locked -p thotd -p thot-cli
+install -D -m 0755 target/release/thotd ./dist/thotd
+install -D -m 0755 target/release/thot ./dist/thot
+install -D -m 0644 examples/vm-activity-poc/project.yaml \
+  ./dist/projects/example-vm-activity.yaml
+```
+
+Copy `dist/` to the target; it contains the two production binaries and the
+sample project configuration, without the source tree or development files.
+Keep the binaries from the same build together. Runtime prerequisites on the
+target are a supported Linux host, VirtualBox with `VBoxManage`, SQLite-compatible filesystem storage, and
+GNU `df` from coreutils (the daemon uses `df -B1 --output=avail`), plus the
+shared libraries reported by `ldd dist/thotd` and `ldd dist/thot` (install
+those from the host distribution). Use the same Linux architecture and ABI for
+the build and target hosts. Neither Rust nor Cargo is needed on the target.
+The web UI, lighttpd, Docker, and a container runtime are not required.
+
+## Prepare the host
+
+Use a dedicated, unprivileged OS account for Thot. It must own its VirtualBox
+profile and storage paths and have permission to use the installed VirtualBox
+kernel driver. Do not run `thotd` as root and do not reuse a teacher's normal
+VirtualBox account or profile.
+
+Example paths (adjust to local policy):
+
+```text
+service account: thotd
+projects:       /etc/thot/projects
+deliveries:     /var/lib/thot/deliveries
+artifacts:      /var/lib/thot/artifacts
+VM storage:     /var/lib/thot/vms
+VBox profile:   /var/lib/thot/vbox-profile
+SSH secret:     /etc/thot/secrets/guest-ssh-password
+```
+
+On a fresh Debian/Ubuntu style host, create the service account and writable
+data tree. Install VirtualBox from the host's approved package source first;
+the service account must be allowed to use that installation's kernel driver.
+Some distributions require membership in `vboxusers`; follow the installed
+VirtualBox package's access policy and restart the service after changing
+group membership.
+
+```sh
+sudo useradd --system --create-home --home-dir /var/lib/thot --shell /usr/sbin/nologin thotd
+sudo install -d -o thotd -g thotd -m 0750 \
+  /var/lib/thot/deliveries /var/lib/thot/artifacts /var/lib/thot/vms \
+  /var/lib/thot/vbox-profile
+sudo install -d -o root -g thotd -m 0750 /etc/thot/projects /etc/thot/secrets
+```
+
+The configured paths must remain separate and the VM storage root must be
+empty when starting a run. Make the project directory read-only to the service
+after project installation. Restrict the SSH secret to the service account
+(`root:thotd`, mode `0640`, or stricter). It contains only the guest password.
+Never place the password in project YAML, process arguments, database rows,
+expedients, or logs.
+
+Run all VirtualBox commands as `thotd` with `VBOX_USER_HOME` set to the
+dedicated profile. Import, inspection, power operations, screenshot, and
+cleanup must use the same account, executable, profile, and storage root. Use
+the pinned VirtualBox version recorded during qualification; repeat adapter
+compatibility checks after changing it.
+
+The host firewall must prevent the guest from reaching unrelated host services
+and unnecessary outbound destinations. NAT forwarding is loopback-only:
+guest TCP 80 maps to `127.0.0.1:8080`, and guest TCP 22 maps to
+`127.0.0.1:2222`. Do not use bridged networking. Disable shared folders,
+shared clipboard, drag-and-drop, and USB passthrough. Do not attach host
+directories or devices to imported guests. The `/thot` VM group and VM name
+prefix are labels; the dedicated profile, storage root, and persisted cleanup
+manifest establish run ownership.
+
+Before starting `thotd`, verify that host ports 8080 and 2222 are free. The
+service API defaults to `127.0.0.1:8081`; keep it loopback-only. Configure
+`thot` on the same host, or use an SSH tunnel for operator access. The run
+preflight rejects any OVA exceeding the size limit. Before import, the daemon
+estimates the VM storage needed by summing the VMDK member sizes in the OVA tar
+and requires that estimate plus the configured reserve. This is a conservative
+archive-based estimate; the reserve must account for VirtualBox conversion and
+filesystem overhead. The retained source OVA is separately checked against
+available space in artifact storage. Keep report, HTTP body, and command output
+limits finite. Source OVAs, project snapshots, expedients, logs, and evidence
+remain until an operator explicitly archives or removes them.
+
+## Configure and install
+
+Install the project YAML as `/etc/thot/projects/<project-id>.yaml`. The project
+contains the fixed activity policy and a secret reference only; host paths,
+credentials, and executable commands do not belong in the project. Place OVA
+files directly in a subdirectory of `/var/lib/thot/deliveries`.
+
+Install the repository's sample as a starting point and create a delivery
+folder:
+
+```sh
+sudo install -o root -g thotd -m 0640 dist/projects/example-vm-activity.yaml \
+  /etc/thot/projects/example-vm-activity.yaml
+sudo install -d -o thotd -g thotd -m 0750 \
+  /var/lib/thot/deliveries/batch-01
+```
+
+Provision the guest password into the configured secret file using the host's
+secret-management process. For example, create the file out of band and then
+set its owner to `root:thotd` and mode to `0640`; do not put its value in a
+shell command or this environment file.
+
+Create `/etc/thot/thotd.env` (mode `0640`, root-owned and readable by the
+service) and set the host-specific values:
+
+```ini
+THOTD_BIND_HOST=127.0.0.1
+THOTD_BIND_PORT=8081
+THOTD_DATABASE_URL=sqlite:/var/lib/thot/thot.sqlite3
+THOTD_PROJECT_ROOT=/etc/thot/projects
+THOTD_DELIVERY_ROOT=/var/lib/thot/deliveries
+THOTD_ARTIFACT_ROOT=/var/lib/thot/artifacts
+THOTD_STORAGE_ROOT=/var/lib/thot/vms
+THOTD_VBOX_USER_HOME=/var/lib/thot/vbox-profile
+THOTD_VBOX_MANAGE_PATH=/usr/bin/VBoxManage
+THOTD_EXPECTED_VBOX_VERSION=<qualified-version-without-r-build-suffix>
+THOTD_OVA_SIZE_LIMIT=10737418240
+THOTD_FREE_SPACE_RESERVE=10737418240
+THOTD_OUTPUT_LIMIT=1048576
+THOTD_IMPORT_TIMEOUT=1800
+THOTD_STARTUP_TIMEOUT=180
+THOTD_SSH_TIMEOUT=15
+THOTD_SHUTDOWN_GRACE=30
+THOTD_SSH_SECRET_FILE=/etc/thot/secrets/guest-ssh-password
+THOTD_FIREWALL_CONFIRMATION=true
+```
+
+Set `THOTD_EXPECTED_VBOX_VERSION` to the qualified `VBoxManage --version`
+number (for example, `7.0.20`, without the trailing `r...`). Runs fail
+preflight when the installed version differs. Set
+`THOTD_FIREWALL_CONFIRMATION=true` only after the administrator has checked
+firewall and guest egress rules manually; the service cannot inspect firewall
+policy. The SSH user is fixed as `tvadmin` by the activity project schema.
+
+`THOTD_DATA_ROOT` is an optional shorthand for the default delivery, artifact,
+VM, and VirtualBox profile roots. The API binding, project root, database,
+VirtualBox executable, and secret path should be reviewed for the target host.
+
+Example systemd unit (`/etc/systemd/system/thotd.service`):
+
+```ini
+[Unit]
+Description=Thot VM activity service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thotd
+Group=thotd
+EnvironmentFile=/etc/thot/thotd.env
+Environment=RUST_LOG=info
+ExecStart=/usr/local/sbin/thotd
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/thot
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Install and start it:
+
+```sh
+sudo install -o root -g root -m 0755 dist/thotd /usr/local/sbin/thotd
+sudo install -o root -g root -m 0755 dist/thot /usr/local/bin/thot
+sudo systemctl daemon-reload
+sudo systemctl enable --now thotd
+sudo systemctl status thotd
+```
+
+Review the systemd sandbox against the installed VirtualBox driver and profile
+before use. If the host's VirtualBox setup needs additional access, grant only
+that access to the `thotd` service account; do not disable the service
+hardening wholesale.
+
+## Start and inspect a run
+
+The CLI default is `127.0.0.1:8081`. Use a project ID matching the YAML file
+name without the `.yaml` extension and a delivery directory below the
+configured delivery root:
+
+```sh
+thot run create --project example-vm-activity --deliveries /var/lib/thot/deliveries/batch-01
+thot run status <run-id>
+thot run expedient <expedient-id>
+thot run cleanup <expedient-id>
+```
+
+The host administrator must check that loopback forwarding works, the two VM
+ports are free, the API port is available, the VBox profile is dedicated, and
+the service can capture screenshots. Confirm the firewall and guest egress
+policy before importing any untrusted OVA. Do not run a delivery when those
+checks cannot be made.
+
+Cleanup after an interrupted host or process must use the persisted
+run-specific manifest and verify the VM UUID and storage paths before deletion.
+Never delete by VM name, group, or prefix alone. Verify the VM is unregistered
+and only run-owned storage has been removed. A remaining resource means
+cleanup is pending and must be reported as such; it is not a clean run.
+
+2026-10-24 15:07:25+0200 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 081-update-native-deployment-project-packages
+Title: Document archive project installation and external tests
+Action: modify
+Target file: /home/carlos/worktrees/thot/deploy/README.md
+
+TASK INSTRUCTIONS
+Update native-host deployment instructions to install a .thot.zip or .thot.tgz project archive containing root configuration.yaml and extern/ scripts, and place the configured delivery and writable vm_path directories relative to the archive as specified. Explain that teacher-supplied extern tests run as child processes with bounded timeout/output and require trusted project authorship. Retain dedicated VirtualBox profile, loopback forwarding, firewall, disk, and manifest cleanup guidance. Remove obsolete instructions requiring a standalone fixed-schema YAML and mandatory THOTD_SSH_SECRET_FILE; the SSH example credentials come from test parameters. Edit only this file.
+
+CURRENT CONTENT OF THE TARGET FILE
+The following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.
+----- BEGIN CURRENT FILE -----
+# Native VirtualBox POC deployment
+
+The VM activity runs `thotd` natively on the VirtualBox host. The existing
+container deployment template is not the execution boundary for this POC:
+`VBoxManage` inside a container would use a different VM registry unless the
+host profile and devices were mounted into it, which this deployment does not
+do. Do not run the POC through Docker or Podman.
+
+## Build production artifacts
+
+Build on a Linux machine compatible with the target host. Rust and Cargo are
+needed only on this build machine. The target host receives the two release
+binaries and configuration, not the source tree or Cargo development files.
+
+```sh
+cargo build --release --locked -p thotd -p thot-cli
+install -D -m 0755 target/release/thotd ./dist/thotd
+install -D -m 0755 target/release/thot ./dist/thot
+install -D -m 0644 examples/vm-activity-poc/project.yaml \
+  ./dist/projects/example-vm-activity.yaml
+```
+
+Copy `dist/` to the target; it contains the two production binaries and the
+sample project configuration, without the source tree or development files.
+Keep the binaries from the same build together. Runtime prerequisites on the
+target are a supported Linux host, VirtualBox with `VBoxManage`, SQLite-compatible filesystem storage, and
+GNU `df` from coreutils (the daemon uses `df -B1 --output=avail`), plus the
+shared libraries reported by `ldd dist/thotd` and `ldd dist/thot` (install
+those from the host distribution). Use the same Linux architecture and ABI for
+the build and target hosts. Neither Rust nor Cargo is needed on the target.
+The web UI, lighttpd, Docker, and a container runtime are not required.
+
+## Prepare the host
+
+Use a dedicated, unprivileged OS account for Thot. It must own its VirtualBox
+profile and storage paths and have permission to use the installed VirtualBox
+kernel driver. Do not run `thotd` as root and do not reuse a teacher's normal
+VirtualBox account or profile.
+
+Example paths (adjust to local policy):
+
+```text
+service account: thotd
+projects:       /etc/thot/projects
+deliveries:     /var/lib/thot/deliveries
+artifacts:      /var/lib/thot/artifacts
+VM storage:     /var/lib/thot/vms
+VBox profile:   /var/lib/thot/vbox-profile
+SSH secret:     /etc/thot/secrets/guest-ssh-password
+```
+
+On a fresh Debian/Ubuntu style host, create the service account and writable
+data tree. Install VirtualBox from the host's approved package source first;
+the service account must be allowed to use that installation's kernel driver.
+Some distributions require membership in `vboxusers`; follow the installed
+VirtualBox package's access policy and restart the service after changing
+group membership.
+
+```sh
+sudo useradd --system --create-home --home-dir /var/lib/thot --shell /usr/sbin/nologin thotd
+sudo install -d -o thotd -g thotd -m 0750 \
+  /var/lib/thot/deliveries /var/lib/thot/artifacts /var/lib/thot/vms \
+  /var/lib/thot/vbox-profile
+sudo install -d -o root -g thotd -m 0750 /etc/thot/projects /etc/thot/secrets
+```
+
+The configured paths must remain separate and the VM storage root must be
+empty when starting a run. Make the project directory read-only to the service
+after project installation. Restrict the SSH secret to the service account
+(`root:thotd`, mode `0640`, or stricter). It contains only the guest password.
+Never place the password in project YAML, process arguments, database rows,
+expedients, or logs.
+
+Run all VirtualBox commands as `thotd` with `VBOX_USER_HOME` set to the
+dedicated profile. Import, inspection, power operations, screenshot, and
+cleanup must use the same account, executable, profile, and storage root. Use
+the pinned VirtualBox version recorded during qualification; repeat adapter
+compatibility checks after changing it.
+
+The host firewall must prevent the guest from reaching unrelated host services
+and unnecessary outbound destinations. NAT forwarding is loopback-only:
+guest TCP 80 maps to `127.0.0.1:8080`, and guest TCP 22 maps to
+`127.0.0.1:2222`. Do not use bridged networking. Disable shared folders,
+shared clipboard, drag-and-drop, and USB passthrough. Do not attach host
+directories or devices to imported guests. The `/thot` VM group and VM name
+prefix are labels; the dedicated profile, storage root, and persisted cleanup
+manifest establish run ownership.
+
+Before starting `thotd`, verify that host ports 8080 and 2222 are free. The
+service API defaults to `127.0.0.1:8081`; keep it loopback-only. Configure
+`thot` on the same host, or use an SSH tunnel for operator access. The run
+preflight rejects any OVA exceeding the size limit. Before import, the daemon
+estimates the VM storage needed by summing the VMDK member sizes in the OVA tar
+and requires that estimate plus the configured reserve. This is a conservative
+archive-based estimate; the reserve must account for VirtualBox conversion and
+filesystem overhead. The retained source OVA is separately checked against
+available space in artifact storage. Keep report, HTTP body, and command output
+limits finite. Source OVAs, project snapshots, expedients, logs, and evidence
+remain until an operator explicitly archives or removes them.
+
+## Configure and install
+
+Install the project YAML as `/etc/thot/projects/<project-id>.yaml`. The project
+contains the fixed activity policy and a secret reference only; host paths,
+credentials, and executable commands do not belong in the project. Place OVA
+files directly in a subdirectory of `/var/lib/thot/deliveries`.
+
+Install the repository's sample as a starting point and create a delivery
+folder:
+
+```sh
+sudo install -o root -g thotd -m 0640 dist/projects/example-vm-activity.yaml \
+  /etc/thot/projects/example-vm-activity.yaml
+sudo install -d -o thotd -g thotd -m 0750 \
+  /var/lib/thot/deliveries/batch-01
+```
+
+Provision the guest password into the configured secret file using the host's
+secret-management process. For example, create the file out of band and then
+set its owner to `root:thotd` and mode to `0640`; do not put its value in a
+shell command or this environment file.
+
+Create `/etc/thot/thotd.env` (mode `0640`, root-owned and readable by the
+service) and set the host-specific values:
+
+```ini
+THOTD_BIND_HOST=127.0.0.1
+THOTD_BIND_PORT=8081
+THOTD_DATABASE_URL=sqlite:/var/lib/thot/thot.sqlite3
+THOTD_PROJECT_ROOT=/etc/thot/projects
+THOTD_DELIVERY_ROOT=/var/lib/thot/deliveries
+THOTD_ARTIFACT_ROOT=/var/lib/thot/artifacts
+THOTD_STORAGE_ROOT=/var/lib/thot/vms
+THOTD_VBOX_USER_HOME=/var/lib/thot/vbox-profile
+THOTD_VBOX_MANAGE_PATH=/usr/bin/VBoxManage
+THOTD_EXPECTED_VBOX_VERSION=<qualified-version-without-r-build-suffix>
+THOTD_OVA_SIZE_LIMIT=10737418240
+THOTD_FREE_SPACE_RESERVE=10737418240
+THOTD_OUTPUT_LIMIT=1048576
+THOTD_IMPORT_TIMEOUT=1800
+THOTD_STARTUP_TIMEOUT=180
+THOTD_SSH_TIMEOUT=15
+THOTD_SHUTDOWN_GRACE=30
+THOTD_SSH_SECRET_FILE=/etc/thot/secrets/guest-ssh-password
+THOTD_FIREWALL_CONFIRMATION=true
+```
+
+Set `THOTD_EXPECTED_VBOX_VERSION` to the qualified `VBoxManage --version`
+number (for example, `7.0.20`, without the trailing `r...`). Runs fail
+preflight when the installed version differs. Set
+`THOTD_FIREWALL_CONFIRMATION=true` only after the administrator has checked
+firewall and guest egress rules manually; the service cannot inspect firewall
+policy. The SSH user is fixed as `tvadmin` by the activity project schema.
+
+`THOTD_DATA_ROOT` is an optional shorthand for the default delivery, artifact,
+VM, and VirtualBox profile roots. The API binding, project root, database,
+VirtualBox executable, and secret path should be reviewed for the target host.
+
+Example systemd unit (`/etc/systemd/system/thotd.service`):
+
+```ini
+[Unit]
+Description=Thot VM activity service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thotd
+Group=thotd
+EnvironmentFile=/etc/thot/thotd.env
+Environment=RUST_LOG=info
+ExecStart=/usr/local/sbin/thotd
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/thot
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Install and start it:
+
+```sh
+sudo install -o root -g root -m 0755 dist/thotd /usr/local/sbin/thotd
+sudo install -o root -g root -m 0755 dist/thot /usr/local/bin/thot
+sudo systemctl daemon-reload
+sudo systemctl enable --now thotd
+sudo systemctl status thotd
+```
+
+Review the systemd sandbox against the installed VirtualBox driver and profile
+before use. If the host's VirtualBox setup needs additional access, grant only
+that access to the `thotd` service account; do not disable the service
+hardening wholesale.
+
+## Start and inspect a run
+
+The CLI default is `127.0.0.1:8081`. Use a project ID matching the YAML file
+name without the `.yaml` extension and a delivery directory below the
+configured delivery root:
+
+```sh
+thot run create --project example-vm-activity --deliveries /var/lib/thot/deliveries/batch-01
+thot run status <run-id>
+thot run expedient <expedient-id>
+thot run cleanup <expedient-id>
+```
+
+The host administrator must check that loopback forwarding works, the two VM
+ports are free, the API port is available, the VBox profile is dedicated, and
+the service can capture screenshots. Confirm the firewall and guest egress
+policy before importing any untrusted OVA. Do not run a delivery when those
+checks cannot be made.
+
+Cleanup after an interrupted host or process must use the persisted
+run-specific manifest and verify the VM UUID and storage paths before deletion.
+Never delete by VM name, group, or prefix alone. Verify the VM is unregistered
+and only run-owned storage has been removed. A remaining resource means
+cleanup is pending and must be reported as such; it is not a clean run.
+
+----- END CURRENT FILE -----
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-24 15:07:25+0200 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-24 15:07:25+0200 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-24 15:07:25+0200 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 081-update-native-deployment-project-packages\nTitle: Document archive project installation and external tests\nAction: modify\nTarget file: /home/carlos/worktrees/thot/deploy/README.md\n\nTASK INSTRUCTIONS\nUpdate native-host deployment instructions to install a .thot.zip or .thot.tgz project archive containing root configuration.yaml and extern/ scripts, and place the configured delivery and writable vm_path directories relative to the archive as specified. Explain that teacher-supplied extern tests run as child processes with bounded timeout/output and require trusted project authorship. Retain dedicated VirtualBox profile, loopback forwarding, firewall, disk, and manifest cleanup guidance. Remove obsolete instructions requiring a standalone fixed-schema YAML and mandatory THOTD_SSH_SECRET_FILE; the SSH example credentials come from test parameters. Edit only this file.\n\nCURRENT CONTENT OF THE TARGET FILE\nThe following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.\n----- BEGIN CURRENT FILE -----\n# Native VirtualBox POC deployment\n\nThe VM activity runs `thotd` natively on the VirtualBox host. The existing\ncontainer deployment template is not the execution boundary for this POC:\n`VBoxManage` inside a container would use a different VM registry unless the\nhost profile and devices were mounted into it, which this deployment does not\ndo. Do not run the POC through Docker or Podman.\n\n## Build production artifacts\n\nBuild on a Linux machine compatible with the target host. Rust and Cargo are\nneeded only on this build machine. The target host receives the two release\nbinaries and configuration, not the source tree or Cargo development files.\n\n```sh\ncargo build --release --locked -p thotd -p thot-cli\ninstall -D -m 0755 target/release/thotd ./dist/thotd\ninstall -D -m 0755 target/release/thot ./dist/thot\ninstall -D -m 0644 examples/vm-activity-poc/project.yaml \\\n  ./dist/projects/example-vm-activity.yaml\n```\n\nCopy `dist/` to the target; it contains the two production binaries and the\nsample project configuration, without the source tree or development files.\nKeep the binaries from the same build together. Runtime prerequisites on the\ntarget are a supported Linux host, VirtualBox with `VBoxManage`, SQLite-compatible filesystem storage, and\nGNU `df` from coreutils (the daemon uses `df -B1 --output=avail`), plus the\nshared libraries reported by `ldd dist/thotd` and `ldd dist/thot` (install\nthose from the host distribution). Use the same Linux architecture and ABI for\nthe build and target hosts. Neither Rust nor Cargo is needed on the target.\nThe web UI, lighttpd, Docker, and a container runtime are not required.\n\n## Prepare the host\n\nUse a dedicated, unprivileged OS account for Thot. It must own its VirtualBox\nprofile and storage paths and have permission to use the installed VirtualBox\nkernel driver. Do not run `thotd` as root and do not reuse a teacher's normal\nVirtualBox account or profile.\n\nExample paths (adjust to local policy):\n\n```text\nservice account: thotd\nprojects:       /etc/thot/projects\ndeliveries:     /var/lib/thot/deliveries\nartifacts:      /var/lib/thot/artifacts\nVM storage:     /var/lib/thot/vms\nVBox profile:   /var/lib/thot/vbox-profile\nSSH secret:     /etc/thot/secrets/guest-ssh-password\n```\n\nOn a fresh Debian/Ubuntu style host, create the service account and writable\ndata tree. Install VirtualBox from the host's approved package source first;\nthe service account must be allowed to use that installation's kernel driver.\nSome distributions require membership in `vboxusers`; follow the installed\nVirtualBox package's access policy and restart the service after changing\ngroup membership.\n\n```sh\nsudo useradd --system --create-home --home-dir /var/lib/thot --shell /usr/sbin/nologin thotd\nsudo install -d -o thotd -g thotd -m 0750 \\\n  /var/lib/thot/deliveries /var/lib/thot/artifacts /var/lib/thot/vms \\\n  /var/lib/thot/vbox-profile\nsudo install -d -o root -g thotd -m 0750 /etc/thot/projects /etc/thot/secrets\n```\n\nThe configured paths must remain separate and the VM storage root must be\nempty when starting a run. Make the project directory read-only to the service\nafter project installation. Restrict the SSH secret to the service account\n(`root:thotd`, mode `0640`, or stricter). It contains only the guest password.\nNever place the password in project YAML, process arguments, database rows,\nexpedients, or logs.\n\nRun all VirtualBox commands as `thotd` with `VBOX_USER_HOME` set to the\ndedicated profile. Import, inspection, power operations, screenshot, and\ncleanup must use the same account, executable, profile, and storage root. Use\nthe pinned VirtualBox version recorded during qualification; repeat adapter\ncompatibility checks after changing it.\n\nThe host firewall must prevent the guest from reaching unrelated host services\nand unnecessary outbound destinations. NAT forwarding is loopback-only:\nguest TCP 80 maps to `127.0.0.1:8080`, and guest TCP 22 maps to\n`127.0.0.1:2222`. Do not use bridged networking. Disable shared folders,\nshared clipboard, drag-and-drop, and USB passthrough. Do not attach host\ndirectories or devices to imported guests. The `/thot` VM group and VM name\nprefix are labels; the dedicated profile, storage root, and persisted cleanup\nmanifest establish run ownership.\n\nBefore starting `thotd`, verify that host ports 8080 and 2222 are free. The\nservice API defaults to `127.0.0.1:8081`; keep it loopback-only. Configure\n`thot` on the same host, or use an SSH tunnel for operator access. The run\npreflight rejects any OVA exceeding the size limit. Before import, the daemon\nestimates the VM storage needed by summing the VMDK member sizes in the OVA tar\nand requires that estimate plus the configured reserve. This is a conservative\narchive-based estimate; the reserve must account for VirtualBox conversion and\nfilesystem overhead. The retained source OVA is separately checked against\navailable space in artifact storage. Keep report, HTTP body, and command output\nlimits finite. Source OVAs, project snapshots, expedients, logs, and evidence\nremain until an operator explicitly archives or removes them.\n\n## Configure and install\n\nInstall the project YAML as `/etc/thot/projects/<project-id>.yaml`. The project\ncontains the fixed activity policy and a secret reference only; host paths,\ncredentials, and executable commands do not belong in the project. Place OVA\nfiles directly in a subdirectory of `/var/lib/thot/deliveries`.\n\nInstall the repository's sample as a starting point and create a delivery\nfolder:\n\n```sh\nsudo install -o root -g thotd -m 0640 dist/projects/example-vm-activity.yaml \\\n  /etc/thot/projects/example-vm-activity.yaml\nsudo install -d -o thotd -g thotd -m 0750 \\\n  /var/lib/thot/deliveries/batch-01\n```\n\nProvision the guest password into the configured secret file using the host's\nsecret-management process. For example, create the file out of band and then\nset its owner to `root:thotd` and mode to `0640`; do not put its value in a\nshell command or this environment file.\n\nCreate `/etc/thot/thotd.env` (mode `0640`, root-owned and readable by the\nservice) and set the host-specific values:\n\n```ini\nTHOTD_BIND_HOST=127.0.0.1\nTHOTD_BIND_PORT=8081\nTHOTD_DATABASE_URL=sqlite:/var/lib/thot/thot.sqlite3\nTHOTD_PROJECT_ROOT=/etc/thot/projects\nTHOTD_DELIVERY_ROOT=/var/lib/thot/deliveries\nTHOTD_ARTIFACT_ROOT=/var/lib/thot/artifacts\nTHOTD_STORAGE_ROOT=/var/lib/thot/vms\nTHOTD_VBOX_USER_HOME=/var/lib/thot/vbox-profile\nTHOTD_VBOX_MANAGE_PATH=/usr/bin/VBoxManage\nTHOTD_EXPECTED_VBOX_VERSION=<qualified-version-without-r-build-suffix>\nTHOTD_OVA_SIZE_LIMIT=10737418240\nTHOTD_FREE_SPACE_RESERVE=10737418240\nTHOTD_OUTPUT_LIMIT=1048576\nTHOTD_IMPORT_TIMEOUT=1800\nTHOTD_STARTUP_TIMEOUT=180\nTHOTD_SSH_TIMEOUT=15\nTHOTD_SHUTDOWN_GRACE=30\nTHOTD_SSH_SECRET_FILE=/etc/thot/secrets/guest-ssh-password\nTHOTD_FIREWALL_CONFIRMATION=true\n```\n\nSet `THOTD_EXPECTED_VBOX_VERSION` to the qualified `VBoxManage --version`\nnumber (for example, `7.0.20`, without the trailing `r...`). Runs fail\npreflight when the installed version differs. Set\n`THOTD_FIREWALL_CONFIRMATION=true` only after the administrator has checked\nfirewall and guest egress rules manually; the service cannot inspect firewall\npolicy. The SSH user is fixed as `tvadmin` by the activity project schema.\n\n`THOTD_DATA_ROOT` is an optional shorthand for the default delivery, artifact,\nVM, and VirtualBox profile roots. The API binding, project root, database,\nVirtualBox executable, and secret path should be reviewed for the target host.\n\nExample systemd unit (`/etc/systemd/system/thotd.service`):\n\n```ini\n[Unit]\nDescription=Thot VM activity service\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=thotd\nGroup=thotd\nEnvironmentFile=/etc/thot/thotd.env\nEnvironment=RUST_LOG=info\nExecStart=/usr/local/sbin/thotd\nRestart=on-failure\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nReadWritePaths=/var/lib/thot\n\n[Install]\nWantedBy=multi-user.target\n```\n\nInstall and start it:\n\n```sh\nsudo install -o root -g root -m 0755 dist/thotd /usr/local/sbin/thotd\nsudo install -o root -g root -m 0755 dist/thot /usr/local/bin/thot\nsudo systemctl daemon-reload\nsudo systemctl enable --now thotd\nsudo systemctl status thotd\n```\n\nReview the systemd sandbox against the installed VirtualBox driver and profile\nbefore use. If the host's VirtualBox setup needs additional access, grant only\nthat access to the `thotd` service account; do not disable the service\nhardening wholesale.\n\n## Start and inspect a run\n\nThe CLI default is `127.0.0.1:8081`. Use a project ID matching the YAML file\nname without the `.yaml` extension and a delivery directory below the\nconfigured delivery root:\n\n```sh\nthot run create --project example-vm-activity --deliveries /var/lib/thot/deliveries/batch-01\nthot run status <run-id>\nthot run expedient <expedient-id>\nthot run cleanup <expedient-id>\n```\n\nThe host administrator must check that loopback forwarding works, the two VM\nports are free, the API port is available, the VBox profile is dedicated, and\nthe service can capture screenshots. Confirm the firewall and guest egress\npolicy before importing any untrusted OVA. Do not run a delivery when those\nchecks cannot be made.\n\nCleanup after an interrupted host or process must use the persisted\nrun-specific manifest and verify the VM UUID and storage paths before deletion.\nNever delete by VM name, group, or prefix alone. Verify the VM is unregistered\nand only run-owned storage has been removed. A remaining resource means\ncleanup is pending and must be reported as such; it is not a clean run.\n\n----- END CURRENT FILE -----\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-24 15:07:25+0200 ERROR ========== TASK FAILURE: ConnectionError: HTTPConnectionPool(host='192.168.1.106', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x72572875cf30>: Failed to establish a new connection: [Errno 111] Connection refused')) ==========
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+        (self._dns_host, self.port),
+    ...<2 lines>...
+        socket_options=self.socket_options,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/usr/lib/python3/dist-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+ConnectionRefusedError: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+    ~~~~~~~~~~~~^
+        method,
+        ^^^^^^^
+    ...<6 lines>...
+        enforce_content_length=enforce_content_length,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 445, in request
+    self.endheaders()
+    ~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 1362, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/http/client.py", line 1122, in _send_output
+    self.send(msg)
+    ~~~~~~~~~^^^^^
+  File "/usr/lib/python3.13/http/client.py", line 1066, in send
+    self.connect()
+    ~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 276, in connect
+    self.sock = self._new_conn()
+                ~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 213, in _new_conn
+    raise NewConnectionError(
+        self, f"Failed to establish a new connection: {e}"
+    ) from e
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x72572875cf30>: Failed to establish a new connection: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='192.168.1.106', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x72572875cf30>: Failed to establish a new connection: [Errno 111] Connection refused'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 392, in process_one
+    apply_task(
+    ~~~~~~~~~~^
+        task,
+        ^^^^^
+    ...<4 lines>...
+        logger=logger,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 314, in apply_task
+    output = call_ollama(
+        prompt,
+    ...<3 lines>...
+        logger=logger,
+    )
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 185, in call_ollama
+    response = requests.post(url, json=payload, timeout=timeout)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='192.168.1.106', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x72572875cf30>: Failed to establish a new connection: [Errno 111] Connection refused'))
+2026-10-24 15:07:25+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/failure/081-update-native-deployment-project-packages.yaml

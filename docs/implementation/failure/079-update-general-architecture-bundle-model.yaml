@@ -1,0 +1,7 @@
+id: "079-update-general-architecture-bundle-model"
+title: "Align architecture with project-defined tests"
+depends_on: ["045-project-test-model", "049-safe-project-archive-reader", "066-test-suite-executor"]
+file: "/home/carlos/worktrees/thot/docs/architecture.md"
+action: modify
+prompt: |-
+  Update the architecture document's project bundle and test execution sections to match the implemented project-defined model: root configuration.yaml in .thot.zip or .thot.tgz; ordered platform/test or extern/path references; parameters, requirements, repeats, per-test/global timeouts; per-platform built-in modules; captured stdout/stderr/exit code; and per-test artifacts. Retain the broader future scoring/LO architecture, but remove claims that tar.gz is the only initial format or that arbitrary external tests are absent. State that project scripts are teacher-provided and run as processes without shell interpolation. Edit only this file.

@@ -1,0 +1,7 @@
+id: "052-export-project-configuration-loader"
+title: "Export the project configuration loader"
+depends_on: ["051-project-configuration-loader"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/lib.rs"
+action: modify
+prompt: |-
+  Export project_config as a public engine module. Keep existing exports unchanged. Edit only this file.

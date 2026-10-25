@@ -1,0 +1,7 @@
+id: "078-remove-legacy-example-project"
+title: "Remove the fixed-schema YAML example"
+depends_on: ["076-example-activity-configuration"]
+file: "/home/carlos/worktrees/thot/examples/vm-activity-poc/project.yaml"
+action: delete
+prompt: |-
+  Delete the obsolete standalone project.yaml example because the project bundle now uses root configuration.yaml inside a .thot.zip or .thot.tgz archive. Do not edit other files. This task has no source file contents to preserve.

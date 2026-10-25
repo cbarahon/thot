@@ -1,0 +1,7 @@
+id: "065-test-result-artifact-store"
+title: "Persist per-test records and artifacts"
+depends_on: ["046-test-result-process-output", "056-test-invocation-contract"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/test_result_store.rs"
+action: create
+prompt: |-
+  Implement filesystem persistence for normalized test outcomes. Store each result incrementally in a versioned delivery expedient and save stdout/stderr text files plus evidence references. Create test artifact directories in the required layout test_records/<delivery filename>/<expanded test name>/artifacts beneath the configured artifact root, sanitizing each path component and preventing traversal. Keep result metadata and test artifacts separate, use relative evidence paths where possible, and atomically replace JSON reports so partial results survive failures. Edit only this file.

@@ -1,0 +1,7 @@
+id: "081-update-native-deployment-project-packages"
+title: "Document archive project installation and external tests"
+depends_on: ["071-wire-project-test-runs", "076-example-activity-configuration", "077-example-start-time-script"]
+file: "/home/carlos/worktrees/thot/deploy/README.md"
+action: modify
+prompt: |-
+  Update native-host deployment instructions to install a .thot.zip or .thot.tgz project archive containing root configuration.yaml and extern/ scripts, and place the configured delivery and writable vm_path directories relative to the archive as specified. Explain that teacher-supplied extern tests run as child processes with bounded timeout/output and require trusted project authorship. Retain dedicated VirtualBox profile, loopback forwarding, firewall, disk, and manifest cleanup guidance. Remove obsolete instructions requiring a standalone fixed-schema YAML and mandatory THOTD_SSH_SECRET_FILE; the SSH example credentials come from test parameters. Edit only this file.

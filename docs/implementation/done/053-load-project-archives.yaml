@@ -1,0 +1,7 @@
+id: "053-load-project-archives"
+title: "Load project snapshots from ZIP or tgz"
+depends_on: ["050-export-project-archive-reader", "052-export-project-configuration-loader"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/vm_activity.rs"
+action: modify
+prompt: |-
+  Replace load_project's fixed standalone-YAML schema checks with loading <project_id>.thot.zip or <project_id>.thot.tgz from the configured project root. Safely extract it with project_archive, parse and validate its root configuration.yaml with project_config, retain the original archive and SHA-256 in the run configuration snapshot, and expose the extracted project root plus archive path and typed project in ProjectSnapshot. Keep project_id and sha256 fields needed by existing report code. Do not execute archive scripts while loading. Reject symlink archives and unsafe project IDs. Edit only this file.

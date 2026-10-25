@@ -1,0 +1,7 @@
+id: "060-virtualbox-stop-test"
+title: "Implement VirtualBox stop_vm test"
+depends_on: ["057-virtualbox-test-module"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/tests/virtualbox/stop_vm.rs"
+action: create
+prompt: |-
+  Implement VirtualBox/stop_vm using the shared platform helper and LocalVirtualBoxRunner. Resolve the VM name from parameters or prior import output. Request graceful ACPI shutdown, wait only within the invocation timeout, and use a documented poweroff fallback if still running. Return normalized status/stdout/stderr/exit_code and record which shutdown method succeeded. Do not unregister or delete the VM. Edit only this file.

@@ -1,0 +1,7 @@
+id: "072-bounded-delivery-concurrency"
+title: "Apply configured delivery concurrency safely"
+depends_on: ["071-wire-project-test-runs", "051-project-configuration-loader"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs"
+action: modify
+prompt: |-
+  Replace the sequential delivery loop with bounded per-delivery workers using configuration.concurrency, while preserving sequential test order inside each delivery and persisting expedient IDs as workers start. Because the current VirtualBox adapter uses shared host ports 8080/2222, reject concurrency greater than one for projects that include VirtualBox or SSH tests; allow the configured bound for projects without those shared resources. Keep cancellation checks and final run status aggregation correct. Edit only this file.

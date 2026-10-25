@@ -1,0 +1,7 @@
+id: "046-test-result-process-output"
+title: "Capture process output in normalized test results"
+depends_on: []
+file: "/home/carlos/worktrees/thot/crates/thot-core/src/test_results.rs"
+action: modify
+prompt: |-
+  Extend TestResult with stdout, stderr, and optional exit_code so built-in and external tests share the same result shape. Retain existing IDs, status, timestamps, duration, diagnostics, observation, and evidence fields. Make new fields Serde-compatible and use empty output strings and no exit code as defaults for skipped or not-started tests. Do not add persistence or execution code. Edit only this file.

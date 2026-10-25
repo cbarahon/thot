@@ -1,0 +1,7 @@
+id: "047-project-archive-dependencies"
+title: "Add ZIP and gzip tar archive libraries"
+depends_on: []
+file: "/home/carlos/worktrees/thot/crates/thot-engine/Cargo.toml"
+action: modify
+prompt: |-
+  Add Rust dependencies needed to read ZIP and .tgz project archives without shelling out: use the zip crate for ZIP, tar for tar entries, and flate2 for gzip decoding. Choose compatible current versions and enable only required features. Do not edit workspace manifests or source files. Edit only this file.

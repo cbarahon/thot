@@ -1,0 +1,7 @@
+id: "082-update-cli-project-archive-docs"
+title: "Document project archive run commands"
+depends_on: ["075-cli-project-archive-run-command"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/README.md"
+action: modify
+prompt: |-
+  Update the CLI documentation to describe selecting an installed .thot.zip or .thot.tgz project archive and the optional configured delivery_folder. Show `thot run create --project ID` and the optional `--deliveries DIR` override. Keep existing student commands and expedient/status/cancel/cleanup examples. Explain that tests run per delivery without roster matching and reports include each test's stdout, stderr, exit code, and artifacts. Edit only this file.

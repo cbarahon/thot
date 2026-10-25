@@ -1,0 +1,969 @@
+2026-10-24 14:46:26+0200 INFO ========== TASK START ==========
+2026-10-24 14:46:26+0200 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/072-bounded-delivery-concurrency.yaml
+2026-10-24 14:46:26+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/072-bounded-delivery-concurrency.yaml
+2026-10-24 14:46:26+0200 INFO Reading YAML task
+2026-10-24 14:46:26+0200 INFO Parsed YAML:
+id: 072-bounded-delivery-concurrency
+title: Apply configured delivery concurrency safely
+depends_on:
+- 071-wire-project-test-runs
+- 051-project-configuration-loader
+file: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs
+action: modify
+prompt: Replace the sequential delivery loop with bounded per-delivery workers using
+  configuration.concurrency, while preserving sequential test order inside each delivery
+  and persisting expedient IDs as workers start. Because the current VirtualBox adapter
+  uses shared host ports 8080/2222, reject concurrency greater than one for projects
+  that include VirtualBox or SSH tests; allow the configured bound for projects without
+  those shared resources. Keep cancellation checks and final run status aggregation
+  correct. Edit only this file.
+
+2026-10-24 14:46:26+0200 INFO Task ID: 072-bounded-delivery-concurrency
+2026-10-24 14:46:26+0200 INFO Task title: Apply configured delivery concurrency safely
+2026-10-24 14:46:26+0200 INFO Action: modify
+2026-10-24 14:46:26+0200 INFO Target: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs
+2026-10-24 14:46:26+0200 INFO Read current file: 16787 characters
+2026-10-24 14:46:26+0200 DEBUG Current file content:
+use serde::{Deserialize, Serialize};
+use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio::sync::Mutex;
+
+use crate::vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRecord {
+    pub run_id: String,
+    pub project_id: String,
+    pub delivery_directory: String,
+    pub status: String,
+    pub expedient_ids: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct DeliveryRunService {
+    pool: SqlitePool,
+    project_root: PathBuf,
+    delivery_root: PathBuf,
+    artifact_root: PathBuf,
+    runtime: Arc<VmActivityRuntime>,
+    create_gate: Arc<Mutex<()>>,
+}
+
+impl DeliveryRunService {
+    pub async fn connect(
+        database_url: &str,
+        project_root: PathBuf,
+        delivery_root: PathBuf,
+        artifact_root: PathBuf,
+        runtime: VmActivityRuntime,
+    ) -> Result<Self, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect(database_url)
+            .await?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_runs (run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, delivery_directory TEXT NOT NULL, status TEXT NOT NULL, expedient_ids TEXT NOT NULL DEFAULT '[]', error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+            .execute(&pool).await?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_deliveries (delivery_id TEXT PRIMARY KEY, collection_ref TEXT NOT NULL, source_ref TEXT NOT NULL, content_sha256 TEXT NOT NULL, original_filename TEXT NOT NULL, byte_size INTEGER NOT NULL, UNIQUE(collection_ref, source_ref, content_sha256))")
+            .execute(&pool).await?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_expedients (expedient_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, delivery_id TEXT NOT NULL, report_path TEXT NOT NULL, status TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES vm_activity_runs(run_id), FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id))")
+            .execute(&pool).await?;
+        sqlx::query("UPDATE vm_activity_runs SET status='interrupted_cleanup_pending' WHERE status IN ('queued','running')").execute(&pool).await?;
+        sqlx::query("UPDATE vm_activity_expedients SET status='interrupted_cleanup_pending' WHERE status='running'").execute(&pool).await?;
+        Ok(Self {
+            pool,
+            project_root,
+            delivery_root,
+            artifact_root,
+            runtime: Arc::new(runtime),
+            create_gate: Arc::new(Mutex::new(())),
+        })
+    }
+
+    pub async fn create_run(
+        &self,
+        project_id: String,
+        delivery_directory: String,
+    ) -> Result<RunRecord, ServiceError> {
+        if !valid_id(&project_id) {
+            return Err(ServiceError::Invalid(
+                "project_id must be a simple project identifier".into(),
+            ));
+        }
+        let root = self
+            .delivery_root
+            .canonicalize()
+            .map_err(|e| ServiceError::Invalid(format!("delivery root is unavailable: {e}")))?;
+        let selected = Path::new(&delivery_directory).canonicalize().map_err(|e| {
+            ServiceError::Invalid(format!("delivery directory is unavailable: {e}"))
+        })?;
+        if !selected.is_dir() || !selected.starts_with(&root) {
+            return Err(ServiceError::Invalid(
+                "delivery directory must be inside THOTD_DELIVERY_ROOT".into(),
+            ));
+        }
+        if std::fs::symlink_metadata(&delivery_directory).is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(ServiceError::Invalid(
+                "delivery directory cannot be a symlink".into(),
+            ));
+        }
+
+        let _guard = self.create_gate.lock().await;
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM vm_activity_runs WHERE status IN ('queued','running')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if active > 0 {
+            return Err(ServiceError::Conflict(
+                "another delivery run is queued or running".into(),
+            ));
+        }
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let snapshot_dir = self
+            .artifact_root
+            .join(&project_id)
+            .join(&run_id)
+            .join("configuration");
+        let snapshot = vm_activity::load_project(&self.project_root, &project_id, &snapshot_dir)
+            .await
+            .map_err(ServiceError::Invalid)?;
+        let vbox_version = vm_activity::preflight(&self.runtime)
+            .await
+            .map_err(ServiceError::Invalid)?;
+        let inputs = vm_activity::discover_deliveries(&selected, self.runtime.max_ova_bytes)
+            .map_err(ServiceError::Invalid)?;
+        let record = RunRecord {
+            run_id: run_id.clone(),
+            project_id,
+            delivery_directory: selected.display().to_string(),
+            status: "queued".into(),
+            expedient_ids: Vec::new(),
+            error: None,
+        };
+        sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids) VALUES(?,?,?,?,?)")
+            .bind(&record.run_id).bind(&record.project_id).bind(&record.delivery_directory).bind(&record.status).bind("[]").execute(&self.pool).await?;
+        let service = self.clone();
+        let background_run_id = record.run_id.clone();
+        tokio::spawn(async move {
+            service
+                .execute_run(background_run_id, snapshot, vbox_version, inputs)
+                .await;
+        });
+        Ok(record)
+    }
+
+    async fn execute_run(
+        &self,
+        run_id: String,
+        project: ProjectSnapshot,
+        vbox_version: String,
+        inputs: Vec<DeliveryInput>,
+    ) {
+        let _ = sqlx::query(
+            "UPDATE vm_activity_runs SET status='running' WHERE run_id=? AND status='queued'",
+        )
+        .bind(&run_id)
+        .execute(&self.pool)
+        .await;
+        let mut expedients = Vec::new();
+        let mut had_errors = false;
+        if inputs.is_empty() {
+            had_errors = true;
+        }
+        for input in inputs {
+            if let Ok(Some(run)) = self.get_run(&run_id).await {
+                if run.status == "cancelled" {
+                    break;
+                }
+            }
+            let mut input = input;
+            if input.validation_error.is_none() {
+                match vm_activity::retain_source(&self.runtime, &input).await {
+                    Ok(source) => input.source = source,
+                    Err(e) => input.validation_error = Some(e),
+                }
+            }
+            let delivery_id = self
+                .register_delivery(&input)
+                .await
+                .unwrap_or_else(|_| input.delivery_id.clone());
+            let expedient_id = format!("exp-{}", uuid::Uuid::new_v4().simple());
+            let report_dir = self
+                .artifact_root
+                .join(&project.project_id)
+                .join(&run_id)
+                .join(&delivery_id);
+            let report_path = report_dir.join("delivery.json");
+            let _ = sqlx::query("INSERT OR REPLACE INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES(?,?,?,?,?)")
+                .bind(&expedient_id).bind(&run_id).bind(&delivery_id).bind(report_path.display().to_string()).bind("running").execute(&self.pool).await;
+            expedients.push(expedient_id.clone());
+            let _ = self.save_run_expedients(&run_id, &expedients).await;
+            input.delivery_id = delivery_id;
+            let report = vm_activity::execute_delivery(
+                &self.runtime,
+                &project,
+                &vbox_version,
+                &run_id,
+                &expedient_id,
+                &input,
+                &report_dir,
+                &report_path,
+            )
+            .await;
+            let status = report["overall_status"]
+                .as_str()
+                .unwrap_or("completed_with_errors");
+            if status != "completed" {
+                had_errors = true;
+            }
+            let _ = sqlx::query("UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?")
+                .bind(status)
+                .bind(&expedient_id)
+                .execute(&self.pool)
+                .await;
+        }
+        let final_status = if self
+            .get_run(&run_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|r| r.status == "cancelled")
+        {
+            "cancelled"
+        } else if had_errors {
+            "completed_with_errors"
+        } else {
+            "completed"
+        };
+        let _ = sqlx::query(
+            "UPDATE vm_activity_runs SET status=? WHERE run_id=? AND status!='cancelled'",
+        )
+        .bind(final_status)
+        .bind(run_id)
+        .execute(&self.pool)
+        .await;
+    }
+
+    async fn register_delivery(&self, input: &DeliveryInput) -> Result<String, sqlx::Error> {
+        let collection_ref = input
+            .original_source
+            .parent()
+            .unwrap_or(Path::new(""))
+            .display()
+            .to_string();
+        let source_ref = input.original_source.display().to_string();
+        let content_sha256 = input.sha256.clone().unwrap_or_default();
+        sqlx::query("INSERT OR IGNORE INTO vm_activity_deliveries(delivery_id,collection_ref,source_ref,content_sha256,original_filename,byte_size) VALUES(?,?,?,?,?,?)")
+            .bind(&input.delivery_id).bind(&collection_ref).bind(&source_ref).bind(&content_sha256).bind(&input.filename).bind(input.size as i64).execute(&self.pool).await?;
+        sqlx::query_scalar("SELECT delivery_id FROM vm_activity_deliveries WHERE collection_ref=? AND source_ref=? AND content_sha256=?")
+            .bind(collection_ref).bind(source_ref).bind(content_sha256).fetch_one(&self.pool).await
+    }
+
+    async fn save_run_expedients(&self, run_id: &str, ids: &[String]) -> Result<(), sqlx::Error> {
+        let data = serde_json::to_string(ids).unwrap_or_else(|_| "[]".into());
+        sqlx::query("UPDATE vm_activity_runs SET expedient_ids=? WHERE run_id=?")
+            .bind(data)
+            .bind(run_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_run(&self, run_id: &str) -> Result<Option<RunRecord>, ServiceError> {
+        let row = sqlx::query_as::<_, (String,String,String,String,String,Option<String>)>("SELECT run_id, project_id, delivery_directory, status, expedient_ids, error FROM vm_activity_runs WHERE run_id = ?")
+            .bind(run_id).fetch_optional(&self.pool).await?;
+        Ok(row.map(
+            |(run_id, project_id, delivery_directory, status, ids, error)| RunRecord {
+                run_id,
+                project_id,
+                delivery_directory,
+                status,
+                expedient_ids: serde_json::from_str(&ids).unwrap_or_default(),
+                error,
+            },
+        ))
+    }
+
+    pub async fn get_expedient(
+        &self,
+        expedient_id: &str,
+    ) -> Result<Option<serde_json::Value>, ServiceError> {
+        let path = sqlx::query_scalar::<_, String>(
+            "SELECT report_path FROM vm_activity_expedients WHERE expedient_id = ?",
+        )
+        .bind(expedient_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(path) = path else { return Ok(None) };
+        match tokio::fs::read(path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| ServiceError::Internal(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(ServiceError::Internal(e.to_string())),
+        }
+    }
+
+    pub async fn cancel_run(&self, run_id: &str) -> Result<Option<RunRecord>, ServiceError> {
+        let Some(mut run) = self.get_run(run_id).await? else {
+            return Ok(None);
+        };
+        if matches!(run.status.as_str(), "queued" | "running") {
+            run.status = "cancelled".into();
+            sqlx::query("UPDATE vm_activity_runs SET status = ? WHERE run_id = ?")
+                .bind(&run.status)
+                .bind(run_id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(Some(run))
+    }
+
+    pub async fn cleanup_expedient(
+        &self,
+        expedient_id: &str,
+    ) -> Result<Option<serde_json::Value>, ServiceError> {
+        let row = sqlx::query_as::<_, (String, String)>(
+            "SELECT report_path,delivery_id FROM vm_activity_expedients WHERE expedient_id=?",
+        )
+        .bind(expedient_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((path, delivery_id)) = row else {
+            return Ok(None);
+        };
+        let mut report: serde_json::Value = match tokio::fs::read(&path).await {
+            Ok(b) => {
+                serde_json::from_slice(&b).map_err(|e| ServiceError::Internal(e.to_string()))?
+            }
+            Err(_) => return Ok(None),
+        };
+        let result = vm_activity::cleanup_from_manifest(
+            &self.runtime,
+            Path::new(&path).parent().unwrap_or(Path::new(".")),
+            &delivery_id,
+        )
+        .await;
+        report["cleanup"] = result;
+        let cleanup_status = report["cleanup"]["status"]
+            .as_str()
+            .unwrap_or("failed")
+            .to_owned();
+        let cleanup_observation = report["cleanup"].clone();
+        if let Some(results) = report["test_results"].as_array_mut() {
+            if let Some(cleanup) = results.iter_mut().find(|r| r["test_id"] == "CLEAN-001") {
+                let now = chrono::Utc::now().to_rfc3339();
+                if cleanup["start_time"].is_null() {
+                    cleanup["start_time"] = serde_json::json!(now);
+                }
+                cleanup["end_time"] = serde_json::json!(now);
+                cleanup["status"] = serde_json::json!(cleanup_status);
+                cleanup["observation"] = cleanup_observation.clone();
+                cleanup["evidence"] = serde_json::json!(["cleanup-manifest.json"]);
+                cleanup["diagnostics"] = if cleanup_status == "passed" {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(cleanup_observation["details"].to_string())
+                };
+            }
+        }
+        report["finished_at"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
+        let all_passed = report["test_results"]
+            .as_array()
+            .is_some_and(|results| results.iter().all(|r| r["status"] == "passed"));
+        report["overall_status"] = serde_json::json!(if all_passed {
+            "completed"
+        } else {
+            "completed_with_errors"
+        });
+        let bytes = serde_json::to_vec_pretty(&report)
+            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        tokio::fs::write(&path, bytes)
+            .await
+            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        let status = report["overall_status"]
+            .as_str()
+            .unwrap_or("completed_with_errors")
+            .to_owned();
+        sqlx::query("UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?")
+            .bind(&status)
+            .bind(expedient_id)
+            .execute(&self.pool)
+            .await?;
+        if report["cleanup"]["status"] == "passed" {
+            let run_id = sqlx::query_scalar::<_, String>(
+                "SELECT run_id FROM vm_activity_expedients WHERE expedient_id=?",
+            )
+            .bind(expedient_id)
+            .fetch_one(&self.pool)
+            .await?;
+            let pending:i64=sqlx::query_scalar("SELECT COUNT(*) FROM vm_activity_expedients WHERE run_id=? AND status='interrupted_cleanup_pending'").bind(&run_id).fetch_one(&self.pool).await?;
+            if pending == 0 {
+                sqlx::query("UPDATE vm_activity_runs SET status='completed_with_errors' WHERE run_id=? AND status='interrupted_cleanup_pending'").bind(run_id).execute(&self.pool).await?;
+            }
+        }
+        Ok(Some(report["cleanup"].clone()))
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ServiceError {
+    #[error("invalid request: {0}")]
+    Invalid(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("service error: {0}")]
+    Internal(String),
+    #[error(transparent)]
+    Storage(#[from] sqlx::Error),
+}
+
+2026-10-24 14:46:26+0200 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 072-bounded-delivery-concurrency
+Title: Apply configured delivery concurrency safely
+Action: modify
+Target file: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs
+
+TASK INSTRUCTIONS
+Replace the sequential delivery loop with bounded per-delivery workers using configuration.concurrency, while preserving sequential test order inside each delivery and persisting expedient IDs as workers start. Because the current VirtualBox adapter uses shared host ports 8080/2222, reject concurrency greater than one for projects that include VirtualBox or SSH tests; allow the configured bound for projects without those shared resources. Keep cancellation checks and final run status aggregation correct. Edit only this file.
+
+CURRENT CONTENT OF THE TARGET FILE
+The following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.
+----- BEGIN CURRENT FILE -----
+use serde::{Deserialize, Serialize};
+use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio::sync::Mutex;
+
+use crate::vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRecord {
+    pub run_id: String,
+    pub project_id: String,
+    pub delivery_directory: String,
+    pub status: String,
+    pub expedient_ids: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct DeliveryRunService {
+    pool: SqlitePool,
+    project_root: PathBuf,
+    delivery_root: PathBuf,
+    artifact_root: PathBuf,
+    runtime: Arc<VmActivityRuntime>,
+    create_gate: Arc<Mutex<()>>,
+}
+
+impl DeliveryRunService {
+    pub async fn connect(
+        database_url: &str,
+        project_root: PathBuf,
+        delivery_root: PathBuf,
+        artifact_root: PathBuf,
+        runtime: VmActivityRuntime,
+    ) -> Result<Self, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect(database_url)
+            .await?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_runs (run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, delivery_directory TEXT NOT NULL, status TEXT NOT NULL, expedient_ids TEXT NOT NULL DEFAULT '[]', error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+            .execute(&pool).await?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_deliveries (delivery_id TEXT PRIMARY KEY, collection_ref TEXT NOT NULL, source_ref TEXT NOT NULL, content_sha256 TEXT NOT NULL, original_filename TEXT NOT NULL, byte_size INTEGER NOT NULL, UNIQUE(collection_ref, source_ref, content_sha256))")
+            .execute(&pool).await?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_expedients (expedient_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, delivery_id TEXT NOT NULL, report_path TEXT NOT NULL, status TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES vm_activity_runs(run_id), FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id))")
+            .execute(&pool).await?;
+        sqlx::query("UPDATE vm_activity_runs SET status='interrupted_cleanup_pending' WHERE status IN ('queued','running')").execute(&pool).await?;
+        sqlx::query("UPDATE vm_activity_expedients SET status='interrupted_cleanup_pending' WHERE status='running'").execute(&pool).await?;
+        Ok(Self {
+            pool,
+            project_root,
+            delivery_root,
+            artifact_root,
+            runtime: Arc::new(runtime),
+            create_gate: Arc::new(Mutex::new(())),
+        })
+    }
+
+    pub async fn create_run(
+        &self,
+        project_id: String,
+        delivery_directory: String,
+    ) -> Result<RunRecord, ServiceError> {
+        if !valid_id(&project_id) {
+            return Err(ServiceError::Invalid(
+                "project_id must be a simple project identifier".into(),
+            ));
+        }
+        let root = self
+            .delivery_root
+            .canonicalize()
+            .map_err(|e| ServiceError::Invalid(format!("delivery root is unavailable: {e}")))?;
+        let selected = Path::new(&delivery_directory).canonicalize().map_err(|e| {
+            ServiceError::Invalid(format!("delivery directory is unavailable: {e}"))
+        })?;
+        if !selected.is_dir() || !selected.starts_with(&root) {
+            return Err(ServiceError::Invalid(
+                "delivery directory must be inside THOTD_DELIVERY_ROOT".into(),
+            ));
+        }
+        if std::fs::symlink_metadata(&delivery_directory).is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(ServiceError::Invalid(
+                "delivery directory cannot be a symlink".into(),
+            ));
+        }
+
+        let _guard = self.create_gate.lock().await;
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM vm_activity_runs WHERE status IN ('queued','running')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if active > 0 {
+            return Err(ServiceError::Conflict(
+                "another delivery run is queued or running".into(),
+            ));
+        }
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let snapshot_dir = self
+            .artifact_root
+            .join(&project_id)
+            .join(&run_id)
+            .join("configuration");
+        let snapshot = vm_activity::load_project(&self.project_root, &project_id, &snapshot_dir)
+            .await
+            .map_err(ServiceError::Invalid)?;
+        let vbox_version = vm_activity::preflight(&self.runtime)
+            .await
+            .map_err(ServiceError::Invalid)?;
+        let inputs = vm_activity::discover_deliveries(&selected, self.runtime.max_ova_bytes)
+            .map_err(ServiceError::Invalid)?;
+        let record = RunRecord {
+            run_id: run_id.clone(),
+            project_id,
+            delivery_directory: selected.display().to_string(),
+            status: "queued".into(),
+            expedient_ids: Vec::new(),
+            error: None,
+        };
+        sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids) VALUES(?,?,?,?,?)")
+            .bind(&record.run_id).bind(&record.project_id).bind(&record.delivery_directory).bind(&record.status).bind("[]").execute(&self.pool).await?;
+        let service = self.clone();
+        let background_run_id = record.run_id.clone();
+        tokio::spawn(async move {
+            service
+                .execute_run(background_run_id, snapshot, vbox_version, inputs)
+                .await;
+        });
+        Ok(record)
+    }
+
+    async fn execute_run(
+        &self,
+        run_id: String,
+        project: ProjectSnapshot,
+        vbox_version: String,
+        inputs: Vec<DeliveryInput>,
+    ) {
+        let _ = sqlx::query(
+            "UPDATE vm_activity_runs SET status='running' WHERE run_id=? AND status='queued'",
+        )
+        .bind(&run_id)
+        .execute(&self.pool)
+        .await;
+        let mut expedients = Vec::new();
+        let mut had_errors = false;
+        if inputs.is_empty() {
+            had_errors = true;
+        }
+        for input in inputs {
+            if let Ok(Some(run)) = self.get_run(&run_id).await {
+                if run.status == "cancelled" {
+                    break;
+                }
+            }
+            let mut input = input;
+            if input.validation_error.is_none() {
+                match vm_activity::retain_source(&self.runtime, &input).await {
+                    Ok(source) => input.source = source,
+                    Err(e) => input.validation_error = Some(e),
+                }
+            }
+            let delivery_id = self
+                .register_delivery(&input)
+                .await
+                .unwrap_or_else(|_| input.delivery_id.clone());
+            let expedient_id = format!("exp-{}", uuid::Uuid::new_v4().simple());
+            let report_dir = self
+                .artifact_root
+                .join(&project.project_id)
+                .join(&run_id)
+                .join(&delivery_id);
+            let report_path = report_dir.join("delivery.json");
+            let _ = sqlx::query("INSERT OR REPLACE INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES(?,?,?,?,?)")
+                .bind(&expedient_id).bind(&run_id).bind(&delivery_id).bind(report_path.display().to_string()).bind("running").execute(&self.pool).await;
+            expedients.push(expedient_id.clone());
+            let _ = self.save_run_expedients(&run_id, &expedients).await;
+            input.delivery_id = delivery_id;
+            let report = vm_activity::execute_delivery(
+                &self.runtime,
+                &project,
+                &vbox_version,
+                &run_id,
+                &expedient_id,
+                &input,
+                &report_dir,
+                &report_path,
+            )
+            .await;
+            let status = report["overall_status"]
+                .as_str()
+                .unwrap_or("completed_with_errors");
+            if status != "completed" {
+                had_errors = true;
+            }
+            let _ = sqlx::query("UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?")
+                .bind(status)
+                .bind(&expedient_id)
+                .execute(&self.pool)
+                .await;
+        }
+        let final_status = if self
+            .get_run(&run_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|r| r.status == "cancelled")
+        {
+            "cancelled"
+        } else if had_errors {
+            "completed_with_errors"
+        } else {
+            "completed"
+        };
+        let _ = sqlx::query(
+            "UPDATE vm_activity_runs SET status=? WHERE run_id=? AND status!='cancelled'",
+        )
+        .bind(final_status)
+        .bind(run_id)
+        .execute(&self.pool)
+        .await;
+    }
+
+    async fn register_delivery(&self, input: &DeliveryInput) -> Result<String, sqlx::Error> {
+        let collection_ref = input
+            .original_source
+            .parent()
+            .unwrap_or(Path::new(""))
+            .display()
+            .to_string();
+        let source_ref = input.original_source.display().to_string();
+        let content_sha256 = input.sha256.clone().unwrap_or_default();
+        sqlx::query("INSERT OR IGNORE INTO vm_activity_deliveries(delivery_id,collection_ref,source_ref,content_sha256,original_filename,byte_size) VALUES(?,?,?,?,?,?)")
+            .bind(&input.delivery_id).bind(&collection_ref).bind(&source_ref).bind(&content_sha256).bind(&input.filename).bind(input.size as i64).execute(&self.pool).await?;
+        sqlx::query_scalar("SELECT delivery_id FROM vm_activity_deliveries WHERE collection_ref=? AND source_ref=? AND content_sha256=?")
+            .bind(collection_ref).bind(source_ref).bind(content_sha256).fetch_one(&self.pool).await
+    }
+
+    async fn save_run_expedients(&self, run_id: &str, ids: &[String]) -> Result<(), sqlx::Error> {
+        let data = serde_json::to_string(ids).unwrap_or_else(|_| "[]".into());
+        sqlx::query("UPDATE vm_activity_runs SET expedient_ids=? WHERE run_id=?")
+            .bind(data)
+            .bind(run_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_run(&self, run_id: &str) -> Result<Option<RunRecord>, ServiceError> {
+        let row = sqlx::query_as::<_, (String,String,String,String,String,Option<String>)>("SELECT run_id, project_id, delivery_directory, status, expedient_ids, error FROM vm_activity_runs WHERE run_id = ?")
+            .bind(run_id).fetch_optional(&self.pool).await?;
+        Ok(row.map(
+            |(run_id, project_id, delivery_directory, status, ids, error)| RunRecord {
+                run_id,
+                project_id,
+                delivery_directory,
+                status,
+                expedient_ids: serde_json::from_str(&ids).unwrap_or_default(),
+                error,
+            },
+        ))
+    }
+
+    pub async fn get_expedient(
+        &self,
+        expedient_id: &str,
+    ) -> Result<Option<serde_json::Value>, ServiceError> {
+        let path = sqlx::query_scalar::<_, String>(
+            "SELECT report_path FROM vm_activity_expedients WHERE expedient_id = ?",
+        )
+        .bind(expedient_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(path) = path else { return Ok(None) };
+        match tokio::fs::read(path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| ServiceError::Internal(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(ServiceError::Internal(e.to_string())),
+        }
+    }
+
+    pub async fn cancel_run(&self, run_id: &str) -> Result<Option<RunRecord>, ServiceError> {
+        let Some(mut run) = self.get_run(run_id).await? else {
+            return Ok(None);
+        };
+        if matches!(run.status.as_str(), "queued" | "running") {
+            run.status = "cancelled".into();
+            sqlx::query("UPDATE vm_activity_runs SET status = ? WHERE run_id = ?")
+                .bind(&run.status)
+                .bind(run_id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(Some(run))
+    }
+
+    pub async fn cleanup_expedient(
+        &self,
+        expedient_id: &str,
+    ) -> Result<Option<serde_json::Value>, ServiceError> {
+        let row = sqlx::query_as::<_, (String, String)>(
+            "SELECT report_path,delivery_id FROM vm_activity_expedients WHERE expedient_id=?",
+        )
+        .bind(expedient_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((path, delivery_id)) = row else {
+            return Ok(None);
+        };
+        let mut report: serde_json::Value = match tokio::fs::read(&path).await {
+            Ok(b) => {
+                serde_json::from_slice(&b).map_err(|e| ServiceError::Internal(e.to_string()))?
+            }
+            Err(_) => return Ok(None),
+        };
+        let result = vm_activity::cleanup_from_manifest(
+            &self.runtime,
+            Path::new(&path).parent().unwrap_or(Path::new(".")),
+            &delivery_id,
+        )
+        .await;
+        report["cleanup"] = result;
+        let cleanup_status = report["cleanup"]["status"]
+            .as_str()
+            .unwrap_or("failed")
+            .to_owned();
+        let cleanup_observation = report["cleanup"].clone();
+        if let Some(results) = report["test_results"].as_array_mut() {
+            if let Some(cleanup) = results.iter_mut().find(|r| r["test_id"] == "CLEAN-001") {
+                let now = chrono::Utc::now().to_rfc3339();
+                if cleanup["start_time"].is_null() {
+                    cleanup["start_time"] = serde_json::json!(now);
+                }
+                cleanup["end_time"] = serde_json::json!(now);
+                cleanup["status"] = serde_json::json!(cleanup_status);
+                cleanup["observation"] = cleanup_observation.clone();
+                cleanup["evidence"] = serde_json::json!(["cleanup-manifest.json"]);
+                cleanup["diagnostics"] = if cleanup_status == "passed" {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(cleanup_observation["details"].to_string())
+                };
+            }
+        }
+        report["finished_at"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
+        let all_passed = report["test_results"]
+            .as_array()
+            .is_some_and(|results| results.iter().all(|r| r["status"] == "passed"));
+        report["overall_status"] = serde_json::json!(if all_passed {
+            "completed"
+        } else {
+            "completed_with_errors"
+        });
+        let bytes = serde_json::to_vec_pretty(&report)
+            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        tokio::fs::write(&path, bytes)
+            .await
+            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        let status = report["overall_status"]
+            .as_str()
+            .unwrap_or("completed_with_errors")
+            .to_owned();
+        sqlx::query("UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?")
+            .bind(&status)
+            .bind(expedient_id)
+            .execute(&self.pool)
+            .await?;
+        if report["cleanup"]["status"] == "passed" {
+            let run_id = sqlx::query_scalar::<_, String>(
+                "SELECT run_id FROM vm_activity_expedients WHERE expedient_id=?",
+            )
+            .bind(expedient_id)
+            .fetch_one(&self.pool)
+            .await?;
+            let pending:i64=sqlx::query_scalar("SELECT COUNT(*) FROM vm_activity_expedients WHERE run_id=? AND status='interrupted_cleanup_pending'").bind(&run_id).fetch_one(&self.pool).await?;
+            if pending == 0 {
+                sqlx::query("UPDATE vm_activity_runs SET status='completed_with_errors' WHERE run_id=? AND status='interrupted_cleanup_pending'").bind(run_id).execute(&self.pool).await?;
+            }
+        }
+        Ok(Some(report["cleanup"].clone()))
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ServiceError {
+    #[error("invalid request: {0}")]
+    Invalid(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("service error: {0}")]
+    Internal(String),
+    #[error(transparent)]
+    Storage(#[from] sqlx::Error),
+}
+
+----- END CURRENT FILE -----
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-24 14:46:26+0200 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-24 14:46:26+0200 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-24 14:46:26+0200 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 072-bounded-delivery-concurrency\nTitle: Apply configured delivery concurrency safely\nAction: modify\nTarget file: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs\n\nTASK INSTRUCTIONS\nReplace the sequential delivery loop with bounded per-delivery workers using configuration.concurrency, while preserving sequential test order inside each delivery and persisting expedient IDs as workers start. Because the current VirtualBox adapter uses shared host ports 8080/2222, reject concurrency greater than one for projects that include VirtualBox or SSH tests; allow the configured bound for projects without those shared resources. Keep cancellation checks and final run status aggregation correct. Edit only this file.\n\nCURRENT CONTENT OF THE TARGET FILE\nThe following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.\n----- BEGIN CURRENT FILE -----\nuse serde::{Deserialize, Serialize};\nuse sqlx::{SqlitePool, sqlite::SqlitePoolOptions};\nuse std::{\n    path::{Path, PathBuf},\n    sync::Arc,\n};\nuse tokio::sync::Mutex;\n\nuse crate::vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime};\n\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct RunRecord {\n    pub run_id: String,\n    pub project_id: String,\n    pub delivery_directory: String,\n    pub status: String,\n    pub expedient_ids: Vec<String>,\n    pub error: Option<String>,\n}\n\n#[derive(Clone)]\npub struct DeliveryRunService {\n    pool: SqlitePool,\n    project_root: PathBuf,\n    delivery_root: PathBuf,\n    artifact_root: PathBuf,\n    runtime: Arc<VmActivityRuntime>,\n    create_gate: Arc<Mutex<()>>,\n}\n\nimpl DeliveryRunService {\n    pub async fn connect(\n        database_url: &str,\n        project_root: PathBuf,\n        delivery_root: PathBuf,\n        artifact_root: PathBuf,\n        runtime: VmActivityRuntime,\n    ) -> Result<Self, sqlx::Error> {\n        let pool = SqlitePoolOptions::new()\n            .max_connections(5)\n            .connect(database_url)\n            .await?;\n        sqlx::query(\"CREATE TABLE IF NOT EXISTS vm_activity_runs (run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, delivery_directory TEXT NOT NULL, status TEXT NOT NULL, expedient_ids TEXT NOT NULL DEFAULT '[]', error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)\")\n            .execute(&pool).await?;\n        sqlx::query(\"CREATE TABLE IF NOT EXISTS vm_activity_deliveries (delivery_id TEXT PRIMARY KEY, collection_ref TEXT NOT NULL, source_ref TEXT NOT NULL, content_sha256 TEXT NOT NULL, original_filename TEXT NOT NULL, byte_size INTEGER NOT NULL, UNIQUE(collection_ref, source_ref, content_sha256))\")\n            .execute(&pool).await?;\n        sqlx::query(\"CREATE TABLE IF NOT EXISTS vm_activity_expedients (expedient_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, delivery_id TEXT NOT NULL, report_path TEXT NOT NULL, status TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES vm_activity_runs(run_id), FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id))\")\n            .execute(&pool).await?;\n        sqlx::query(\"UPDATE vm_activity_runs SET status='interrupted_cleanup_pending' WHERE status IN ('queued','running')\").execute(&pool).await?;\n        sqlx::query(\"UPDATE vm_activity_expedients SET status='interrupted_cleanup_pending' WHERE status='running'\").execute(&pool).await?;\n        Ok(Self {\n            pool,\n            project_root,\n            delivery_root,\n            artifact_root,\n            runtime: Arc::new(runtime),\n            create_gate: Arc::new(Mutex::new(())),\n        })\n    }\n\n    pub async fn create_run(\n        &self,\n        project_id: String,\n        delivery_directory: String,\n    ) -> Result<RunRecord, ServiceError> {\n        if !valid_id(&project_id) {\n            return Err(ServiceError::Invalid(\n                \"project_id must be a simple project identifier\".into(),\n            ));\n        }\n        let root = self\n            .delivery_root\n            .canonicalize()\n            .map_err(|e| ServiceError::Invalid(format!(\"delivery root is unavailable: {e}\")))?;\n        let selected = Path::new(&delivery_directory).canonicalize().map_err(|e| {\n            ServiceError::Invalid(format!(\"delivery directory is unavailable: {e}\"))\n        })?;\n        if !selected.is_dir() || !selected.starts_with(&root) {\n            return Err(ServiceError::Invalid(\n                \"delivery directory must be inside THOTD_DELIVERY_ROOT\".into(),\n            ));\n        }\n        if std::fs::symlink_metadata(&delivery_directory).is_ok_and(|m| m.file_type().is_symlink())\n        {\n            return Err(ServiceError::Invalid(\n                \"delivery directory cannot be a symlink\".into(),\n            ));\n        }\n\n        let _guard = self.create_gate.lock().await;\n        let active: i64 = sqlx::query_scalar(\n            \"SELECT COUNT(*) FROM vm_activity_runs WHERE status IN ('queued','running')\",\n        )\n        .fetch_one(&self.pool)\n        .await?;\n        if active > 0 {\n            return Err(ServiceError::Conflict(\n                \"another delivery run is queued or running\".into(),\n            ));\n        }\n        let run_id = uuid::Uuid::new_v4().to_string();\n        let snapshot_dir = self\n            .artifact_root\n            .join(&project_id)\n            .join(&run_id)\n            .join(\"configuration\");\n        let snapshot = vm_activity::load_project(&self.project_root, &project_id, &snapshot_dir)\n            .await\n            .map_err(ServiceError::Invalid)?;\n        let vbox_version = vm_activity::preflight(&self.runtime)\n            .await\n            .map_err(ServiceError::Invalid)?;\n        let inputs = vm_activity::discover_deliveries(&selected, self.runtime.max_ova_bytes)\n            .map_err(ServiceError::Invalid)?;\n        let record = RunRecord {\n            run_id: run_id.clone(),\n            project_id,\n            delivery_directory: selected.display().to_string(),\n            status: \"queued\".into(),\n            expedient_ids: Vec::new(),\n            error: None,\n        };\n        sqlx::query(\"INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids) VALUES(?,?,?,?,?)\")\n            .bind(&record.run_id).bind(&record.project_id).bind(&record.delivery_directory).bind(&record.status).bind(\"[]\").execute(&self.pool).await?;\n        let service = self.clone();\n        let background_run_id = record.run_id.clone();\n        tokio::spawn(async move {\n            service\n                .execute_run(background_run_id, snapshot, vbox_version, inputs)\n                .await;\n        });\n        Ok(record)\n    }\n\n    async fn execute_run(\n        &self,\n        run_id: String,\n        project: ProjectSnapshot,\n        vbox_version: String,\n        inputs: Vec<DeliveryInput>,\n    ) {\n        let _ = sqlx::query(\n            \"UPDATE vm_activity_runs SET status='running' WHERE run_id=? AND status='queued'\",\n        )\n        .bind(&run_id)\n        .execute(&self.pool)\n        .await;\n        let mut expedients = Vec::new();\n        let mut had_errors = false;\n        if inputs.is_empty() {\n            had_errors = true;\n        }\n        for input in inputs {\n            if let Ok(Some(run)) = self.get_run(&run_id).await {\n                if run.status == \"cancelled\" {\n                    break;\n                }\n            }\n            let mut input = input;\n            if input.validation_error.is_none() {\n                match vm_activity::retain_source(&self.runtime, &input).await {\n                    Ok(source) => input.source = source,\n                    Err(e) => input.validation_error = Some(e),\n                }\n            }\n            let delivery_id = self\n                .register_delivery(&input)\n                .await\n                .unwrap_or_else(|_| input.delivery_id.clone());\n            let expedient_id = format!(\"exp-{}\", uuid::Uuid::new_v4().simple());\n            let report_dir = self\n                .artifact_root\n                .join(&project.project_id)\n                .join(&run_id)\n                .join(&delivery_id);\n            let report_path = report_dir.join(\"delivery.json\");\n            let _ = sqlx::query(\"INSERT OR REPLACE INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES(?,?,?,?,?)\")\n                .bind(&expedient_id).bind(&run_id).bind(&delivery_id).bind(report_path.display().to_string()).bind(\"running\").execute(&self.pool).await;\n            expedients.push(expedient_id.clone());\n            let _ = self.save_run_expedients(&run_id, &expedients).await;\n            input.delivery_id = delivery_id;\n            let report = vm_activity::execute_delivery(\n                &self.runtime,\n                &project,\n                &vbox_version,\n                &run_id,\n                &expedient_id,\n                &input,\n                &report_dir,\n                &report_path,\n            )\n            .await;\n            let status = report[\"overall_status\"]\n                .as_str()\n                .unwrap_or(\"completed_with_errors\");\n            if status != \"completed\" {\n                had_errors = true;\n            }\n            let _ = sqlx::query(\"UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?\")\n                .bind(status)\n                .bind(&expedient_id)\n                .execute(&self.pool)\n                .await;\n        }\n        let final_status = if self\n            .get_run(&run_id)\n            .await\n            .ok()\n            .flatten()\n            .is_some_and(|r| r.status == \"cancelled\")\n        {\n            \"cancelled\"\n        } else if had_errors {\n            \"completed_with_errors\"\n        } else {\n            \"completed\"\n        };\n        let _ = sqlx::query(\n            \"UPDATE vm_activity_runs SET status=? WHERE run_id=? AND status!='cancelled'\",\n        )\n        .bind(final_status)\n        .bind(run_id)\n        .execute(&self.pool)\n        .await;\n    }\n\n    async fn register_delivery(&self, input: &DeliveryInput) -> Result<String, sqlx::Error> {\n        let collection_ref = input\n            .original_source\n            .parent()\n            .unwrap_or(Path::new(\"\"))\n            .display()\n            .to_string();\n        let source_ref = input.original_source.display().to_string();\n        let content_sha256 = input.sha256.clone().unwrap_or_default();\n        sqlx::query(\"INSERT OR IGNORE INTO vm_activity_deliveries(delivery_id,collection_ref,source_ref,content_sha256,original_filename,byte_size) VALUES(?,?,?,?,?,?)\")\n            .bind(&input.delivery_id).bind(&collection_ref).bind(&source_ref).bind(&content_sha256).bind(&input.filename).bind(input.size as i64).execute(&self.pool).await?;\n        sqlx::query_scalar(\"SELECT delivery_id FROM vm_activity_deliveries WHERE collection_ref=? AND source_ref=? AND content_sha256=?\")\n            .bind(collection_ref).bind(source_ref).bind(content_sha256).fetch_one(&self.pool).await\n    }\n\n    async fn save_run_expedients(&self, run_id: &str, ids: &[String]) -> Result<(), sqlx::Error> {\n        let data = serde_json::to_string(ids).unwrap_or_else(|_| \"[]\".into());\n        sqlx::query(\"UPDATE vm_activity_runs SET expedient_ids=? WHERE run_id=?\")\n            .bind(data)\n            .bind(run_id)\n            .execute(&self.pool)\n            .await?;\n        Ok(())\n    }\n\n    pub async fn get_run(&self, run_id: &str) -> Result<Option<RunRecord>, ServiceError> {\n        let row = sqlx::query_as::<_, (String,String,String,String,String,Option<String>)>(\"SELECT run_id, project_id, delivery_directory, status, expedient_ids, error FROM vm_activity_runs WHERE run_id = ?\")\n            .bind(run_id).fetch_optional(&self.pool).await?;\n        Ok(row.map(\n            |(run_id, project_id, delivery_directory, status, ids, error)| RunRecord {\n                run_id,\n                project_id,\n                delivery_directory,\n                status,\n                expedient_ids: serde_json::from_str(&ids).unwrap_or_default(),\n                error,\n            },\n        ))\n    }\n\n    pub async fn get_expedient(\n        &self,\n        expedient_id: &str,\n    ) -> Result<Option<serde_json::Value>, ServiceError> {\n        let path = sqlx::query_scalar::<_, String>(\n            \"SELECT report_path FROM vm_activity_expedients WHERE expedient_id = ?\",\n        )\n        .bind(expedient_id)\n        .fetch_optional(&self.pool)\n        .await?;\n        let Some(path) = path else { return Ok(None) };\n        match tokio::fs::read(path).await {\n            Ok(bytes) => serde_json::from_slice(&bytes)\n                .map(Some)\n                .map_err(|e| ServiceError::Internal(e.to_string())),\n            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),\n            Err(e) => Err(ServiceError::Internal(e.to_string())),\n        }\n    }\n\n    pub async fn cancel_run(&self, run_id: &str) -> Result<Option<RunRecord>, ServiceError> {\n        let Some(mut run) = self.get_run(run_id).await? else {\n            return Ok(None);\n        };\n        if matches!(run.status.as_str(), \"queued\" | \"running\") {\n            run.status = \"cancelled\".into();\n            sqlx::query(\"UPDATE vm_activity_runs SET status = ? WHERE run_id = ?\")\n                .bind(&run.status)\n                .bind(run_id)\n                .execute(&self.pool)\n                .await?;\n        }\n        Ok(Some(run))\n    }\n\n    pub async fn cleanup_expedient(\n        &self,\n        expedient_id: &str,\n    ) -> Result<Option<serde_json::Value>, ServiceError> {\n        let row = sqlx::query_as::<_, (String, String)>(\n            \"SELECT report_path,delivery_id FROM vm_activity_expedients WHERE expedient_id=?\",\n        )\n        .bind(expedient_id)\n        .fetch_optional(&self.pool)\n        .await?;\n        let Some((path, delivery_id)) = row else {\n            return Ok(None);\n        };\n        let mut report: serde_json::Value = match tokio::fs::read(&path).await {\n            Ok(b) => {\n                serde_json::from_slice(&b).map_err(|e| ServiceError::Internal(e.to_string()))?\n            }\n            Err(_) => return Ok(None),\n        };\n        let result = vm_activity::cleanup_from_manifest(\n            &self.runtime,\n            Path::new(&path).parent().unwrap_or(Path::new(\".\")),\n            &delivery_id,\n        )\n        .await;\n        report[\"cleanup\"] = result;\n        let cleanup_status = report[\"cleanup\"][\"status\"]\n            .as_str()\n            .unwrap_or(\"failed\")\n            .to_owned();\n        let cleanup_observation = report[\"cleanup\"].clone();\n        if let Some(results) = report[\"test_results\"].as_array_mut() {\n            if let Some(cleanup) = results.iter_mut().find(|r| r[\"test_id\"] == \"CLEAN-001\") {\n                let now = chrono::Utc::now().to_rfc3339();\n                if cleanup[\"start_time\"].is_null() {\n                    cleanup[\"start_time\"] = serde_json::json!(now);\n                }\n                cleanup[\"end_time\"] = serde_json::json!(now);\n                cleanup[\"status\"] = serde_json::json!(cleanup_status);\n                cleanup[\"observation\"] = cleanup_observation.clone();\n                cleanup[\"evidence\"] = serde_json::json!([\"cleanup-manifest.json\"]);\n                cleanup[\"diagnostics\"] = if cleanup_status == \"passed\" {\n                    serde_json::Value::Null\n                } else {\n                    serde_json::json!(cleanup_observation[\"details\"].to_string())\n                };\n            }\n        }\n        report[\"finished_at\"] = serde_json::json!(chrono::Utc::now().to_rfc3339());\n        let all_passed = report[\"test_results\"]\n            .as_array()\n            .is_some_and(|results| results.iter().all(|r| r[\"status\"] == \"passed\"));\n        report[\"overall_status\"] = serde_json::json!(if all_passed {\n            \"completed\"\n        } else {\n            \"completed_with_errors\"\n        });\n        let bytes = serde_json::to_vec_pretty(&report)\n            .map_err(|e| ServiceError::Internal(e.to_string()))?;\n        tokio::fs::write(&path, bytes)\n            .await\n            .map_err(|e| ServiceError::Internal(e.to_string()))?;\n        let status = report[\"overall_status\"]\n            .as_str()\n            .unwrap_or(\"completed_with_errors\")\n            .to_owned();\n        sqlx::query(\"UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?\")\n            .bind(&status)\n            .bind(expedient_id)\n            .execute(&self.pool)\n            .await?;\n        if report[\"cleanup\"][\"status\"] == \"passed\" {\n            let run_id = sqlx::query_scalar::<_, String>(\n                \"SELECT run_id FROM vm_activity_expedients WHERE expedient_id=?\",\n            )\n            .bind(expedient_id)\n            .fetch_one(&self.pool)\n            .await?;\n            let pending:i64=sqlx::query_scalar(\"SELECT COUNT(*) FROM vm_activity_expedients WHERE run_id=? AND status='interrupted_cleanup_pending'\").bind(&run_id).fetch_one(&self.pool).await?;\n            if pending == 0 {\n                sqlx::query(\"UPDATE vm_activity_runs SET status='completed_with_errors' WHERE run_id=? AND status='interrupted_cleanup_pending'\").bind(run_id).execute(&self.pool).await?;\n            }\n        }\n        Ok(Some(report[\"cleanup\"].clone()))\n    }\n}\n\nfn valid_id(id: &str) -> bool {\n    !id.is_empty()\n        && id.len() <= 64\n        && id\n            .bytes()\n            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')\n}\n\n#[derive(Debug, thiserror::Error)]\npub enum ServiceError {\n    #[error(\"invalid request: {0}\")]\n    Invalid(String),\n    #[error(\"conflict: {0}\")]\n    Conflict(String),\n    #[error(\"service error: {0}\")]\n    Internal(String),\n    #[error(transparent)]\n    Storage(#[from] sqlx::Error),\n}\n\n----- END CURRENT FILE -----\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-24 15:06:26+0200 ERROR ========== TASK FAILURE: ReadTimeout: HTTPConnectionPool(host='192.168.1.106', port=11434): Read timed out. (read timeout=1200) ==========
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 516, in getresponse
+    httplib_response = super().getresponse()
+  File "/usr/lib/python3.13/http/client.py", line 1459, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 297, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/socket.py", line 719, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+TimeoutError: timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/retry.py", line 474, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+        self, url, f"Read timed out. (read timeout={timeout_value})"
+    ) from err
+urllib3.exceptions.ReadTimeoutError: HTTPConnectionPool(host='192.168.1.106', port=11434): Read timed out. (read timeout=1200)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 392, in process_one
+    apply_task(
+    ~~~~~~~~~~^
+        task,
+        ^^^^^
+    ...<4 lines>...
+        logger=logger,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 314, in apply_task
+    output = call_ollama(
+        prompt,
+    ...<3 lines>...
+        logger=logger,
+    )
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 185, in call_ollama
+    response = requests.post(url, json=payload, timeout=timeout)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 713, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPConnectionPool(host='192.168.1.106', port=11434): Read timed out. (read timeout=1200)
+2026-10-24 15:06:26+0200 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/failure/072-bounded-delivery-concurrency.yaml

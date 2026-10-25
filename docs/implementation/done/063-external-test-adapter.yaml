@@ -1,0 +1,7 @@
+id: "063-external-test-adapter"
+title: "Execute archive-provided tests"
+depends_on: ["055-export-external-process-runner", "056-test-invocation-contract"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/tests/extern.rs"
+action: create
+prompt: |-
+  Implement execution for test references beginning extern/. Resolve the relative path under the extracted project root, reject symlinks/non-files/path escape, and pass parameters as individual key=value arguments without shell interpolation. Run .py files with python3, .sh files with sh, and other files directly only when executable. Set THOT_ARTIFACT_DIR for the test's artifacts folder and use the project root as the working directory. Enforce invocation timeout and bounded output through thot-runner, then map exit code, timeout, and spawn errors into the normalized outcome. Edit only this file.

@@ -1,0 +1,7 @@
+id: "056-test-invocation-contract"
+title: "Define the engine test invocation contract"
+depends_on: ["045-project-test-model", "046-test-result-process-output"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/test_execution.rs"
+action: create
+prompt: |-
+  Define engine-side types for one expanded test invocation and its normalized outcome. The invocation must carry the configured test reference/name, repeat index, merged string parameters, effective timeout, extracted project root, physical project archive parent directory, delivery OVA path/name, per-delivery report directory, per-test artifacts directory, and a clone of VmActivityRuntime. The outcome must carry TestStatus, stdout, stderr, optional exit_code, diagnostics, structured observation, and evidence paths. Add a helper to produce the repeat display name (for example start_time_01) while leaving a non-repeated test named start_time. Do not schedule, persist, or run tests in this file. Edit only this file.

@@ -1,0 +1,7 @@
+id: "045-project-test-model"
+title: "Define project-configured tests and parameters"
+depends_on: []
+file: "/home/carlos/worktrees/thot/crates/thot-core/src/vm_activity.rs"
+action: modify
+prompt: |-
+  Replace the fixed VM activity configuration types with reusable project types for the requested configuration.yaml format. Model activity_name, delivery_folder, concurrency, global timeout, and an ordered list of tests. Each test needs name, test reference, requirements, repeat (default 1), optional timeout, and string parameters. Preserve parameter insertion order. Accept parameters as either a YAML mapping or the example's sequence of single-key mappings; reject duplicate keys in the loader rather than silently overwriting. Keep run request/response types in this file compatible until their dedicated API tasks. Add Serde derives/defaults and no filesystem or execution logic. Edit only this file.

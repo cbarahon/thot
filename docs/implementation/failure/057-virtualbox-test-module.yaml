@@ -1,0 +1,7 @@
+id: "057-virtualbox-test-module"
+title: "Create the VirtualBox test platform module"
+depends_on: ["056-test-invocation-contract"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/tests/virtualbox/mod.rs"
+action: create
+prompt: |-
+  Create the VirtualBox platform module and shared helpers for built-in tests. Dispatch only import_ova, start_vm, stop_vm, and destroy_vm. Read parameters from TestInvocation and call VBoxManage using the existing LocalVirtualBoxRunner with argument arrays, never shell strings. Provide helpers for vm_name (random thot_<suffix> when import_ova omits it), default group /thot, default vm_path ./thot_vms relative to the project archive directory, and consistent YAML stdout/JSON observation with exit_code. Resolve vm_path beneath the physical project archive parent, reject absolute paths/traversal/symlinks, and ensure created resources are recorded for manifest-scoped cleanup. Child operation modules are added by dependent tasks. Edit only this file.

@@ -1,0 +1,7 @@
+id: "061-virtualbox-destroy-test"
+title: "Implement manifest-scoped VirtualBox destroy_vm test"
+depends_on: ["057-virtualbox-test-module"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/tests/virtualbox/destroy_vm.rs"
+action: create
+prompt: |-
+  Implement VirtualBox/destroy_vm using the current delivery's persisted cleanup manifest. Verify the recorded VM UUID and owned storage path before unregistering/deleting; never delete by name or group alone. Make cleanup idempotent, verify the VM is unregistered and owned storage is removed, and return normalized status/stdout/stderr/exit_code with cleanup observations. Do not touch resources absent from the manifest. Edit only this file.

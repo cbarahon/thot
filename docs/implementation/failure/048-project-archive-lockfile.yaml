@@ -1,0 +1,7 @@
+id: "048-project-archive-lockfile"
+title: "Refresh lockfile for archive support"
+depends_on: ["047-project-archive-dependencies"]
+file: "/home/carlos/worktrees/thot/Cargo.lock"
+action: modify
+prompt: |-
+  Update Cargo.lock to include the ZIP, tar, and gzip dependencies declared by task 047 and their resolved transitive dependencies. Preserve all existing package selections unless resolution requires a change. Do not edit Cargo.toml files or source. Edit only this file.

@@ -1,0 +1,7 @@
+id: "077-example-start-time-script"
+title: "Provide the external startup measurement example"
+depends_on: ["063-external-test-adapter", "076-example-activity-configuration"]
+file: "/home/carlos/worktrees/thot/examples/vm-activity-poc/extern/tests/vm_start_time.py"
+action: create
+prompt: |-
+  Create a Python 3 external test matching the example configuration. Read vm_name=... arguments, start that VM headlessly, poll http://127.0.0.1:8080/ until response or timeout, save the returned HTML and a VirtualBox screenshot inside THOT_ARTIFACT_DIR, and always power the VM off in a finally block. Print a concise YAML-compatible observation to stdout, diagnostics to stderr, and exit 0 only when startup and evidence capture succeed. Use subprocess argument arrays, no shell, and bounded waits. Edit only this file.

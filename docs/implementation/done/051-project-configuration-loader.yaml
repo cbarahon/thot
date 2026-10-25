@@ -1,0 +1,7 @@
+id: "051-project-configuration-loader"
+title: "Parse and validate configuration.yaml"
+depends_on: ["045-project-test-model"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/project_config.rs"
+action: create
+prompt: |-
+  Parse configuration.yaml into the thot-core project types. Validate required fields, concurrency 1..64, global/per-test timeout 1..86400 seconds, unique test names, repeat 1..100, and safe test references. Built-in references use platform/test identifiers; external references must be relative paths beginning extern/ and contain no parent traversal. Requirements may name only earlier tests, because dependencies run in declared order. Normalize parameters supplied as either a mapping or a sequence of single-key mappings and reject duplicates/non-scalar values. Permit a pass parameter inside SSH test parameters as specified. Return structured, readable validation errors. Edit only this file.

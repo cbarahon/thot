@@ -1,0 +1,7 @@
+id: "049-safe-project-archive-reader"
+title: "Safely extract project archives"
+depends_on: ["047-project-archive-dependencies"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/project_archive.rs"
+action: create
+prompt: |-
+  Implement a project archive reader for .thot.zip and .thot.tgz files. Extract into a caller-provided new staging directory and require configuration.yaml at the archive root. Limit compressed input to 100 MiB, expanded content to 500 MiB, and entries to 2,000. Reject absolute paths, parent traversal, duplicate/conflicting paths, symlinks, hard links, unsupported entry types, and limit violations. Never execute files during extraction. Return the extracted root and useful errors. Keep archive parsing and path checks in this file; do not parse test configuration here. Edit only this file.

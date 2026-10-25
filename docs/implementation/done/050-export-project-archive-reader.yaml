@@ -1,0 +1,7 @@
+id: "050-export-project-archive-reader"
+title: "Export the archive reader module"
+depends_on: ["049-safe-project-archive-reader"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/lib.rs"
+action: modify
+prompt: |-
+  Export project_archive as a public module from the engine library so project loading can use the safe ZIP/tgz reader. Preserve all existing module declarations and exports. Edit only this file.
