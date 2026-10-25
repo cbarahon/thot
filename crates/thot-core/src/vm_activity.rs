@@ -1,73 +1,74 @@
+//! Purpose: Defines project configuration and test declarations loaded from project archives.
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 
-#[derive(Serialize, Deserialize, Debug)]
+/// Project configuration stored as configuration.yaml in a .thot.zip/.thot.tgz archive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VMActivityProject {
-    pub project_id: String,
-    pub schema_version: String,
-    pub http_endpoint: String,
-    pub trial_policy: TrialPolicy,
-    pub ssh_username: String,
-    pub ssh_secret_ref: String,
-    pub limits: Limits,
     pub activity_name: String,
     pub delivery_folder: String,
-    pub concurrency: u32,
-    pub global_timeout: u32,
-    pub tests: Vec<Test>,
+    pub concurrency: usize,
+    pub timeout: u64,
+    pub tests: Vec<ProjectTest>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct TrialPolicy {
-    pub max_duration: u32,
-    pub max_instances: u32,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Limits {
-    pub cpu: u32,
-    pub memory: u32,
-    pub disk_space: u32,
-    pub timeout: u32,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Test {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectTest {
     pub name: String,
+    #[serde(rename = "test")]
     pub test_ref: String,
-    pub requirements: Requirements,
-    #[serde(default = "default_repeat")]
-    pub repeat: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<u32>,
     #[serde(default)]
-    pub string_params: Vec<StringParam>,
+    pub requirements: Vec<String>,
+    #[serde(default = "default_repeat")]
+    pub repeat: usize,
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    #[serde(default)]
+    pub parameters: ParameterInput,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Requirements {
-    // Define requirements here
+/// The example format permits either a mapping or a sequence of one-key mappings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ParameterInput {
+    Mapping(BTreeMap<String, Value>),
+    Entries(Vec<BTreeMap<String, Value>>),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct StringParam {
-    pub key: String,
-    pub value: String,
+impl Default for ParameterInput {
+    fn default() -> Self {
+        Self::Mapping(BTreeMap::new())
+    }
 }
 
-fn default_repeat() -> u32 {
+impl ParameterInput {
+    pub fn into_strings(&self) -> Result<BTreeMap<String, String>, String> {
+        let entries: Vec<(&String, &Value)> = match self {
+            Self::Mapping(values) => values.iter().collect(),
+            Self::Entries(groups) => groups.iter().flat_map(|group| group.iter()).collect(),
+        };
+        let mut result = BTreeMap::new();
+        for (key, value) in entries {
+            let text = match value {
+                Value::String(value) => value.clone(),
+                Value::Number(value) => value.to_string(),
+                Value::Bool(value) => value.to_string(),
+                Value::Null => String::new(),
+                Value::Array(_) | Value::Object(_) => {
+                    return Err(format!("parameter {key:?} must be a scalar"));
+                }
+            };
+            if result.insert(key.clone(), text).is_some() {
+                return Err(format!("parameter {key:?} is repeated"));
+            }
+        }
+        Ok(result)
+    }
+}
+
+fn default_repeat() -> usize {
     1
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RunCreateRequest {
-    pub project_id: String,
-    pub instance_id: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RunStatusResponse {
-    pub instance_id: String,
-    pub status: String,
-    pub start_time: String,
-    pub end_time: Option<String>,
-}
+pub type VMActivity = VMActivityProject;

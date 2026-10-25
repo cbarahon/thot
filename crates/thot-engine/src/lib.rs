@@ -1,16 +1,20 @@
-//! Application services and persistence for Thot.
+//! Purpose: Exports the engine's project, test, student, and delivery-run services.
 
+pub mod delivery_executor;
 pub mod delivery_run_service;
+pub mod project_archive;
+pub mod project_config;
 pub mod storage;
 mod students;
+pub mod test_execution;
+pub mod test_executor;
+pub mod test_result_store;
+pub mod tests;
 pub mod vm_activity;
-pub mod project_archive; // Export the project_archive module
 
 pub use delivery_run_service::{DeliveryRunService, RunRecord};
 pub use storage::SqliteStudentRepository;
 pub use students::StudentService;
-
-pub use project_archive::project_config; // Export project_config as a public engine module
 
 use thiserror::Error;
 

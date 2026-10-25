@@ -1,43 +1,24 @@
 # Native VirtualBox POC deployment
 
-The VM activity runs `thotd` natively on the VirtualBox host. The existing
-container deployment template is not the execution boundary for this POC:
-`VBoxManage` inside a container would use a different VM registry unless the
-host profile and devices were mounted into it, which this deployment does not
-do. Do not run the POC through Docker or Podman.
+The POC runs `thotd` natively on the Linux host where VirtualBox is installed. It does not support invoking the host VirtualBox registry from the existing container deployment. Run the service under a dedicated, unprivileged OS account with a dedicated VirtualBox profile.
 
-## Build production artifacts
+## Build
 
-Build on a Linux machine compatible with the target host. Rust and Cargo are
-needed only on this build machine. The target host receives the two release
-binaries and configuration, not the source tree or Cargo development files.
+Build on a Linux machine compatible with the target host. Rust and Cargo are needed only on the build machine.
 
 ```sh
 cargo build --release --locked -p thotd -p thot-cli
 install -D -m 0755 target/release/thotd ./dist/thotd
 install -D -m 0755 target/release/thot ./dist/thot
-install -D -m 0644 examples/vm-activity-poc/project.yaml \
-  ./dist/projects/example-vm-activity.yaml
 ```
 
-Copy `dist/` to the target; it contains the two production binaries and the
-sample project configuration, without the source tree or development files.
-Keep the binaries from the same build together. Runtime prerequisites on the
-target are a supported Linux host, VirtualBox with `VBoxManage`, SQLite-compatible filesystem storage, and
-GNU `df` from coreutils (the daemon uses `df -B1 --output=avail`), plus the
-shared libraries reported by `ldd dist/thotd` and `ldd dist/thot` (install
-those from the host distribution). Use the same Linux architecture and ABI for
-the build and target hosts. Neither Rust nor Cargo is needed on the target.
-The web UI, lighttpd, Docker, and a container runtime are not required.
+Copy the binaries and a teacher-created `.thot.zip` or `.thot.tgz` project archive to the target. The archive must contain `configuration.yaml` at its root; external checks such as `extern/tests/vm_start_time.py` are packaged beside it. The repository example is in `examples/vm-activity-poc/`. Neither the UI, lighttpd, Docker, nor Cargo is needed on the target.
 
 ## Prepare the host
 
-Use a dedicated, unprivileged OS account for Thot. It must own its VirtualBox
-profile and storage paths and have permission to use the installed VirtualBox
-kernel driver. Do not run `thotd` as root and do not reuse a teacher's normal
-VirtualBox account or profile.
+Install VirtualBox from the host's approved package source. The service account must be allowed to use its kernel driver. Set up separate service-owned directories for project archives, deliveries, artifacts, VM storage, and the VirtualBox profile. Do not run `thotd` as root or reuse a teacher's normal VirtualBox profile.
 
-Example paths (adjust to local policy):
+Example paths:
 
 ```text
 service account: thotd
@@ -46,82 +27,29 @@ deliveries:     /var/lib/thot/deliveries
 artifacts:      /var/lib/thot/artifacts
 VM storage:     /var/lib/thot/vms
 VBox profile:   /var/lib/thot/vbox-profile
-SSH secret:     /etc/thot/secrets/guest-ssh-password
 ```
 
-On a fresh Debian/Ubuntu style host, create the service account and writable
-data tree. Install VirtualBox from the host's approved package source first;
-the service account must be allowed to use that installation's kernel driver.
-Some distributions require membership in `vboxusers`; follow the installed
-VirtualBox package's access policy and restart the service after changing
-group membership.
+Create the base directories and install the project archive. The archive itself should be read-only to the daemon. Create the configured delivery and VM storage subdirectories beside it; the daemon needs read access to deliveries and write access to the VM storage subdirectory because the project `vm_path` is relative to the archive's containing directory. For example, with `vm_path: ./vms`, provision a writable `vms/` directory next to the archive. Keep this directory separate from the archive and its scripts.
 
 ```sh
 sudo useradd --system --create-home --home-dir /var/lib/thot --shell /usr/sbin/nologin thotd
 sudo install -d -o thotd -g thotd -m 0750 \
   /var/lib/thot/deliveries /var/lib/thot/artifacts /var/lib/thot/vms \
   /var/lib/thot/vbox-profile
-sudo install -d -o root -g thotd -m 0750 /etc/thot/projects /etc/thot/secrets
-```
-
-The configured paths must remain separate and the VM storage root must be
-empty when starting a run. Make the project directory read-only to the service
-after project installation. Restrict the SSH secret to the service account
-(`root:thotd`, mode `0640`, or stricter). It contains only the guest password.
-Never place the password in project YAML, process arguments, database rows,
-expedients, or logs.
-
-Run all VirtualBox commands as `thotd` with `VBOX_USER_HOME` set to the
-dedicated profile. Import, inspection, power operations, screenshot, and
-cleanup must use the same account, executable, profile, and storage root. Use
-the pinned VirtualBox version recorded during qualification; repeat adapter
-compatibility checks after changing it.
-
-The host firewall must prevent the guest from reaching unrelated host services
-and unnecessary outbound destinations. NAT forwarding is loopback-only:
-guest TCP 80 maps to `127.0.0.1:8080`, and guest TCP 22 maps to
-`127.0.0.1:2222`. Do not use bridged networking. Disable shared folders,
-shared clipboard, drag-and-drop, and USB passthrough. Do not attach host
-directories or devices to imported guests. The `/thot` VM group and VM name
-prefix are labels; the dedicated profile, storage root, and persisted cleanup
-manifest establish run ownership.
-
-Before starting `thotd`, verify that host ports 8080 and 2222 are free. The
-service API defaults to `127.0.0.1:8081`; keep it loopback-only. Configure
-`thot` on the same host, or use an SSH tunnel for operator access. The run
-preflight rejects any OVA exceeding the size limit. Before import, the daemon
-estimates the VM storage needed by summing the VMDK member sizes in the OVA tar
-and requires that estimate plus the configured reserve. This is a conservative
-archive-based estimate; the reserve must account for VirtualBox conversion and
-filesystem overhead. The retained source OVA is separately checked against
-available space in artifact storage. Keep report, HTTP body, and command output
-limits finite. Source OVAs, project snapshots, expedients, logs, and evidence
-remain until an operator explicitly archives or removes them.
-
-## Configure and install
-
-Install the project YAML as `/etc/thot/projects/<project-id>.yaml`. The project
-contains the fixed activity policy and a secret reference only; host paths,
-credentials, and executable commands do not belong in the project. Place OVA
-files directly in a subdirectory of `/var/lib/thot/deliveries`.
-
-Install the repository's sample as a starting point and create a delivery
-folder:
-
-```sh
-sudo install -o root -g thotd -m 0640 dist/projects/example-vm-activity.yaml \
-  /etc/thot/projects/example-vm-activity.yaml
+sudo install -d -o thotd -g thotd -m 0750 /etc/thot/projects
+sudo install -o root -g thotd -m 0640 linux_competition.thot.tgz \
+  /etc/thot/projects/linux_competition.thot.tgz
 sudo install -d -o thotd -g thotd -m 0750 \
-  /var/lib/thot/deliveries/batch-01
+  /etc/thot/projects/delivery /etc/thot/projects/vms
 ```
 
-Provision the guest password into the configured secret file using the host's
-secret-management process. For example, create the file out of band and then
-set its owner to `root:thotd` and mode to `0640`; do not put its value in a
-shell command or this environment file.
+If administrators keep archive directories root-owned, pre-create each configured writable `delivery_folder` and `vm_path` directory with service-account ownership. Project extraction happens into a run-scoped snapshot under the artifact root. Treat external scripts as trusted instructor code: they execute as child processes with the daemon account's access to the host and VirtualBox profile. The runner applies per-test timeouts and output limits, but it is not a script sandbox.
 
-Create `/etc/thot/thotd.env` (mode `0640`, root-owned and readable by the
-service) and set the host-specific values:
+The service requires free loopback TCP ports 8080 and 2222 before VM runs. Guest networking must forward guest TCP 80 to `127.0.0.1:8080` and guest TCP 22 to `127.0.0.1:2222` through NAT. Configure host firewall and guest egress rules to block access to unrelated host services and unnecessary destinations. Do not use bridged networking or attach host folders, clipboard, drag-and-drop, or USB devices to imported guests. `THOTD_FIREWALL_CONFIRMATION=true` records the administrator's manual confirmation; the daemon does not inspect firewall policy.
+
+## Configure `thotd`
+
+Create `/etc/thot/thotd.env` owned by root and readable by the service account (mode `0640`):
 
 ```ini
 THOTD_BIND_HOST=127.0.0.1
@@ -141,22 +69,14 @@ THOTD_IMPORT_TIMEOUT=1800
 THOTD_STARTUP_TIMEOUT=180
 THOTD_SSH_TIMEOUT=15
 THOTD_SHUTDOWN_GRACE=30
-THOTD_SSH_SECRET_FILE=/etc/thot/secrets/guest-ssh-password
 THOTD_FIREWALL_CONFIRMATION=true
 ```
 
-Set `THOTD_EXPECTED_VBOX_VERSION` to the qualified `VBoxManage --version`
-number (for example, `7.0.20`, without the trailing `r...`). Runs fail
-preflight when the installed version differs. Set
-`THOTD_FIREWALL_CONFIRMATION=true` only after the administrator has checked
-firewall and guest egress rules manually; the service cannot inspect firewall
-policy. The SSH user is fixed as `tvadmin` by the activity project schema.
+Set `THOTD_EXPECTED_VBOX_VERSION` to the qualified `VBoxManage --version` value without the trailing build suffix. Runs fail preflight if the installed version differs. Project parameters supply guest SSH credentials, so no `THOTD_SSH_SECRET_FILE` is required. The example password is public sample data; replace it with the guest credentials for the assignment and protect the project archive with host permissions. Never put real credentials in a public or student-accessible project archive.
 
-`THOTD_DATA_ROOT` is an optional shorthand for the default delivery, artifact,
-VM, and VirtualBox profile roots. The API binding, project root, database,
-VirtualBox executable, and secret path should be reviewed for the target host.
+Optional `THOTD_DATA_ROOT` changes the default data base used for delivery, artifact, VM, profile, and database paths. Explicit values above are easier to review. Keep `THOTD_STORAGE_ROOT`, the project `vm_path`, the VirtualBox profile, and artifact storage separate. The service checks that its configured profile, storage, and artifact roots do not overlap and that its dedicated storage root is empty before a VM run.
 
-Example systemd unit (`/etc/systemd/system/thotd.service`):
+Example systemd unit:
 
 ```ini
 [Unit]
@@ -178,13 +98,15 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/thot
+ReadWritePaths=/var/lib/thot /etc/thot/projects/delivery /etc/thot/projects/vms
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Install and start it:
+Adjust `ReadWritePaths` to the actual configured `delivery_folder` and `vm_path` directories. Review the systemd sandbox against the installed VirtualBox driver and host paths before use; grant only the access required by the service account.
+
+Install the binaries and start the service:
 
 ```sh
 sudo install -o root -g root -m 0755 dist/thotd /usr/local/sbin/thotd
@@ -194,32 +116,17 @@ sudo systemctl enable --now thotd
 sudo systemctl status thotd
 ```
 
-Review the systemd sandbox against the installed VirtualBox driver and profile
-before use. If the host's VirtualBox setup needs additional access, grant only
-that access to the `thotd` service account; do not disable the service
-hardening wholesale.
+## Create and inspect a run
 
-## Start and inspect a run
-
-The CLI default is `127.0.0.1:8081`. Use a project ID matching the YAML file
-name without the `.yaml` extension and a delivery directory below the
-configured delivery root:
+The project ID is the archive filename without `.thot.tgz` or `.thot.zip`. When no delivery override is supplied, the engine uses the project's `delivery_folder`. Alternatively, pass a directory inside `THOTD_DELIVERY_ROOT`:
 
 ```sh
-thot run create --project example-vm-activity --deliveries /var/lib/thot/deliveries/batch-01
+thot run create --project linux_competition
+# or
+thot run create --project linux_competition --deliveries /var/lib/thot/deliveries/batch-01
 thot run status <run-id>
 thot run expedient <expedient-id>
 thot run cleanup <expedient-id>
 ```
 
-The host administrator must check that loopback forwarding works, the two VM
-ports are free, the API port is available, the VBox profile is dedicated, and
-the service can capture screenshots. Confirm the firewall and guest egress
-policy before importing any untrusted OVA. Do not run a delivery when those
-checks cannot be made.
-
-Cleanup after an interrupted host or process must use the persisted
-run-specific manifest and verify the VM UUID and storage paths before deletion.
-Never delete by VM name, group, or prefix alone. Verify the VM is unregistered
-and only run-owned storage has been removed. A remaining resource means
-cleanup is pending and must be reported as such; it is not a clean run.
+The current POC accepts one active run and processes deliveries sequentially. Check each expedient and cleanup result. A host without VirtualBox can build and run the basic Rust tests, but cannot validate OVA import, guest boot, forwarding, screenshots, SSH, or VM cleanup.

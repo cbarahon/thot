@@ -1,3 +1,4 @@
+//! Purpose: Validates, imports, and retrieves student records through the repository interface.
 use thot_core::{
     GetStudentsResponse, ImportStudentsRequest, ImportStudentsResponse, RejectedStudent,
     StudentInput,

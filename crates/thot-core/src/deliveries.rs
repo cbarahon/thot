@@ -1,3 +1,4 @@
+//! Purpose: Defines shared data types for identifying and tracking student deliveries.
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

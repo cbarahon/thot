@@ -1,64 +1,123 @@
-use std::fs;
+//! Purpose: Runs trusted project-supplied test programs with bounded time and captured output.
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use thot_core::test_results::TestStatus;
+use thot_runner::external::run_external_process;
 
-fn execute_test(test_path: &Path, artifact_dir: &Path) -> Result<(), String> {
-    let test_name = test_path.file_stem().unwrap().to_str().unwrap();
-    let artifact_path = artifact_dir.join(test_name);
+use crate::test_execution::{TestInvocation, TestOutcome};
 
-    if !test_path.is_file() {
-        return Err(format!("Path is not a file: {}", test_path.display()));
+pub async fn run(invocation: &TestInvocation) -> TestOutcome {
+    let Some(relative) = invocation.test_reference.strip_prefix("extern/") else {
+        return TestOutcome::error("external test reference must begin extern/");
+    };
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return TestOutcome::error("external test path is unsafe");
     }
+    let root = match invocation.project_root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => return TestOutcome::error(format!("project files are unavailable: {error}")),
+    };
+    let script = invocation.project_root.join(relative_path);
+    let metadata = match std::fs::symlink_metadata(&script) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
+        Ok(_) => return TestOutcome::error("external test must be a regular file"),
+        Err(error) => return TestOutcome::error(format!("external test is unavailable: {error}")),
+    };
+    let _ = metadata;
+    let canonical_script = match script.canonicalize() {
+        Ok(path) if path.starts_with(&root) => path,
+        Ok(_) => return TestOutcome::error("external test path escapes project root"),
+        Err(error) => return TestOutcome::error(format!("cannot resolve external test: {error}")),
+    };
 
-    if test_path.is_symlink() {
-        return Err(format!("Path is a symlink: {}", test_path.display()));
-    }
-
-    if test_path.starts_with("..") {
-        return Err(format!("Path escapes the project root: {}", test_path.display()));
-    }
-
-    let mut command = Command::new("thot-runner")
-        .arg("--timeout")
-        .arg("60") // Set timeout to 60 seconds
-        .arg("--output")
-        .arg(&artifact_path)
-        .arg(test_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn process: {}", e))?;
-
-    let output = command.wait_with_output().map_err(|e| format!("Failed to wait for process: {}", e))?;
-
-    if output.status.success() {
-        Ok(())
-    } else if output.status.code().unwrap() == 124 {
-        Err(format!("Test timed out: {}", test_path.display()))
-    } else {
-        Err(format!("Test failed with exit code {}: {}", output.status.code().unwrap(), test_path.display()))
-    }
-}
-
-fn main() {
-    let project_root = Path::new("/home/carlos/worktrees/thot/crates/thot-engine");
-    let artifact_dir = project_root.join("artifacts");
-
-    if !artifact_dir.exists() {
-        fs::create_dir_all(&artifact_dir).expect("Failed to create artifact directory");
-    }
-
-    let test_dir = project_root.join("src/tests/extern");
-    if test_dir.exists() {
-        for entry in fs::read_dir(&test_dir).expect("Failed to read test directory") {
-            let entry = entry.expect("Failed to read directory entry");
-            let path = entry.path();
-            if path.is_file() {
-                if let Err(e) = execute_test(&path, &artifact_dir) {
-                    eprintln!("Error executing test {}: {}", path.display(), e);
+    let mut args = Vec::new();
+    let executable: PathBuf;
+    match canonical_script.extension().and_then(|e| e.to_str()) {
+        Some("py") => {
+            executable = PathBuf::from("python3");
+            args.push(canonical_script.to_string_lossy().into_owned());
+        }
+        Some("sh") => {
+            executable = PathBuf::from("sh");
+            args.push(canonical_script.to_string_lossy().into_owned());
+        }
+        _ => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o111 == 0 {
+                    return TestOutcome::error("external test is not executable");
                 }
             }
+            executable = canonical_script.clone();
         }
+    }
+    for (key, value) in &invocation.parameters {
+        if key.contains('=') || key.contains('\0') || value.contains('\0') {
+            return TestOutcome::error("external test parameter contains an invalid character");
+        }
+        args.push(format!("{key}={value}"));
+    }
+    if let Err(error) = tokio::fs::create_dir_all(&invocation.artifacts_dir).await {
+        return TestOutcome::error(format!(
+            "cannot create external test artifact directory: {error}"
+        ));
+    }
+    let env = vec![
+        (
+            "THOT_ARTIFACT_DIR".to_owned(),
+            invocation.artifacts_dir.to_string_lossy().into_owned(),
+        ),
+        (
+            "VBOX_USER_HOME".to_owned(),
+            invocation
+                .runtime
+                .vbox_user_home
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "VBOX_MANAGE_PATH".to_owned(),
+            invocation
+                .runtime
+                .vbox_manage
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ];
+    match run_external_process(
+        &executable,
+        &args,
+        &root,
+        &env,
+        invocation.timeout,
+        invocation.runtime.output_limit,
+    )
+    .await
+    {
+        Ok(output) => TestOutcome {
+            status: if output.timed_out {
+                TestStatus::TimedOut
+            } else if output.exit_code == Some(0) {
+                TestStatus::Passed
+            } else {
+                TestStatus::Failed
+            },
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: output.exit_code,
+            diagnostics: if output.stdout_truncated || output.stderr_truncated {
+                "process output was truncated at the configured limit".into()
+            } else {
+                String::new()
+            },
+            observation: serde_json::json!({"duration_ms": output.elapsed.as_millis()}),
+            evidence: Vec::new(),
+        },
+        Err(error) => TestOutcome::error(error),
     }
 }

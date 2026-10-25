@@ -1,3 +1,4 @@
+//! Purpose: Coordinates delivery runs, database state, delivery discovery, and expedient cleanup.
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
@@ -6,7 +7,10 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-use crate::vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime};
+use crate::{
+    delivery_executor,
+    vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
@@ -61,32 +65,13 @@ impl DeliveryRunService {
     pub async fn create_run(
         &self,
         project_id: String,
-        delivery_directory: String,
+        delivery_directory: Option<String>,
     ) -> Result<RunRecord, ServiceError> {
         if !valid_id(&project_id) {
             return Err(ServiceError::Invalid(
                 "project_id must be a simple project identifier".into(),
             ));
         }
-        let root = self
-            .delivery_root
-            .canonicalize()
-            .map_err(|e| ServiceError::Invalid(format!("delivery root is unavailable: {e}")))?;
-        let selected = Path::new(&delivery_directory).canonicalize().map_err(|e| {
-            ServiceError::Invalid(format!("delivery directory is unavailable: {e}"))
-        })?;
-        if !selected.is_dir() || !selected.starts_with(&root) {
-            return Err(ServiceError::Invalid(
-                "delivery directory must be inside THOTD_DELIVERY_ROOT".into(),
-            ));
-        }
-        if std::fs::symlink_metadata(&delivery_directory).is_ok_and(|m| m.file_type().is_symlink())
-        {
-            return Err(ServiceError::Invalid(
-                "delivery directory cannot be a symlink".into(),
-            ));
-        }
-
         let _guard = self.create_gate.lock().await;
         let active: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM vm_activity_runs WHERE status IN ('queued','running')",
@@ -107,9 +92,70 @@ impl DeliveryRunService {
         let snapshot = vm_activity::load_project(&self.project_root, &project_id, &snapshot_dir)
             .await
             .map_err(ServiceError::Invalid)?;
-        let vbox_version = vm_activity::preflight(&self.runtime)
-            .await
-            .map_err(ServiceError::Invalid)?;
+        let selected = if let Some(override_path) = delivery_directory {
+            let root = self
+                .delivery_root
+                .canonicalize()
+                .map_err(|e| ServiceError::Invalid(format!("delivery root is unavailable: {e}")))?;
+            let requested = Path::new(&override_path);
+            if std::fs::symlink_metadata(requested).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(ServiceError::Invalid(
+                    "delivery directory cannot be a symlink".into(),
+                ));
+            }
+            let selected = requested.canonicalize().map_err(|e| {
+                ServiceError::Invalid(format!("delivery directory is unavailable: {e}"))
+            })?;
+            if !selected.is_dir() || !selected.starts_with(&root) {
+                return Err(ServiceError::Invalid(
+                    "delivery override must be inside THOTD_DELIVERY_ROOT".into(),
+                ));
+            }
+            selected
+        } else {
+            let relative = Path::new(&snapshot.configuration.delivery_folder);
+            if relative.is_absolute()
+                || relative.components().any(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                })
+            {
+                return Err(ServiceError::Invalid(
+                    "configuration delivery_folder must remain below the project archive directory"
+                        .into(),
+                ));
+            }
+            let base = snapshot.archive_parent.canonicalize().map_err(|e| {
+                ServiceError::Invalid(format!("project archive directory is unavailable: {e}"))
+            })?;
+            let requested = base.join(relative);
+            if std::fs::symlink_metadata(&requested).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(ServiceError::Invalid(
+                    "configured delivery_folder cannot be a symlink".into(),
+                ));
+            }
+            let selected = requested.canonicalize().map_err(|e| {
+                ServiceError::Invalid(format!("configured delivery folder is unavailable: {e}"))
+            })?;
+            if !selected.is_dir() || !selected.starts_with(&base) {
+                return Err(ServiceError::Invalid("configured delivery_folder must be a directory below the project archive directory".into()));
+            }
+            selected
+        };
+        let uses_vm_ports = snapshot.configuration.tests.iter().any(|test| {
+            test.test_ref.starts_with("VirtualBox/") || test.test_ref == "ssh/get_host_info"
+        });
+        let vbox_version = if uses_vm_ports {
+            vm_activity::preflight(&self.runtime)
+                .await
+                .map_err(ServiceError::Invalid)?
+        } else {
+            "not used".to_owned()
+        };
         let inputs = vm_activity::discover_deliveries(&selected, self.runtime.max_ova_bytes)
             .map_err(ServiceError::Invalid)?;
         let record = RunRecord {
@@ -179,7 +225,7 @@ impl DeliveryRunService {
             expedients.push(expedient_id.clone());
             let _ = self.save_run_expedients(&run_id, &expedients).await;
             input.delivery_id = delivery_id;
-            let report = vm_activity::execute_delivery(
+            let report = delivery_executor::execute_delivery(
                 &self.runtime,
                 &project,
                 &vbox_version,
@@ -318,26 +364,51 @@ impl DeliveryRunService {
             }
             Err(_) => return Ok(None),
         };
-        let result = vm_activity::cleanup_from_manifest(
-            &self.runtime,
-            Path::new(&path).parent().unwrap_or(Path::new(".")),
-            &delivery_id,
-        )
-        .await;
+        let report_dir = Path::new(&path).parent().unwrap_or(Path::new("."));
+        let result = if report_dir.join("cleanup-manifest.json").is_file() {
+            vm_activity::cleanup_from_manifest(&self.runtime, report_dir, &delivery_id).await
+        } else {
+            serde_json::json!({
+                "status": "passed",
+                "vm_unregistered": true,
+                "run_storage_removed": true,
+                "details": ["no VirtualBox import manifest exists; there are no VM resources to clean"]
+            })
+        };
         report["cleanup"] = result;
         let cleanup_status = report["cleanup"]["status"]
             .as_str()
             .unwrap_or("failed")
             .to_owned();
         let cleanup_observation = report["cleanup"].clone();
+        let cleanup_stdout =
+            serde_json::to_string_pretty(&cleanup_observation).unwrap_or_else(|_| "{}".to_owned());
+        let cleanup_stderr = cleanup_observation["details"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let mut cleanup_record_dir = None;
         if let Some(results) = report["test_results"].as_array_mut() {
-            if let Some(cleanup) = results.iter_mut().find(|r| r["test_id"] == "CLEAN-001") {
+            if let Some(cleanup) = results
+                .iter_mut()
+                .find(|r| r["test_reference"] == "VirtualBox/destroy_vm")
+            {
                 let now = chrono::Utc::now().to_rfc3339();
                 if cleanup["start_time"].is_null() {
                     cleanup["start_time"] = serde_json::json!(now);
                 }
                 cleanup["end_time"] = serde_json::json!(now);
                 cleanup["status"] = serde_json::json!(cleanup_status);
+                cleanup["exit_code"] =
+                    serde_json::json!(if cleanup_status == "passed" { 0 } else { 1 });
+                cleanup["stdout"] = serde_json::json!(cleanup_stdout);
+                cleanup["stderr"] = serde_json::json!(cleanup_stderr);
                 cleanup["observation"] = cleanup_observation.clone();
                 cleanup["evidence"] = serde_json::json!(["cleanup-manifest.json"]);
                 cleanup["diagnostics"] = if cleanup_status == "passed" {
@@ -345,13 +416,24 @@ impl DeliveryRunService {
                 } else {
                     serde_json::json!(cleanup_observation["details"].to_string())
                 };
+                cleanup_record_dir = cleanup["record_dir"].as_str().map(str::to_owned);
             }
         }
+        if let Some(record_dir) = cleanup_record_dir {
+            let record_dir = Path::new(&path)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(record_dir);
+            crate::test_result_store::persist_output(&record_dir, &cleanup_stdout, &cleanup_stderr)
+                .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        }
         report["finished_at"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
-        let all_passed = report["test_results"]
-            .as_array()
-            .is_some_and(|results| results.iter().all(|r| r["status"] == "passed"));
-        report["overall_status"] = serde_json::json!(if all_passed {
+        let no_failed_tests = report["test_results"].as_array().is_some_and(|results| {
+            results
+                .iter()
+                .all(|r| matches!(r["status"].as_str(), Some("passed" | "skipped")))
+        }) && report["cleanup"]["status"] == "passed";
+        report["overall_status"] = serde_json::json!(if no_failed_tests {
             "completed"
         } else {
             "completed_with_errors"

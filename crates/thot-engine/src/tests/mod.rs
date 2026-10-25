@@ -1,49 +1,21 @@
-use std::error::Error;
+//! Purpose: Dispatches configured test references to external, SSH, or VirtualBox adapters.
+#[path = "extern.rs"]
+pub mod extern_tests;
+pub mod ssh;
+pub mod virtualbox;
 
-pub mod external {
-    pub mod adapter {
-        pub fn dispatch(command: &str) -> Result<(), Box<dyn Error>> {
-            match command {
-                "VirtualBox/import_ova" => import_ova(),
-                "VirtualBox/start_vm" => start_vm(),
-                "VirtualBox/stop_vm" => stop_vm(),
-                "VirtualBox/destroy_vm" => destroy_vm(),
-                _ => Err("Unknown command".into()),
-            }
-        }
+use crate::test_execution::{TestInvocation, TestOutcome};
 
-        fn import_ova() -> Result<(), Box<dyn Error>> {
-            // Implementation for importing OVA
-            Ok(())
-        }
-
-        fn start_vm() -> Result<(), Box<dyn Error>> {
-            // Implementation for starting VM
-            Ok(())
-        }
-
-        fn stop_vm() -> Result<(), Box<dyn Error>> {
-            // Implementation for stopping VM
-            Ok(())
-        }
-
-        fn destroy_vm() -> Result<(), Box<dyn Error>> {
-            // Implementation for destroying VM
-            Ok(())
-        }
+pub async fn dispatch(invocation: &TestInvocation) -> TestOutcome {
+    if invocation.test_reference.starts_with("extern/") {
+        return extern_tests::run(invocation).await;
     }
-}
-
-pub mod ssh {
-    pub fn get_host_info() -> Result<(), Box<dyn Error>> {
-        // Implementation for getting host info
-        Ok(())
-    }
-}
-
-pub fn dispatch(command: &str) -> Result<(), Box<dyn Error>> {
-    match command {
-        "ssh/get_host_info" => ssh::get_host_info(),
-        _ => Err("Unknown command".into()),
+    match invocation.test_reference.as_str() {
+        "ssh/get_host_info" => ssh::run(invocation).await,
+        reference if reference.starts_with("VirtualBox/") => virtualbox::run(invocation).await,
+        _ => TestOutcome::error(format!(
+            "unknown test reference {:?}",
+            invocation.test_reference
+        )),
     }
 }

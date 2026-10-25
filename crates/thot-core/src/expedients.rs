@@ -1,3 +1,4 @@
+//! Purpose: Defines the shared delivery expedient and its test-result collection.
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]

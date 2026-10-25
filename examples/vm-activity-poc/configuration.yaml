@@ -1,0 +1,40 @@
+activity_name: The Linux Competition
+delivery_folder: ./delivery
+concurrency: 1
+timeout: 120
+tests:
+  - name: import_ova
+    test: VirtualBox/import_ova
+    parameters:
+      - vm_name: linux_competition
+      - vbox_group: /linux_competition
+      - vm_path: ./vms
+  - name: start_time
+    test: extern/tests/vm_start_time.py
+    requirements: [import_ova]
+    repeat: 3
+    parameters:
+      - vm_name: linux_competition
+  - name: start_vm
+    test: VirtualBox/start_vm
+    requirements: [import_ova]
+    parameters:
+      - vm_name: linux_competition
+  - name: vm_info
+    test: ssh/get_host_info
+    requirements: [start_vm]
+    parameters:
+      - host: 127.0.0.1
+      - port: 2222
+      - user: sysadmin
+      - pass: Asdqwe!23
+  - name: vm_stop
+    test: VirtualBox/stop_vm
+    requirements: [start_vm]
+    parameters:
+      - vm_name: linux_competition
+  - name: vm_destroy
+    test: VirtualBox/destroy_vm
+    requirements: [import_ova]
+    parameters:
+      - vm_name: linux_competition

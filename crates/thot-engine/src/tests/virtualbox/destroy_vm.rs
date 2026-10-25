@@ -1,43 +1,43 @@
-use std::fs;
-use std::path::Path;
-use std::process::{Command, Stdio};
+//! Purpose: Cleans up only the VM resources recorded in the delivery manifest.
+use crate::{
+    test_execution::{TestInvocation, TestOutcome},
+    vm_activity::cleanup_from_manifest,
+};
+use thot_core::test_results::TestStatus;
 
-fn destroy_vm(manifest: &str) -> Result<(), String> {
-    let manifest_path = Path::new(manifest);
-    if !manifest_path.exists() {
-        return Err("Manifest file does not exist".to_string());
-    }
-
-    let manifest_content = fs::read_to_string(manifest_path).map_err(|e| format!("Failed to read manifest: {}", e))?;
-    let vm_uuid = manifest_content.lines().find(|line| line.starts_with("VM_UUID=")).map(|line| line.split("=").nth(1).unwrap_or_default().trim()).unwrap_or_default();
-    let storage_path = manifest_content.lines().find(|line| line.starts_with("STORAGE_PATH=")).map(|line| line.split("=").nth(1).unwrap_or_default().trim()).unwrap_or_default();
-
-    if vm_uuid.is_empty() || storage_path.is_empty() {
-        return Err("VM UUID or storage path not found in manifest".to_string());
-    }
-
-    // Verify VM is unregistered
-    let vm_list_output = Command::new("VBoxManage")
-        .arg("list")
-        .arg("vms")
-        .output()
-        .map_err(|e| format!("Failed to list VMs: {}", e))?;
-    if vm_list_output.status.success() && vm_list_output.stdout.contains(vm_uuid) {
-        return Err("VM is still registered".to_string());
-    }
-
-    // Verify storage is removed
-    if Path::new(storage_path).exists() {
-        return Err("Storage path still exists".to_string());
-    }
-
-    Ok(())
-}
-
-fn main() {
-    let manifest = "/path/to/cleanup/manifest.txt"; // Replace with actual manifest path
-    match destroy_vm(manifest) {
-        Ok(_) => println!("Cleanup successful"),
-        Err(e) => eprintln!("Cleanup failed: {}", e),
+pub async fn run(invocation: &TestInvocation) -> TestOutcome {
+    let cleanup = cleanup_from_manifest(
+        &invocation.runtime,
+        &invocation.report_dir,
+        &invocation.delivery.delivery_id,
+    )
+    .await;
+    let passed = cleanup["status"].as_str() == Some("passed");
+    let output = serde_json::to_string_pretty(&cleanup).unwrap_or_else(|_| "{}".into());
+    TestOutcome {
+        status: if passed {
+            TestStatus::Passed
+        } else {
+            TestStatus::Failed
+        },
+        stdout: output,
+        stderr: cleanup["details"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default(),
+        exit_code: Some(if passed { 0 } else { 1 }),
+        diagnostics: if passed {
+            String::new()
+        } else {
+            "manifest-scoped cleanup failed".into()
+        },
+        observation: cleanup,
+        evidence: vec!["cleanup-manifest.json".into()],
     }
 }

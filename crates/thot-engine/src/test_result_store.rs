@@ -1,71 +1,73 @@
-use std::fs;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+//! Purpose: Creates per-test artifact directories and atomically stores output and expedients.
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
-fn sanitize_path_component(component: &str) -> String {
-    component.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect()
+fn safe_component(value: &str) -> String {
+    let cleaned = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let cleaned = cleaned.trim_matches('.');
+    if cleaned.is_empty() {
+        "unnamed".into()
+    } else {
+        cleaned.chars().take(120).collect()
+    }
 }
 
-fn create_artifact_directory(root: &Path, delivery_filename: &str, test_name: &str) -> io::Result<PathBuf> {
-    let sanitized_delivery_filename = sanitize_path_component(delivery_filename);
-    let sanitized_test_name = sanitize_path_component(test_name);
-    let artifact_dir = root.join("test_records").join(&sanitized_delivery_filename).join(&sanitized_test_name).join("artifacts");
-    fs::create_dir_all(&artifact_dir)?;
-    Ok(artifact_dir)
+pub fn paths_for_test(
+    report_dir: &Path,
+    delivery_filename: &str,
+    test_name: &str,
+) -> io::Result<(PathBuf, PathBuf)> {
+    let record_dir = report_dir
+        .join("test_records")
+        .join(safe_component(delivery_filename))
+        .join(safe_component(test_name));
+    let artifacts = record_dir.join("artifacts");
+    fs::create_dir_all(&artifacts)?;
+    Ok((record_dir, artifacts))
 }
 
-fn save_json_report(root: &Path, delivery_filename: &str, test_name: &str, report: &serde_json::Value) -> io::Result<PathBuf> {
-    let artifact_dir = create_artifact_directory(root, delivery_filename, test_name)?;
-    let report_path = artifact_dir.join("report.json");
-    let mut file = fs::File::create(&report_path)?;
-    serde_json::to_writer_pretty(&mut file, report)?;
-    Ok(report_path)
+pub fn persist_output(record_dir: &Path, stdout: &str, stderr: &str) -> io::Result<()> {
+    atomic_write(&record_dir.join("stdout.txt"), stdout.as_bytes())?;
+    atomic_write(&record_dir.join("stderr.txt"), stderr.as_bytes())
 }
 
-fn save_artifact(root: &Path, delivery_filename: &str, test_name: &str, artifact_name: &str, content: &[u8]) -> io::Result<PathBuf> {
-    let artifact_dir = create_artifact_directory(root, delivery_filename, test_name)?;
-    let artifact_path = artifact_dir.join(artifact_name);
-    fs::write(&artifact_path, content)?;
-    Ok(artifact_path)
+pub fn persist_report(path: &Path, report: &serde_json::Value) -> io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(report).map_err(io::Error::other)?;
+    atomic_write(path, &bytes)
 }
 
-fn save_stdout_stderr(root: &Path, delivery_filename: &str, test_name: &str, stdout: &[u8], stderr: &[u8]) -> io::Result<()> {
-    let artifact_dir = create_artifact_directory(root, delivery_filename, test_name)?;
-    fs::write(artifact_dir.join("stdout.txt"), stdout)?;
-    fs::write(artifact_dir.join("stderr.txt"), stderr)?;
-    Ok(())
+fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("report path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&temp, bytes)?;
+    fs::rename(temp, path)
 }
 
-fn save_evidence(root: &Path, delivery_filename: &str, test_name: &str, evidence_name: &str, evidence_path: &Path) -> io::Result<PathBuf> {
-    let artifact_dir = create_artifact_directory(root, delivery_filename, test_name)?;
-    let evidence_relative_path = evidence_path.strip_prefix(root).unwrap_or(evidence_path);
-    let evidence_target_path = artifact_dir.join(evidence_relative_path);
-    fs::create_dir_all(evidence_target_path.parent().unwrap())?;
-    fs::rename(evidence_path, &evidence_target_path)?;
-    Ok(evidence_target_path)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn main() -> io::Result<()> {
-    let root = Path::new("/path/to/artifact/root");
-    let delivery_filename = "delivery123";
-    let test_name = "test_case_1";
-    let report = serde_json::json!({
-        "status": "success",
-        "duration": 1.23,
-        "output": "Test passed"
-    });
-    let stdout = b"Test output\n";
-    let stderr = b"Test error\n";
-    let artifact_name = "example_artifact.txt";
-    let artifact_content = b"Artifact content";
-    let evidence_name = "example_evidence.txt";
-    let evidence_path = Path::new("/path/to/evidence/example_evidence.txt");
-
-    save_json_report(root, delivery_filename, test_name, &report)?;
-    save_stdout_stderr(root, delivery_filename, test_name, stdout, stderr)?;
-    save_artifact(root, delivery_filename, test_name, artifact_name, artifact_content)?;
-    save_evidence(root, delivery_filename, test_name, evidence_name, evidence_path)?;
-
-    Ok(())
+    #[test]
+    fn artifact_paths_are_scoped_and_include_the_requested_layout() {
+        let root = std::env::temp_dir().join(format!("thot-record-{}", uuid::Uuid::new_v4()));
+        let (record, artifacts) =
+            paths_for_test(&root, "student one.ova", "start_time_01").unwrap();
+        assert!(artifacts.ends_with("test_records/student_one.ova/start_time_01/artifacts"));
+        assert!(record.starts_with(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

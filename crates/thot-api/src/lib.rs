@@ -1,4 +1,4 @@
-//! HTTP adapter for student and VM activity endpoints.
+//! Purpose: Builds the HTTP router for student and delivery-run API endpoints.
 
 use axum::{
     Json, Router,

@@ -1,3 +1,4 @@
+//! Purpose: Implements SQLite persistence for student records.
 use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},

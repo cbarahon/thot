@@ -1,53 +1,24 @@
-use std::time::Instant;
-use std::process::{Command, Stdio};
-use std::io::{Read, Write};
-use std::error::Error;
+//! Purpose: Starts the manifest-owned VirtualBox guest in headless mode.
+use super::{output_outcome, require_owned_vm, runner, vm_name};
+use crate::test_execution::{TestInvocation, TestOutcome};
 
-use crate::platform::helpers::SharedPlatformHelper;
-use crate::platform::runners::LocalVirtualBoxRunner;
-
-pub struct StartVmTest {
-    vm_name: String,
-    timeout: u64,
-}
-
-impl StartVmTest {
-    pub fn new(vm_name: Option<String>, timeout: u64) -> Self {
-        StartVmTest {
-            vm_name: vm_name.unwrap_or_else(|| {
-                eprintln!("VM name is unavailable");
-                std::process::exit(1);
-            }),
-            timeout,
-        }
+pub async fn run(invocation: &TestInvocation) -> TestOutcome {
+    let name = match vm_name(invocation) {
+        Ok(name) => name,
+        Err(error) => return TestOutcome::error(error),
+    };
+    if let Err(error) = require_owned_vm(invocation, &name) {
+        return TestOutcome::error(error);
     }
-
-    pub fn run(&self) -> Result<(String, String, String, i32, f64, String), Box<dyn Error>> {
-        let start_time = Instant::now();
-        let runner = LocalVirtualBoxRunner::new();
-        let helper = SharedPlatformHelper::new();
-
-        let mut process = Command::new("VBoxManage")
-            .arg("startvm")
-            .arg(&self.vm_name)
-            .arg("--type")
-            .arg("headless")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        process.stdout.take().unwrap().read_to_string(&mut stdout)?;
-        process.stderr.take().unwrap().read_to_string(&mut stderr)?;
-
-        let exit_code = process.wait()?.code().unwrap_or(1);
-        let duration = start_time.elapsed().as_secs_f64();
-
-        if exit_code != 0 {
-            return Err(format!("VM start failed with exit code {}", exit_code).into());
-        }
-
-        Ok((stdout, stderr, stdout, exit_code, duration, helper.diagnostics()))
-    }
+    let result = runner(invocation)
+        .run(&[
+            "startvm".into(),
+            name.clone(),
+            "--type".into(),
+            "headless".into(),
+        ])
+        .await;
+    let mut outcome = output_outcome(result, "VBoxManage startvm");
+    outcome.observation["vm_name"] = serde_json::json!(name);
+    outcome
 }

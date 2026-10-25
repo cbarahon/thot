@@ -1,3 +1,4 @@
+//! Purpose: Daemon entry point that loads runtime settings and starts the Thot API service.
 mod vm_activity_config;
 
 use std::{env, net::SocketAddr};

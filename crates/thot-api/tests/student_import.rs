@@ -1,3 +1,4 @@
+//! Purpose: Integration tests for student import and retrieval API behavior.
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},

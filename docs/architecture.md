@@ -335,34 +335,25 @@ The exact contract is provisional. Define stable identifiers, pagination, reques
 
 SSE is the recommended default for one-way progress. Include event IDs or sequence numbers for reconnection, but make REST retrieval the recovery mechanism. WebSockets are unnecessary unless a future feature requires sustained bidirectional communication.
 
-## 9. Assessment project bundle and YAML files
+## 9. Project-defined test bundles
 
-Use `.tar.gz` as the canonical project bundle initially. It preserves executable permissions and symlinks more naturally than ZIP; ZIP can be added as an import format later.
+The VM activity POC accepts a `.thot.zip` or `.thot.tgz` archive with `configuration.yaml` at its root. The archive can also contain teacher-supplied programs, for example:
 
 ```text
-assessment.tar.gz
-└── project/
-    ├── project.yaml
-    ├── tests.yaml
-    ├── rubric.yaml
-    ├── learning_outcomes.yaml
-    ├── preparation/
-    │   └── prepare.sh
-    ├── tests/
-    │   ├── check_users.sh
-    │   └── check_services.py
-    ├── assets/
-    └── README.md
+linux_competition.thot.tgz
+├── configuration.yaml
+└── extern/
+    └── tests/
+        └── vm_start_time.py
 ```
 
-Suggested responsibilities:
+`configuration.yaml` defines the activity name, a delivery folder relative to the archive's containing directory, maximum concurrency, global test timeout, and an ordered list of tests. A test has a unique name and a `test` reference. Built-in references use `Platform/test_name`, such as `VirtualBox/import_ova` or `ssh/get_host_info`. External references use `extern/<archive-relative-path>`. Optional fields provide scalar parameters, test timeout, earlier-test requirements, and repeat count. The engine expands repeats to names such as `start_time_01` and only runs a dependent test if all repetitions of each requirement pass.
 
-- `project.yaml`: project ID, title, schema version, entry points, capabilities, and default policies.
-- `tests.yaml`: test order, types, arguments, timeouts, execution mode, and prerequisites.
-- `rubric.yaml`: basic criteria and rubric aggregations.
-- `learning_outcomes.yaml`: LO/RA formulas and output definitions.
+Tests are atomic reusable functions grouped by platform under `crates/thot-engine/src/tests/`. A common invocation carries test parameters, timeout, project and delivery context, and artifact paths. A common outcome carries status, stdout, stderr, exit code, diagnostics, observations, and evidence. Built-in and external tests therefore persist through the same result model. External scripts receive parameters as `key=value` arguments and run as child processes with bounded time and output; they are trusted teacher code, not sandboxed code.
 
-Keep rosters, submissions, workspaces, and results outside the reusable project package. Every configuration file should declare a schema version. Before extraction, reject absolute paths, `..` traversal, unsafe links, conflicting entries, and unreasonable archive sizes. Importing a project must never execute its scripts.
+For the current POC, archive extraction rejects path traversal and links, limits archive size and entry count, and requires a regular root `configuration.yaml`. Importing a project does not run its scripts; an external program runs only when its configured test is reached. The current built-in registry provides VirtualBox import/start/stop/destroy and SSH host information checks. Additional platform adapters can be added without changing the project format.
+
+Per-delivery expedients and artifacts are stored outside the reusable archive. Each test result records process output and exit code. Artifacts are scoped under `test_records/<delivery filename>/<test name>/artifacts` within that delivery's artifact directory. The VM activity implementation currently accepts the concurrency field but executes one run and its deliveries sequentially; parallel student execution is a later scheduling capability.
 
 ## 10. State model and failure semantics
 

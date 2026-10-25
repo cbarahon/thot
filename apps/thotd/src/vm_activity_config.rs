@@ -1,3 +1,4 @@
+//! Purpose: Loads and validates daemon and VirtualBox settings from environment variables.
 use std::{env, path::PathBuf, time::Duration};
 
 #[derive(Debug, Clone)]

@@ -1,3 +1,4 @@
+//! Purpose: Invokes VBoxManage with configured profile, timeouts, and bounded output capture.
 use std::{
     path::PathBuf,
     time::{Duration, Instant},

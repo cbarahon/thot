@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Purpose: Executes the repository's ordered YAML implementation tasks with Ollama.
 """Sequential YAML task runner for Ollama.
 
 Supported actions:

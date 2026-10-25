@@ -1,4 +1,4 @@
-//! Contratos de datos estables compartidos entre API, motor y futuros clientes.
+//! Purpose: Defines shared request, response, student, and project contracts for Thot.
 
 use serde::{Deserialize, Serialize};
 
@@ -68,13 +68,14 @@ pub mod vm_activity;
 
 pub use deliveries::DeliveryIdentity as Delivery;
 pub use test_results::TestResult as NormalizedTestResult;
-pub use vm_activity::VMActivityProject as VMActivity;
+pub use vm_activity::{ParameterInput, ProjectTest, VMActivity, VMActivityProject};
 
 /// Request accepted by the POC run-creation endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryRunRequest {
     pub project_id: String,
-    pub delivery_directory: String,
+    #[serde(default)]
+    pub delivery_directory: Option<String>,
 }
 
 #[cfg(test)]

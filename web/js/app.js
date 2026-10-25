@@ -1,3 +1,4 @@
+// Purpose: Initializes the Thot browser interface and its API-facing interactions.
 "use strict";
 
 // Punto de entrada de la interfaz web de Thot.

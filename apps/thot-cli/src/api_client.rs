@@ -1,3 +1,4 @@
+//! Purpose: Sends CLI requests to the Thot HTTP API and decodes its responses.
 use crate::Settings;
 use reqwest::{Client, Method, StatusCode};
 use serde_json::{Value, json};

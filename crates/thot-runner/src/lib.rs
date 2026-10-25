@@ -1,4 +1,4 @@
-//! Host-side adapters used by the VM activity engine.
+//! Purpose: Exports host-side process and VirtualBox adapters used by the engine.
 
+pub mod external;
 pub mod vbox;
-pub mod external_process_runner;
