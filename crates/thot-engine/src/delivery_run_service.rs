@@ -25,8 +25,6 @@ pub struct RunRecord {
 #[derive(Clone)]
 pub struct DeliveryRunService {
     pool: SqlitePool,
-    project_root: PathBuf,
-    delivery_root: PathBuf,
     artifact_root: PathBuf,
     runtime: Arc<VmActivityRuntime>,
     create_gate: Arc<Mutex<()>>,
@@ -35,8 +33,6 @@ pub struct DeliveryRunService {
 impl DeliveryRunService {
     pub async fn connect(
         database_url: &str,
-        project_root: PathBuf,
-        delivery_root: PathBuf,
         artifact_root: PathBuf,
         runtime: VmActivityRuntime,
     ) -> Result<Self, sqlx::Error> {
@@ -54,8 +50,6 @@ impl DeliveryRunService {
         sqlx::query("UPDATE vm_activity_expedients SET status='interrupted_cleanup_pending' WHERE status='running'").execute(&pool).await?;
         Ok(Self {
             pool,
-            project_root,
-            delivery_root,
             artifact_root,
             runtime: Arc::new(runtime),
             create_gate: Arc::new(Mutex::new(())),
@@ -64,12 +58,12 @@ impl DeliveryRunService {
 
     pub async fn create_run(
         &self,
-        project_id: String,
+        project_path: String,
         delivery_directory: Option<String>,
     ) -> Result<RunRecord, ServiceError> {
-        if !valid_id(&project_id) {
+        if !Path::new(&project_path).is_absolute() {
             return Err(ServiceError::Invalid(
-                "project_id must be a simple project identifier".into(),
+                "project_path must be an absolute path to a project archive".into(),
             ));
         }
         let _guard = self.create_gate.lock().await;
@@ -84,67 +78,18 @@ impl DeliveryRunService {
             ));
         }
         let run_id = uuid::Uuid::new_v4().to_string();
-        let snapshot_dir = self
-            .artifact_root
-            .join(&project_id)
-            .join(&run_id)
-            .join("configuration");
-        let snapshot = vm_activity::load_project(&self.project_root, &project_id, &snapshot_dir)
+        let snapshot_dir = self.artifact_root.join("project-snapshots").join(&run_id);
+        let snapshot = vm_activity::load_project(Path::new(&project_path), &snapshot_dir)
             .await
             .map_err(ServiceError::Invalid)?;
         let selected = if let Some(override_path) = delivery_directory {
-            let root = self
-                .delivery_root
-                .canonicalize()
-                .map_err(|e| ServiceError::Invalid(format!("delivery root is unavailable: {e}")))?;
-            let requested = Path::new(&override_path);
-            if std::fs::symlink_metadata(requested).is_ok_and(|m| m.file_type().is_symlink()) {
-                return Err(ServiceError::Invalid(
-                    "delivery directory cannot be a symlink".into(),
-                ));
-            }
-            let selected = requested.canonicalize().map_err(|e| {
-                ServiceError::Invalid(format!("delivery directory is unavailable: {e}"))
-            })?;
-            if !selected.is_dir() || !selected.starts_with(&root) {
-                return Err(ServiceError::Invalid(
-                    "delivery override must be inside THOTD_DELIVERY_ROOT".into(),
-                ));
-            }
-            selected
+            resolve_directory(Path::new(&override_path), None).map_err(ServiceError::Invalid)?
         } else {
-            let relative = Path::new(&snapshot.configuration.delivery_folder);
-            if relative.is_absolute()
-                || relative.components().any(|part| {
-                    matches!(
-                        part,
-                        std::path::Component::ParentDir
-                            | std::path::Component::RootDir
-                            | std::path::Component::Prefix(_)
-                    )
-                })
-            {
-                return Err(ServiceError::Invalid(
-                    "configuration delivery_folder must remain below the project archive directory"
-                        .into(),
-                ));
-            }
-            let base = snapshot.archive_parent.canonicalize().map_err(|e| {
-                ServiceError::Invalid(format!("project archive directory is unavailable: {e}"))
-            })?;
-            let requested = base.join(relative);
-            if std::fs::symlink_metadata(&requested).is_ok_and(|m| m.file_type().is_symlink()) {
-                return Err(ServiceError::Invalid(
-                    "configured delivery_folder cannot be a symlink".into(),
-                ));
-            }
-            let selected = requested.canonicalize().map_err(|e| {
-                ServiceError::Invalid(format!("configured delivery folder is unavailable: {e}"))
-            })?;
-            if !selected.is_dir() || !selected.starts_with(&base) {
-                return Err(ServiceError::Invalid("configured delivery_folder must be a directory below the project archive directory".into()));
-            }
-            selected
+            resolve_directory(
+                Path::new(&snapshot.configuration.delivery_folder),
+                Some(&snapshot.archive_parent),
+            )
+            .map_err(ServiceError::Invalid)?
         };
         let uses_vm_ports = snapshot.configuration.tests.iter().any(|test| {
             test.test_ref.starts_with("VirtualBox/") || test.test_ref == "ssh/get_host_info"
@@ -160,7 +105,7 @@ impl DeliveryRunService {
             .map_err(ServiceError::Invalid)?;
         let record = RunRecord {
             run_id: run_id.clone(),
-            project_id,
+            project_id: snapshot.project_id.clone(),
             delivery_directory: selected.display().to_string(),
             status: "queued".into(),
             expedient_ids: Vec::new(),
@@ -468,12 +413,51 @@ impl DeliveryRunService {
     }
 }
 
-fn valid_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 64
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+fn resolve_directory(path: &Path, relative_to: Option<&Path>) -> Result<PathBuf, String> {
+    let requested = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(base) = relative_to {
+        base.join(path)
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("cannot resolve current directory: {e}"))?
+            .join(path)
+    };
+    let selected = requested.canonicalize().map_err(|e| {
+        format!(
+            "delivery directory {} is unavailable: {e}",
+            requested.display()
+        )
+    })?;
+    if !selected.is_dir() {
+        return Err(format!(
+            "delivery path {} must resolve to a directory",
+            selected.display()
+        ));
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn delivery_folder_can_be_absolute_or_relative_outside_project_directory() {
+        let root = std::env::temp_dir().join(format!("thot-paths-{}", uuid::Uuid::new_v4()));
+        let project_dir = root.join("projects").join("linux");
+        let deliveries = root.join("external-deliveries");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&deliveries).unwrap();
+
+        let relative =
+            resolve_directory(Path::new("../../external-deliveries"), Some(&project_dir)).unwrap();
+        let absolute = resolve_directory(&deliveries, Some(&project_dir)).unwrap();
+        assert_eq!(relative, deliveries.canonicalize().unwrap());
+        assert_eq!(absolute, relative);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

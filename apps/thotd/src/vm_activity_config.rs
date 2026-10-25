@@ -6,8 +6,6 @@ pub struct VmActivityConfig {
     pub bind_host: String,
     pub bind_port: u16,
     pub database_url: String,
-    pub project_root: PathBuf,
-    pub delivery_root: PathBuf,
     pub artifact_root: PathBuf,
     pub vbox_manage_path: PathBuf,
     pub expected_vbox_version: String,
@@ -42,8 +40,6 @@ impl VmActivityConfig {
             bind_host,
             bind_port,
             database_url,
-            project_root: env_path("THOTD_PROJECT_ROOT", PathBuf::from("/etc/thot/projects")),
-            delivery_root: env_path("THOTD_DELIVERY_ROOT", base.join("deliveries")),
             artifact_root: env_path("THOTD_ARTIFACT_ROOT", base.join("artifacts")),
             vbox_manage_path: env_path(
                 "THOTD_VBOX_MANAGE_PATH",

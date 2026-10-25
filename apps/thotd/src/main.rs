@@ -18,8 +18,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = VmActivityConfig::from_env().map_err(std::io::Error::other)?;
     for root in [
-        &config.project_root,
-        &config.delivery_root,
         &config.artifact_root,
         &config.storage_root,
         &config.vbox_user_home,
@@ -44,14 +42,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ssh_secret_file: config.ssh_secret_source.clone(),
         firewall_confirmed: config.firewall_confirmation,
     };
-    let run_service = DeliveryRunService::connect(
-        &database,
-        config.project_root.clone(),
-        config.delivery_root.clone(),
-        config.artifact_root.clone(),
-        runtime,
-    )
-    .await?;
+    let run_service =
+        DeliveryRunService::connect(&database, config.artifact_root.clone(), runtime).await?;
 
     let app = thot_api::router_with_runs(StudentService::new(student_repository), run_service);
     let bind_ip = config.bind_host.parse()?;

@@ -4,7 +4,7 @@
 
 ## Project execution
 
-The activity API loads `<project-id>.thot.tgz` or `<project-id>.thot.zip` from `THOTD_PROJECT_ROOT`. The archive root must contain `configuration.yaml`; external tests are stored at paths such as `extern/tests/check.py`. Project configuration controls test order, parameters, timeout, prerequisites, and repeats. A run uses the configured `delivery_folder` unless its request supplies an override under `THOTD_DELIVERY_ROOT`.
+The activity API accepts an absolute project archive path. The archive root must contain `configuration.yaml`; external tests are stored at paths such as `extern/tests/check.py`. Project configuration controls test order, parameters, timeout, prerequisites, and repeats. A relative `delivery_folder` is resolved from the archive's containing directory; an absolute value is used directly. A run can also supply a delivery directory override.
 
 Built-in tests are divided under `crates/thot-engine/src/tests/` by platform. External test processes receive `key=value` arguments and `THOT_ARTIFACT_DIR`. Both built-in and external results save status, stdout, stderr, exit code, diagnostics, observations, and evidence. Per-test artifacts are under each delivery's `test_records/<filename>/<test name>/artifacts` directory.
 
@@ -15,7 +15,7 @@ External tests are trusted teacher programs. They run as child processes with th
 The service defaults to `127.0.0.1:8081` and a SQLite database at `/var/lib/thot/thot.sqlite3`. VM activity paths default below `/var/lib/thot`, except projects (`/etc/thot/projects`) and `VBoxManage` (`/usr/bin/VBoxManage`). Important variables include:
 
 - `THOTD_BIND_HOST`, `THOTD_BIND_PORT`, `THOTD_DATABASE_URL`
-- `THOTD_PROJECT_ROOT`, `THOTD_DELIVERY_ROOT`, `THOTD_ARTIFACT_ROOT`
+- `THOTD_ARTIFACT_ROOT`
 - `THOTD_STORAGE_ROOT`, `THOTD_VBOX_USER_HOME`, `THOTD_VBOX_MANAGE_PATH`
 - `THOTD_EXPECTED_VBOX_VERSION`, `THOTD_OVA_SIZE_LIMIT`, `THOTD_FREE_SPACE_RESERVE`
 - `THOTD_STARTUP_TIMEOUT`, `THOTD_IMPORT_TIMEOUT`, `THOTD_SSH_TIMEOUT`, `THOTD_SHUTDOWN_GRACE`

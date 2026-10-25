@@ -24,7 +24,7 @@ Current built-in references are `VirtualBox/import_ova`, `VirtualBox/start_vm`, 
 
 ## Run behavior and limits
 
-`thotd` locates `<project-id>.thot.tgz` or `<project-id>.thot.zip` directly under `THOTD_PROJECT_ROOT`, or under a same-named project subdirectory. The configured `delivery_folder` is relative to the archive's containing directory. It must resolve to a directory. The CLI can omit `--deliveries` to use this configured folder, or supply an override inside `THOTD_DELIVERY_ROOT`.
+The CLI accepts a project archive path directly, for example `thot run create /srv/course/linux_competition.thot.tgz`. Project archives may be anywhere readable by `thotd`; there is no project-root setting. A relative `delivery_folder` resolves from the archive's containing directory, and an absolute value may point anywhere the daemon can read. An optional `--deliveries` override can also point to any readable directory.
 
 The configured `vm_path` is relative to the archive's containing directory and defaults to `./thot_vms`. The service creates per-run and per-delivery storage beneath it. The service account therefore needs write access to that VM storage directory. Keep the archive and its scripts protected from modification, and give write access only to the dedicated VM storage location. Do not use a path that overlaps the VirtualBox profile or artifact root.
 

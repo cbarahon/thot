@@ -267,7 +267,7 @@ thot --server http://localhost:8080 project validate ./assessment.tar.gz
 thot --server http://localhost:8080 project upload ./assessment.tar.gz
 thot --server http://localhost:8080 students import ./students.csv
 thot --server http://localhost:8080 submissions import ./submissions/
-thot --server http://localhost:8080 run create --project assessment-id --parallel 4
+thot --server http://localhost:8080 run create /path/to/assessment.thot.tgz
 thot --server http://localhost:8080 run status RUN_ID
 thot --server http://localhost:8080 run watch RUN_ID
 thot --server http://localhost:8080 run results RUN_ID
@@ -347,7 +347,7 @@ linux_competition.thot.tgz
         └── vm_start_time.py
 ```
 
-`configuration.yaml` defines the activity name, a delivery folder relative to the archive's containing directory, maximum concurrency, global test timeout, and an ordered list of tests. A test has a unique name and a `test` reference. Built-in references use `Platform/test_name`, such as `VirtualBox/import_ova` or `ssh/get_host_info`. External references use `extern/<archive-relative-path>`. Optional fields provide scalar parameters, test timeout, earlier-test requirements, and repeat count. The engine expands repeats to names such as `start_time_01` and only runs a dependent test if all repetitions of each requirement pass.
+`configuration.yaml` defines the activity name, a delivery folder (relative to the archive's containing directory or an absolute path), maximum concurrency, global test timeout, and an ordered list of tests. A test has a unique name and a `test` reference. Built-in references use `Platform/test_name`, such as `VirtualBox/import_ova` or `ssh/get_host_info`. External references use `extern/<archive-relative-path>`. Optional fields provide scalar parameters, test timeout, earlier-test requirements, and repeat count. The engine expands repeats to names such as `start_time_01` and only runs a dependent test if all repetitions of each requirement pass. The CLI supplies the project archive path directly; neither project archives nor delivery folders are restricted to a daemon-configured root.
 
 Tests are atomic reusable functions grouped by platform under `crates/thot-engine/src/tests/`. A common invocation carries test parameters, timeout, project and delivery context, and artifact paths. A common outcome carries status, stdout, stderr, exit code, diagnostics, observations, and evidence. Built-in and external tests therefore persist through the same result model. External scripts receive parameters as `key=value` arguments and run as child processes with bounded time and output; they are trusted teacher code, not sandboxed code.
 

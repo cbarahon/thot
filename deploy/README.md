@@ -16,34 +16,33 @@ Copy the binaries and a teacher-created `.thot.zip` or `.thot.tgz` project archi
 
 ## Prepare the host
 
-Install VirtualBox from the host's approved package source. The service account must be allowed to use its kernel driver. Set up separate service-owned directories for project archives, deliveries, artifacts, VM storage, and the VirtualBox profile. Do not run `thotd` as root or reuse a teacher's normal VirtualBox profile.
+Install VirtualBox from the host's approved package source. The service account must be allowed to use its kernel driver. Set up separate service-owned locations for artifacts, VM storage, and the VirtualBox profile. Project archives and delivery directories can be stored anywhere the service account can access. Do not run `thotd` as root or reuse a teacher's normal VirtualBox profile.
 
 Example paths:
 
 ```text
 service account: thotd
-projects:       /etc/thot/projects
-deliveries:     /var/lib/thot/deliveries
 artifacts:      /var/lib/thot/artifacts
 VM storage:     /var/lib/thot/vms
 VBox profile:   /var/lib/thot/vbox-profile
 ```
 
-Create the base directories and install the project archive. The archive itself should be read-only to the daemon. Create the configured delivery and VM storage subdirectories beside it; the daemon needs read access to deliveries and write access to the VM storage subdirectory because the project `vm_path` is relative to the archive's containing directory. For example, with `vm_path: ./vms`, provision a writable `vms/` directory next to the archive. Keep this directory separate from the archive and its scripts.
+The project archive can be placed anywhere readable by the service account. Keep it and its scripts read-only to the daemon. A relative `delivery_folder` is resolved from the archive's containing directory; an absolute folder can be anywhere the service can read. The project `vm_path` remains relative to the archive's containing directory, so provision a separate writable subdirectory such as `vms/` next to the archive.
 
 ```sh
 sudo useradd --system --create-home --home-dir /var/lib/thot --shell /usr/sbin/nologin thotd
 sudo install -d -o thotd -g thotd -m 0750 \
-  /var/lib/thot/deliveries /var/lib/thot/artifacts /var/lib/thot/vms \
+  /var/lib/thot/artifacts /var/lib/thot/vms \
   /var/lib/thot/vbox-profile
-sudo install -d -o thotd -g thotd -m 0750 /etc/thot/projects
+sudo install -d -o root -g thotd -m 0750 /etc/thot/projects
 sudo install -o root -g thotd -m 0640 linux_competition.thot.tgz \
   /etc/thot/projects/linux_competition.thot.tgz
 sudo install -d -o thotd -g thotd -m 0750 \
-  /etc/thot/projects/delivery /etc/thot/projects/vms
+  /etc/thot/projects/delivery /etc/thot/projects/vms \
+  /srv/course/linux-competition-deliveries
 ```
 
-If administrators keep archive directories root-owned, pre-create each configured writable `delivery_folder` and `vm_path` directory with service-account ownership. Project extraction happens into a run-scoped snapshot under the artifact root. Treat external scripts as trusted instructor code: they execute as child processes with the daemon account's access to the host and VirtualBox profile. The runner applies per-test timeouts and output limits, but it is not a script sandbox.
+Project extraction happens into a run-scoped snapshot under the artifact root. Treat external scripts as trusted instructor code: they execute as child processes with the daemon account's access to the host and VirtualBox profile. The runner applies per-test timeouts and output limits, but it is not a script sandbox.
 
 The service requires free loopback TCP ports 8080 and 2222 before VM runs. Guest networking must forward guest TCP 80 to `127.0.0.1:8080` and guest TCP 22 to `127.0.0.1:2222` through NAT. Configure host firewall and guest egress rules to block access to unrelated host services and unnecessary destinations. Do not use bridged networking or attach host folders, clipboard, drag-and-drop, or USB devices to imported guests. `THOTD_FIREWALL_CONFIRMATION=true` records the administrator's manual confirmation; the daemon does not inspect firewall policy.
 
@@ -55,8 +54,6 @@ Create `/etc/thot/thotd.env` owned by root and readable by the service account (
 THOTD_BIND_HOST=127.0.0.1
 THOTD_BIND_PORT=8081
 THOTD_DATABASE_URL=sqlite:/var/lib/thot/thot.sqlite3
-THOTD_PROJECT_ROOT=/etc/thot/projects
-THOTD_DELIVERY_ROOT=/var/lib/thot/deliveries
 THOTD_ARTIFACT_ROOT=/var/lib/thot/artifacts
 THOTD_STORAGE_ROOT=/var/lib/thot/vms
 THOTD_VBOX_USER_HOME=/var/lib/thot/vbox-profile
@@ -74,7 +71,7 @@ THOTD_FIREWALL_CONFIRMATION=true
 
 Set `THOTD_EXPECTED_VBOX_VERSION` to the qualified `VBoxManage --version` value without the trailing build suffix. Runs fail preflight if the installed version differs. Project parameters supply guest SSH credentials, so no `THOTD_SSH_SECRET_FILE` is required. The example password is public sample data; replace it with the guest credentials for the assignment and protect the project archive with host permissions. Never put real credentials in a public or student-accessible project archive.
 
-Optional `THOTD_DATA_ROOT` changes the default data base used for delivery, artifact, VM, profile, and database paths. Explicit values above are easier to review. Keep `THOTD_STORAGE_ROOT`, the project `vm_path`, the VirtualBox profile, and artifact storage separate. The service checks that its configured profile, storage, and artifact roots do not overlap and that its dedicated storage root is empty before a VM run.
+Optional `THOTD_DATA_ROOT` changes the default data base used for artifact, VM, profile, and database paths. Explicit values above are easier to review. Keep `THOTD_STORAGE_ROOT`, the project `vm_path`, the VirtualBox profile, and artifact storage separate. The service checks that its configured profile, storage, and artifact roots do not overlap and that its dedicated storage root is empty before a VM run.
 
 Example systemd unit:
 
@@ -97,14 +94,13 @@ UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/thot /etc/thot/projects/delivery /etc/thot/projects/vms
+ReadWritePaths=/var/lib/thot /etc/thot/projects/vms
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Adjust `ReadWritePaths` to the actual configured `delivery_folder` and `vm_path` directories. Review the systemd sandbox against the installed VirtualBox driver and host paths before use; grant only the access required by the service account.
+Adjust `ReadWritePaths` for the actual project `vm_path`. Give the daemon read access to the project archive and configured delivery directory wherever they reside. Review the systemd sandbox against the installed VirtualBox driver and host paths before use; grant only the access required by the service account.
 
 Install the binaries and start the service:
 
@@ -118,12 +114,12 @@ sudo systemctl status thotd
 
 ## Create and inspect a run
 
-The project ID is the archive filename without `.thot.tgz` or `.thot.zip`. When no delivery override is supplied, the engine uses the project's `delivery_folder`. Alternatively, pass a directory inside `THOTD_DELIVERY_ROOT`:
+Pass the path to the project archive directly. With no delivery override, the engine uses `delivery_folder`; relative paths resolve from the archive's containing directory, and absolute paths are accepted. An optional delivery override may also point anywhere the daemon can read:
 
 ```sh
-thot run create --project linux_competition
+thot run create /etc/thot/projects/linux_competition.thot.tgz
 # or
-thot run create --project linux_competition --deliveries /var/lib/thot/deliveries/batch-01
+thot run create /etc/thot/projects/linux_competition.thot.tgz --deliveries /srv/course/linux-competition-deliveries
 thot run status <run-id>
 thot run expedient <expedient-id>
 thot run cleanup <expedient-id>

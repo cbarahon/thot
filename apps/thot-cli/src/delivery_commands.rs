@@ -2,6 +2,7 @@
 use crate::{Settings, api_client::ApiClient};
 use reqwest::Method;
 use serde_json::{Value, json};
+use std::path::Path;
 
 pub async fn handle(
     args: &[String],
@@ -9,19 +10,37 @@ pub async fn handle(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = ApiClient::new(settings)?;
     let (method, path, body) = match args {
-        [action, flag_project, project_id]
-            if action == "create" && flag_project == "--project" =>
-            (Method::POST, "/api/v1/runs".to_owned(), Some(json!({"project_id":project_id}))),
-        [action, flag_project, project_id, flag_deliveries, directory]
-            if action == "create" && flag_project == "--project" && flag_deliveries == "--deliveries" =>
-            (Method::POST, "/api/v1/runs".to_owned(), Some(json!({"project_id":project_id,"delivery_directory":directory}))),
+        [action, project_file] if action == "create" => (
+            Method::POST,
+            "/api/v1/runs".to_owned(),
+            Some(json!({"project_path":absolute_path(project_file)?})),
+        ),
+        [action, project_file, flag_deliveries, directory]
+            if action == "create" && flag_deliveries == "--deliveries" =>
+        {
+            let body = json!({
+                "project_path": absolute_path(project_file)?,
+                "delivery_directory": absolute_path(directory)?
+            });
+            (Method::POST, "/api/v1/runs".to_owned(), Some(body))
+        }
         [action, id] if action == "status" => (Method::GET, format!("/api/v1/runs/{id}"), None),
         [action, id] if action == "expedient" => (Method::GET, format!("/api/v1/expedients/{id}"), None),
         [action, id] if action == "cancel" => (Method::POST, format!("/api/v1/runs/{id}/cancel"), Some(json!({}))),
         [action, id] if action == "cleanup" => (Method::POST, format!("/api/v1/expedients/{id}/cleanup"), Some(json!({}))),
-        _ => return Err("usage: thot run create --project ID [--deliveries DIR] | status RUN_ID | expedient EXPEDIENT_ID | cancel RUN_ID | cleanup EXPEDIENT_ID".into()),
+        _ => return Err("usage: thot run create <project-file> [--deliveries DIR] | status RUN_ID | expedient EXPEDIENT_ID | cancel RUN_ID | cleanup EXPEDIENT_ID".into()),
     };
     let value: Value = client.request(method, &path, body).await?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+fn absolute_path(path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let path = Path::new(path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    Ok(absolute.to_string_lossy().into_owned())
 }

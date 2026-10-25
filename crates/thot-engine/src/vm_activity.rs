@@ -43,37 +43,26 @@ pub struct ProjectSnapshot {
 }
 
 pub async fn load_project(
-    project_root: &Path,
-    project_id: &str,
+    project_file: &Path,
     snapshot_dir: &Path,
 ) -> Result<ProjectSnapshot, String> {
-    if !valid_path_id(project_id) {
-        return Err("project ID must be a simple identifier".into());
-    }
-    let path = [
-        project_root.join(format!("{project_id}.thot.tgz")),
-        project_root.join(format!("{project_id}.thot.zip")),
-        project_root
-            .join(project_id)
-            .join(format!("{project_id}.thot.tgz")),
-        project_root
-            .join(project_id)
-            .join(format!("{project_id}.thot.zip")),
-    ]
-    .into_iter()
-    .find(|candidate| candidate.exists())
-    .ok_or_else(|| format!("project {project_id:?} .thot.tgz/.thot.zip archive was not found"))?;
-    let metadata = fs::symlink_metadata(&path)
+    let path = project_file.canonicalize().map_err(|e| {
+        format!(
+            "project file {} is unavailable: {e}",
+            project_file.display()
+        )
+    })?;
+    let metadata = fs::metadata(&path)
         .map_err(|e| format!("cannot inspect project {}: {e}", path.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("project archive must be a regular file, not a symlink".into());
+    if !metadata.is_file() {
+        return Err("project archive must be a regular file".into());
     }
-    if path.parent() != Some(project_root)
-        && path.parent().is_some_and(|parent| {
-            fs::symlink_metadata(parent).is_ok_and(|metadata| metadata.file_type().is_symlink())
-        })
+    if !path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".thot.tgz") || name.ends_with(".thot.zip"))
     {
-        return Err("project archive directory cannot be a symlink".into());
+        return Err("project file extension must be .thot.tgz or .thot.zip".into());
     }
     let bytes = fs::read(&path)
         .map_err(|e| format!("cannot read project archive {}: {e}", path.display()))?;
@@ -101,11 +90,12 @@ pub async fn load_project(
         .unwrap_or_else(|| "tvadmin".to_owned());
     let archive_parent = path
         .parent()
-        .unwrap_or(project_root)
+        .ok_or("project archive has no containing directory")?
         .canonicalize()
         .map_err(|e| format!("cannot resolve project archive directory: {e}"))?;
+    let project_id = project_identifier(&path);
     Ok(ProjectSnapshot {
-        project_id: project_id.into(),
+        project_id,
         bytes,
         sha256,
         ssh_username,
@@ -114,6 +104,37 @@ pub async fn load_project(
         extracted_root,
         configuration,
     })
+}
+
+fn project_identifier(path: &Path) -> String {
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project");
+    let stem = filename
+        .strip_suffix(".thot.tgz")
+        .or_else(|| filename.strip_suffix(".thot.zip"))
+        .unwrap_or("project");
+    let slug = stem
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(40)
+        .collect::<String>()
+        .trim_matches('_')
+        .to_owned();
+    let slug = if slug.is_empty() { "project" } else { &slug };
+    let digest = Sha256::digest(path.as_os_str().to_string_lossy().as_bytes());
+    let suffix = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{slug}-{suffix}")
 }
 
 pub async fn preflight(runtime: &VmActivityRuntime) -> Result<String, String> {
@@ -1882,4 +1903,38 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 fn now_string() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+#[cfg(test)]
+mod project_path_tests {
+    use super::*;
+    use flate2::{Compression, write::GzEncoder};
+
+    #[tokio::test]
+    async fn loads_project_archive_from_an_arbitrary_absolute_path() {
+        let root = std::env::temp_dir().join(format!("thot-project-path-{}", uuid::Uuid::new_v4()));
+        let archive_dir = root.join("instructor-files").join("term-1");
+        let archive_path = archive_dir.join("linux competition.thot.tgz");
+        let snapshot_dir = root.join("artifacts").join("project-snapshot");
+        fs::create_dir_all(&archive_dir).unwrap();
+
+        let config = b"activity_name: Sample\ndelivery_folder: /srv/submissions\nconcurrency: 1\ntimeout: 30\ntests:\n  - name: start\n    test: VirtualBox/start_vm\n";
+        let file = File::create(&archive_path).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut tar = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(config.len() as u64);
+        header.set_mode(0o640);
+        header.set_cksum();
+        tar.append_data(&mut header, "configuration.yaml", config.as_slice())
+            .unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+
+        let project = load_project(&archive_path, &snapshot_dir).await.unwrap();
+        assert_eq!(project.archive_path, archive_path.canonicalize().unwrap());
+        assert!(project.project_id.starts_with("linux_competition-"));
+        assert_eq!(project.configuration.activity_name, "Sample");
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

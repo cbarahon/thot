@@ -73,7 +73,7 @@ pub use vm_activity::{ParameterInput, ProjectTest, VMActivity, VMActivityProject
 /// Request accepted by the POC run-creation endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryRunRequest {
-    pub project_id: String,
+    pub project_path: String,
     #[serde(default)]
     pub delivery_directory: Option<String>,
 }

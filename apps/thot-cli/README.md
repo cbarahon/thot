@@ -6,20 +6,21 @@ credentials. Its default API endpoint is `http://127.0.0.1:8081`.
 ```text
 thot [-h HOST] [-p PORT] import students <file.csv>
 thot [-h HOST] [-p PORT] get students [csv]
-thot [-h HOST] [-p PORT] run create --project ID [--deliveries DIR]
+thot [-h HOST] [-p PORT] run create <PROJECT.thot.tgz|PROJECT.thot.zip> [--deliveries DIR]
 thot [-h HOST] [-p PORT] run status RUN_ID
 thot [-h HOST] [-p PORT] run expedient EXPEDIENT_ID
 thot [-h HOST] [-p PORT] run cancel RUN_ID
 thot [-h HOST] [-p PORT] run cleanup EXPEDIENT_ID
 ```
 
-The run command reads the project archive `<ID>.thot.tgz` or
-`<ID>.thot.zip`. Without `--deliveries`, the engine uses `delivery_folder` from
-the archive's root `configuration.yaml`; an override must be under the server's
-configured delivery root. The engine processes direct `.ova` children and does
-not map results to students. Status and expedient commands return JSON.
-Cleanup uses the persisted manifest and checks recorded VM identity and storage
-ownership.
+The run command takes a project archive path directly. The CLI resolves it to
+an absolute path before sending the request. Without `--deliveries`, the engine
+uses `delivery_folder` from the archive's root `configuration.yaml`; relative
+paths resolve from the archive's containing directory and absolute paths are
+accepted. Delivery overrides can also point anywhere the daemon can read. The
+engine processes direct `.ova` children and does not map results to students.
+Status and expedient commands return JSON. Cleanup uses the persisted manifest
+and checks recorded VM identity and storage ownership.
 
 API settings resolve from command-line options, then the first available file
 among `./thot-config.yaml`, `./.thot-config.yaml`, and

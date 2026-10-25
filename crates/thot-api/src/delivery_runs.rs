@@ -28,7 +28,7 @@ async fn create_run(
     Json(request): Json<DeliveryRunRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     service
-        .create_run(request.project_id, request.delivery_directory)
+        .create_run(request.project_path, request.delivery_directory)
         .await
         .map(|run| (StatusCode::ACCEPTED, Json(run)))
         .map_err(ApiError::from)
