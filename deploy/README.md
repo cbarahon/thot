@@ -125,12 +125,18 @@ The project-path CLI sends `project_path`; an older running daemon that only acc
 Pass the path to the project archive directly. With no delivery override, the engine uses `delivery_folder`; relative paths resolve from the archive's containing directory, and absolute paths are accepted. An optional delivery override may also point anywhere the daemon can read:
 
 ```sh
+thot run
+# equivalent:
+thot run list
 thot run create /etc/thot/projects/linux_competition.thot.tgz
 # or
 thot run create /etc/thot/projects/linux_competition.thot.tgz --deliveries /srv/course/linux-competition-deliveries
 thot run status <run-id>
 thot run expedient <expedient-id>
 thot run cleanup <expedient-id>
+thot run delete <run-id>
 ```
+
+Run IDs use the project archive name and its UTC creation time, for example `linux_competition-20261026_154512`. Expedient IDs use the delivery filename and the same run timestamp. Listing returns run status, creation time, project and delivery paths, and expedient IDs. Deleting a run removes its run, expedient, and unreferenced delivery records from the database; it leaves report files, VM files, and other artifacts untouched. A queued, running, or cancelling run cannot be deleted.
 
 The current POC accepts one active run and processes deliveries sequentially. Check each expedient and cleanup result. A host without VirtualBox can build and run the basic Rust tests, but cannot validate OVA import, guest boot, forwarding, screenshots, SSH, or VM cleanup.

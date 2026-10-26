@@ -20,9 +20,10 @@ before student mapping or grading.
 The POC uses a native Linux host with a dedicated unprivileged service account,
 VirtualBox profile, and VM storage root. `thotd` runs on the host at
 `127.0.0.1:8081`; guest HTTP/SSH forwards use loopback ports 8080 and 2222.
-The CLI can create sequential runs, inspect run status and expedients, and
-request manifest-checked cleanup. Student association and grading are outside
-this POC.
+The CLI can list runs, create sequential runs with readable timestamp IDs,
+inspect run status and expedients, request manifest-checked cleanup, and delete
+inactive run records from the database. Student association and grading are
+outside this POC.
 
 Read [`docs/THOT_VM_ACTIVITY_POC.md`](docs/THOT_VM_ACTIVITY_POC.md) for the
 activity contract and [`deploy/README.md`](deploy/README.md) for production

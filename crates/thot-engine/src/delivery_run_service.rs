@@ -16,6 +16,7 @@ use crate::{
 pub struct RunRecord {
     pub run_id: String,
     pub project_id: String,
+    pub created_at: String,
     pub delivery_directory: String,
     pub status: String,
     pub expedient_ids: Vec<String>,
@@ -46,7 +47,7 @@ impl DeliveryRunService {
             .execute(&pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_expedients (expedient_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, delivery_id TEXT NOT NULL, report_path TEXT NOT NULL, status TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES vm_activity_runs(run_id), FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id))")
             .execute(&pool).await?;
-        sqlx::query("UPDATE vm_activity_runs SET status='interrupted_cleanup_pending' WHERE status IN ('queued','running')").execute(&pool).await?;
+        sqlx::query("UPDATE vm_activity_runs SET status='interrupted_cleanup_pending' WHERE status IN ('queued','running','cancelling')").execute(&pool).await?;
         sqlx::query("UPDATE vm_activity_expedients SET status='interrupted_cleanup_pending' WHERE status='running'").execute(&pool).await?;
         Ok(Self {
             pool,
@@ -68,7 +69,7 @@ impl DeliveryRunService {
         }
         let _guard = self.create_gate.lock().await;
         let active: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM vm_activity_runs WHERE status IN ('queued','running')",
+            "SELECT COUNT(*) FROM vm_activity_runs WHERE status IN ('queued','running','cancelling')",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -77,7 +78,22 @@ impl DeliveryRunService {
                 "another delivery run is queued or running".into(),
             ));
         }
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now();
+        let created_at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let timestamp = now.format("%Y%m%d_%H%M%S").to_string();
+        let project_name = project_file_component(Path::new(&project_path));
+        let base_run_id = format!("{project_name}-{timestamp}");
+        let mut run_id = base_run_id.clone();
+        let mut collision = 1_u32;
+        while sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vm_activity_runs WHERE run_id=?")
+            .bind(&run_id)
+            .fetch_one(&self.pool)
+            .await?
+            > 0
+        {
+            run_id = format!("{base_run_id}-{collision:02}");
+            collision += 1;
+        }
         let snapshot_dir = self.artifact_root.join("project-snapshots").join(&run_id);
         let snapshot = vm_activity::load_project(Path::new(&project_path), &snapshot_dir)
             .await
@@ -106,18 +122,26 @@ impl DeliveryRunService {
         let record = RunRecord {
             run_id: run_id.clone(),
             project_id: snapshot.project_id.clone(),
+            created_at: created_at.clone(),
             delivery_directory: selected.display().to_string(),
             status: "queued".into(),
             expedient_ids: Vec::new(),
             error: None,
         };
-        sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids) VALUES(?,?,?,?,?)")
-            .bind(&record.run_id).bind(&record.project_id).bind(&record.delivery_directory).bind(&record.status).bind("[]").execute(&self.pool).await?;
+        sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids,created_at) VALUES(?,?,?,?,?,?)")
+            .bind(&record.run_id).bind(&record.project_id).bind(&record.delivery_directory).bind(&record.status).bind("[]").bind(&record.created_at).execute(&self.pool).await?;
         let service = self.clone();
         let background_run_id = record.run_id.clone();
+        let background_timestamp = timestamp;
         tokio::spawn(async move {
             service
-                .execute_run(background_run_id, snapshot, vbox_version, inputs)
+                .execute_run(
+                    background_run_id,
+                    background_timestamp,
+                    snapshot,
+                    vbox_version,
+                    inputs,
+                )
                 .await;
         });
         Ok(record)
@@ -126,6 +150,7 @@ impl DeliveryRunService {
     async fn execute_run(
         &self,
         run_id: String,
+        run_timestamp: String,
         project: ProjectSnapshot,
         vbox_version: String,
         inputs: Vec<DeliveryInput>,
@@ -142,10 +167,14 @@ impl DeliveryRunService {
             had_errors = true;
         }
         for input in inputs {
-            if let Ok(Some(run)) = self.get_run(&run_id).await {
-                if run.status == "cancelled" {
-                    break;
-                }
+            if !self
+                .get_run(&run_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|run| !matches!(run.status.as_str(), "cancelled" | "cancelling"))
+            {
+                break;
             }
             let mut input = input;
             if input.validation_error.is_none() {
@@ -154,18 +183,55 @@ impl DeliveryRunService {
                     Err(e) => input.validation_error = Some(e),
                 }
             }
+            if !self
+                .get_run(&run_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|run| !matches!(run.status.as_str(), "cancelled" | "cancelling"))
+            {
+                break;
+            }
             let delivery_id = self
                 .register_delivery(&input)
                 .await
                 .unwrap_or_else(|_| input.delivery_id.clone());
-            let expedient_id = format!("exp-{}", uuid::Uuid::new_v4().simple());
+            let filename = Path::new(&input.filename)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let expedient_base = format!("{}-{run_timestamp}", expedient_file_component(&filename));
+            let mut expedient_id = expedient_base.clone();
+            let mut collision = 1_u32;
+            loop {
+                match sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM vm_activity_expedients WHERE expedient_id=?",
+                )
+                .bind(&expedient_id)
+                .fetch_one(&self.pool)
+                .await
+                {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        expedient_id = format!("{expedient_base}-{collision:02}");
+                        collision += 1;
+                    }
+                    Err(_) => {
+                        expedient_id = format!(
+                            "{expedient_base}-{}",
+                            &uuid::Uuid::new_v4().simple().to_string()[..8]
+                        );
+                        break;
+                    }
+                }
+            }
             let report_dir = self
                 .artifact_root
                 .join(&project.project_id)
                 .join(&run_id)
                 .join(&delivery_id);
             let report_path = report_dir.join("delivery.json");
-            let _ = sqlx::query("INSERT OR REPLACE INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES(?,?,?,?,?)")
+            let _ = sqlx::query("INSERT INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES(?,?,?,?,?)")
                 .bind(&expedient_id).bind(&run_id).bind(&delivery_id).bind(report_path.display().to_string()).bind("running").execute(&self.pool).await;
             expedients.push(expedient_id.clone());
             let _ = self.save_run_expedients(&run_id, &expedients).await;
@@ -198,7 +264,7 @@ impl DeliveryRunService {
             .await
             .ok()
             .flatten()
-            .is_some_and(|r| r.status == "cancelled")
+            .is_some_and(|r| matches!(r.status.as_str(), "cancelled" | "cancelling"))
         {
             "cancelled"
         } else if had_errors {
@@ -241,18 +307,85 @@ impl DeliveryRunService {
     }
 
     pub async fn get_run(&self, run_id: &str) -> Result<Option<RunRecord>, ServiceError> {
-        let row = sqlx::query_as::<_, (String,String,String,String,String,Option<String>)>("SELECT run_id, project_id, delivery_directory, status, expedient_ids, error FROM vm_activity_runs WHERE run_id = ?")
+        let row = sqlx::query_as::<_, (String,String,String,String,String,String,Option<String>)>("SELECT run_id, project_id, created_at, delivery_directory, status, expedient_ids, error FROM vm_activity_runs WHERE run_id = ?")
             .bind(run_id).fetch_optional(&self.pool).await?;
         Ok(row.map(
-            |(run_id, project_id, delivery_directory, status, ids, error)| RunRecord {
+            |(run_id, project_id, created_at, delivery_directory, status, ids, error)| RunRecord {
                 run_id,
                 project_id,
+                created_at,
                 delivery_directory,
                 status,
                 expedient_ids: serde_json::from_str(&ids).unwrap_or_default(),
                 error,
             },
         ))
+    }
+
+    pub async fn list_runs(&self) -> Result<Vec<RunRecord>, ServiceError> {
+        let rows = sqlx::query_as::<_, (String,String,String,String,String,String,Option<String>)>(
+            "SELECT run_id, project_id, created_at, delivery_directory, status, expedient_ids, error FROM vm_activity_runs ORDER BY created_at DESC, run_id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(run_id, project_id, created_at, delivery_directory, status, ids, error)| {
+                    RunRecord {
+                        run_id,
+                        project_id,
+                        created_at,
+                        delivery_directory,
+                        status,
+                        expedient_ids: serde_json::from_str(&ids).unwrap_or_default(),
+                        error,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn delete_run(&self, run_id: &str) -> Result<bool, ServiceError> {
+        let mut transaction = self.pool.begin().await?;
+        let status =
+            sqlx::query_scalar::<_, String>("SELECT status FROM vm_activity_runs WHERE run_id=?")
+                .bind(run_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let Some(status) = status else {
+            transaction.rollback().await?;
+            return Ok(false);
+        };
+        if matches!(status.as_str(), "queued" | "running" | "cancelling") {
+            transaction.rollback().await?;
+            return Err(ServiceError::Conflict(
+                "cannot delete a run while it is queued, running, or cancelling".into(),
+            ));
+        }
+        let delivery_ids = sqlx::query_scalar::<_, String>(
+            "SELECT delivery_id FROM vm_activity_expedients WHERE run_id=?",
+        )
+        .bind(run_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+        sqlx::query("DELETE FROM vm_activity_expedients WHERE run_id=?")
+            .bind(run_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM vm_activity_runs WHERE run_id=?")
+            .bind(run_id)
+            .execute(&mut *transaction)
+            .await?;
+        for delivery_id in delivery_ids {
+            sqlx::query("DELETE FROM vm_activity_deliveries WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients WHERE delivery_id=?)")
+                .bind(&delivery_id)
+                .bind(&delivery_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await?;
+        Ok(true)
     }
 
     pub async fn get_expedient(
@@ -280,7 +413,7 @@ impl DeliveryRunService {
             return Ok(None);
         };
         if matches!(run.status.as_str(), "queued" | "running") {
-            run.status = "cancelled".into();
+            run.status = "cancelling".into();
             sqlx::query("UPDATE vm_activity_runs SET status = ? WHERE run_id = ?")
                 .bind(&run.status)
                 .bind(run_id)
@@ -413,6 +546,75 @@ impl DeliveryRunService {
     }
 }
 
+fn project_file_component(path: &Path) -> String {
+    let filename = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let lower = filename.to_ascii_lowercase();
+    let stem = [
+        ".thot.tar.gz",
+        ".thot.tgz",
+        ".thot.zip",
+        ".tar.gz",
+        ".tgz",
+        ".zip",
+    ]
+    .iter()
+    .find_map(|suffix| {
+        lower
+            .ends_with(suffix)
+            .then(|| filename[..filename.len() - suffix.len()].to_owned())
+    })
+    .unwrap_or_else(|| {
+        Path::new(&filename)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or(filename)
+    });
+    safe_id_component(&stem)
+}
+
+fn safe_id_component(value: &str) -> String {
+    let component: String = value
+        .chars()
+        .take(100)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let component = component.trim_matches('_');
+    if component.is_empty() {
+        "project".into()
+    } else {
+        component.to_owned()
+    }
+}
+
+fn expedient_file_component(value: &str) -> String {
+    let component: String = value
+        .chars()
+        .take(100)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let component = component.trim_matches(|character| character == '_' || character == '.');
+    if component.is_empty() {
+        "delivery".into()
+    } else {
+        component.to_owned()
+    }
+}
+
 fn resolve_directory(path: &Path, relative_to: Option<&Path>) -> Result<PathBuf, String> {
     let requested = if path.is_absolute() {
         path.to_path_buf()
@@ -441,6 +643,26 @@ fn resolve_directory(path: &Path, relative_to: Option<&Path>) -> Result<PathBuf,
 #[cfg(test)]
 mod path_tests {
     use super::*;
+    use std::time::Duration;
+
+    fn test_runtime() -> VmActivityRuntime {
+        VmActivityRuntime {
+            vbox_manage: PathBuf::from("/usr/bin/VBoxManage"),
+            expected_vbox_version: String::new(),
+            vbox_user_home: PathBuf::from("/tmp/thot-vbox-profile"),
+            storage_root: PathBuf::from("/tmp/thot-vms"),
+            artifact_root: PathBuf::from("/tmp/thot-artifacts"),
+            max_ova_bytes: 1024,
+            free_space_reserve: 0,
+            output_limit: 1024,
+            import_timeout: Duration::from_secs(1),
+            startup_timeout: Duration::from_secs(1),
+            ssh_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_secs(1),
+            ssh_secret_file: PathBuf::from("/tmp/thot-ssh-secret"),
+            firewall_confirmed: true,
+        }
+    }
 
     #[test]
     fn delivery_folder_can_be_absolute_or_relative_outside_project_directory() {
@@ -456,6 +678,101 @@ mod path_tests {
         assert_eq!(relative, deliveries.canonicalize().unwrap());
         assert_eq!(absolute, relative);
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn run_id_uses_project_archive_stem_and_safe_characters() {
+        assert_eq!(
+            project_file_component(Path::new("linux_competition.thot.tgz")),
+            "linux_competition"
+        );
+        assert_eq!(
+            project_file_component(Path::new("My class.thot.zip")),
+            "My_class"
+        );
+    }
+
+    #[test]
+    fn expedient_id_component_preserves_filename_extension_safely() {
+        assert_eq!(
+            expedient_file_component("Alpine Test.Dani.ova"),
+            "Alpine_Test.Dani.ova"
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_and_deleting_runs_removes_only_unreferenced_delivery_rows() {
+        let root = std::env::temp_dir().join(format!("thot-runs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let database_path = root.join("thot.sqlite3");
+        std::fs::File::create(&database_path).unwrap();
+        let database_url = format!("sqlite:{}", database_path.display());
+        let service =
+            DeliveryRunService::connect(&database_url, root.join("artifacts"), test_runtime())
+                .await
+                .unwrap();
+        sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids) VALUES('linux-20261026_154512','project','/delivery','completed','[\"student.ova-20261026_154512\",\"student2.ova-20261026_154512\"]')")
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids) VALUES('other-20261026_154513','project','/delivery','completed','[\"student.ova-20261026_154513\"]')")
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        for delivery_id in ["shared-delivery", "orphan-delivery"] {
+            sqlx::query("INSERT INTO vm_activity_deliveries(delivery_id,collection_ref,source_ref,content_sha256,original_filename,byte_size) VALUES(?, '/delivery', ?, 'hash', ?, 1)")
+                .bind(delivery_id)
+                .bind(format!("/delivery/{delivery_id}.ova"))
+                .bind(format!("{delivery_id}.ova"))
+                .execute(&service.pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES('student.ova-20261026_154512','linux-20261026_154512','shared-delivery','/reports/one.json','completed')")
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES('student2.ova-20261026_154512','linux-20261026_154512','orphan-delivery','/reports/two.json','completed')")
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES('student.ova-20261026_154513','other-20261026_154513','shared-delivery','/reports/other.json','completed')")
+            .execute(&service.pool)
+            .await
+            .unwrap();
+
+        let listed = service.list_runs().await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].run_id, "other-20261026_154513");
+        assert_eq!(listed[0].expedient_ids, vec!["student.ova-20261026_154513"]);
+        assert_eq!(listed[1].expedient_ids.len(), 2);
+        assert!(service.delete_run("linux-20261026_154512").await.unwrap());
+        assert!(
+            service
+                .get_run("linux-20261026_154512")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(service.list_runs().await.unwrap().len(), 1);
+        let remaining_deliveries: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM vm_activity_deliveries")
+                .fetch_one(&service.pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining_deliveries, 1);
+        assert!(!service.delete_run("missing-run").await.unwrap());
+
+        sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status) VALUES('active-run','project','/delivery','running')")
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            service.delete_run("active-run").await,
+            Err(ServiceError::Conflict(_))
+        ));
+        drop(service);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

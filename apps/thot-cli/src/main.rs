@@ -636,7 +636,7 @@ fn optional_display(value: &Option<String>) -> String {
 
 fn print_usage() {
     println!(
-        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot [-h servidor] [-p puerto] run create <ruta-archivo-proyecto> [--deliveries DIR]\n  thot [-h servidor] [-p puerto] run status RUN_ID\n  thot [-h servidor] [-p puerto] run expedient EXPEDIENT_ID\n  thot [-h servidor] [-p puerto] run cancel RUN_ID\n  thot [-h servidor] [-p puerto] run cleanup EXPEDIENT_ID\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
+        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot [-h servidor] [-p puerto] run [list]\n  thot [-h servidor] [-p puerto] run create <ruta-archivo-proyecto> [--deliveries DIR]\n  thot [-h servidor] [-p puerto] run status RUN_ID\n  thot [-h servidor] [-p puerto] run delete RUN_ID\n  thot [-h servidor] [-p puerto] run expedient EXPEDIENT_ID\n  thot [-h servidor] [-p puerto] run cancel RUN_ID\n  thot [-h servidor] [-p puerto] run cleanup EXPEDIENT_ID\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
     );
 }
 

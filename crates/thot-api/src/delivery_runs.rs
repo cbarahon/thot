@@ -12,8 +12,8 @@ use thot_engine::{DeliveryRunService, RunRecord, delivery_run_service::ServiceEr
 
 pub(super) fn router(service: DeliveryRunService) -> Router {
     Router::new()
-        .route("/api/v1/runs", post(create_run))
-        .route("/api/v1/runs/{run_id}", get(get_run))
+        .route("/api/v1/runs", get(list_runs).post(create_run))
+        .route("/api/v1/runs/{run_id}", get(get_run).delete(delete_run))
         .route("/api/v1/runs/{run_id}/cancel", post(cancel_run))
         .route("/api/v1/expedients/{expedient_id}", get(get_expedient))
         .route(
@@ -21,6 +21,12 @@ pub(super) fn router(service: DeliveryRunService) -> Router {
             post(cleanup_expedient),
         )
         .with_state(service)
+}
+
+async fn list_runs(
+    State(service): State<DeliveryRunService>,
+) -> Result<Json<Vec<RunRecord>>, ApiError> {
+    service.list_runs().await.map(Json).map_err(ApiError::from)
 }
 
 async fn create_run(
@@ -54,6 +60,17 @@ async fn cancel_run(
         .await?
         .map(Json)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "run not found".into()))
+}
+
+async fn delete_run(
+    State(service): State<DeliveryRunService>,
+    Path(run_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if service.delete_run(&run_id).await? {
+        Ok(Json(json!({"run_id": run_id, "deleted": true})))
+    } else {
+        Err(ApiError(StatusCode::NOT_FOUND, "run not found".into()))
+    }
 }
 
 async fn get_expedient(

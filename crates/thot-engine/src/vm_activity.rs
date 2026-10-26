@@ -1607,7 +1607,9 @@ pub(crate) fn is_owned_vm(
     let Ok(storage_root) = storage.canonicalize() else {
         return false;
     };
-    info.get("Name").is_some_and(|actual| actual == name)
+    info.get("name")
+        .or_else(|| info.get("Name"))
+        .is_some_and(|actual| actual == name)
         && info.get("UUID").is_some_and(|actual| actual == uuid)
         && info.get("CfgFile").is_some_and(|cfg| {
             Path::new(cfg)
@@ -1932,6 +1934,28 @@ mod project_path_tests {
         assert!(project.project_id.starts_with("linux_competition-"));
         assert_eq!(project.configuration.activity_name, "Sample");
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ownership_check_accepts_vbox_lowercase_name_and_nested_config_path() {
+        let root = std::env::temp_dir().join(format!("thot-vm-owner-{}", uuid::Uuid::new_v4()));
+        let storage = root.join("run").join("delivery");
+        let config_dir = storage.join("linux_competition").join("linux_competition");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("linux_competition.vbox");
+        fs::write(&config_path, "test config").unwrap();
+        let info = parse_machine_info(&format!(
+            "name=\"linux_competition\"\nUUID=\"067df5f1-9d83-4046-a9ba-2b4b1c22773a\"\nCfgFile=\"{}\"\n",
+            config_path.display()
+        ));
+
+        assert!(is_owned_vm(
+            &info,
+            "linux_competition",
+            "067df5f1-9d83-4046-a9ba-2b4b1c22773a",
+            &storage,
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 }
