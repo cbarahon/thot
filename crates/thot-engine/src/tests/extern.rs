@@ -6,22 +6,14 @@ use thot_runner::external::run_external_process;
 use crate::test_execution::{TestInvocation, TestOutcome};
 
 pub async fn run(invocation: &TestInvocation) -> TestOutcome {
-    let Some(relative) = invocation.test_reference.strip_prefix("extern/") else {
-        return TestOutcome::error("external test reference must begin extern/");
-    };
-    let relative_path = Path::new(relative);
-    if relative_path.is_absolute()
-        || relative_path
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_)))
-    {
-        return TestOutcome::error("external test path is unsafe");
-    }
     let root = match invocation.project_root.canonicalize() {
         Ok(root) => root,
         Err(error) => return TestOutcome::error(format!("project files are unavailable: {error}")),
     };
-    let script = invocation.project_root.join(relative_path);
+    let script = match resolve_external_script_path(&root, &invocation.test_reference) {
+        Ok(path) => path,
+        Err(error) => return TestOutcome::error(error),
+    };
     let metadata = match std::fs::symlink_metadata(&script) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
         Ok(_) => return TestOutcome::error("external test must be a regular file"),
@@ -119,5 +111,41 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
             evidence: Vec::new(),
         },
         Err(error) => TestOutcome::error(error),
+    }
+}
+
+fn resolve_external_script_path(root: &Path, test_reference: &str) -> Result<PathBuf, String> {
+    let Some(relative) = test_reference.strip_prefix("extern/") else {
+        return Err("external test reference must begin extern/".into());
+    };
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("external test path is unsafe".into());
+    }
+    Ok(root.join("extern").join(relative_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_external_reference_under_the_extern_directory() {
+        let root = std::env::temp_dir().join(format!("thot-extern-{}", uuid::Uuid::new_v4()));
+        let script = root.join("extern/tests/vm_start_time.py");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "print('test')").unwrap();
+
+        assert_eq!(
+            resolve_external_script_path(&root, "extern/tests/vm_start_time.py").unwrap(),
+            script
+        );
+        assert!(resolve_external_script_path(&root, "extern/../vm_start_time.py").is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
