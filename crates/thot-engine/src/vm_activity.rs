@@ -1279,20 +1279,33 @@ pub(crate) async fn disable_guest_features(
         ));
     }
     let after = parse_machine_info(&verify.stdout);
-    if after.get("clipboard").map(String::as_str) != Some("disabled")
-        || after.get("draganddrop").map(String::as_str) != Some("disabled")
-        || after.get("usbenabled").map(String::as_str) != Some("off")
-        || after.keys().any(|k| {
-            k.starts_with("SharedFolderNameMachineMapping")
-                || k.starts_with("SharedFolderNameTransientMapping")
-        })
-    {
-        return Err(
-            "VirtualBox reported an enabled shared integration after applying isolation settings"
-                .into(),
-        );
+    if !isolation_settings_are_disabled(&after) {
+        let state = |key: &str| after.get(key).map(String::as_str).unwrap_or("<missing>");
+        let shared_folder_count = after
+            .keys()
+            .filter(|key| {
+                key.starts_with("SharedFolderNameMachineMapping")
+                    || key.starts_with("SharedFolderNameTransientMapping")
+            })
+            .count();
+        return Err(format!(
+            "VirtualBox isolation verification failed: clipboard={}, draganddrop={}, usb={}, shared_folder_entries={shared_folder_count}",
+            state("clipboard"),
+            state("draganddrop"),
+            state("usb")
+        ));
     }
     Ok(())
+}
+
+fn isolation_settings_are_disabled(info: &std::collections::HashMap<String, String>) -> bool {
+    info.get("clipboard").map(String::as_str) == Some("disabled")
+        && info.get("draganddrop").map(String::as_str) == Some("disabled")
+        && info.get("usb").map(String::as_str) == Some("off")
+        && !info.keys().any(|key| {
+            key.starts_with("SharedFolderNameMachineMapping")
+                || key.starts_with("SharedFolderNameTransientMapping")
+        })
 }
 
 async fn run_http_trial(
@@ -1738,12 +1751,25 @@ async fn enrich_disks(runtime: &VmActivityRuntime, mut disks: Vec<Value>) -> Vec
     disks
 }
 pub(crate) fn adapter_observations(info: &std::collections::HashMap<String, String>) -> Vec<Value> {
-    let forwards = info
+    let mut forwards = info
         .iter()
         .filter(|(k, _)| k.starts_with("Forwarding(") || k.starts_with("natpf"))
         .map(|(_, v)| v.clone())
         .collect::<Vec<_>>();
-    (1..=8).filter_map(|i|{let key=format!("nic{i}");info.get(&key).map(|mode|json!({"slot":i,"enabled":mode!="none","attachment":mode,"forwarding":forwards}))}).collect()
+    forwards.sort();
+    (1..=8)
+        .filter_map(|i| {
+            let key = format!("nic{i}");
+            info.get(&key).map(|mode| {
+                let adapter_forwards = if mode == "nat" {
+                    forwards.clone()
+                } else {
+                    Vec::new()
+                };
+                json!({"slot":i,"enabled":mode!="none","attachment":mode,"forwarding":adapter_forwards})
+            })
+        })
+        .collect()
 }
 fn valid_forwarding(entry: &str) -> Option<(u16, u16)> {
     let fields = entry.split(',').collect::<Vec<_>>();
@@ -1957,5 +1983,29 @@ mod project_path_tests {
             &storage,
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn isolation_verifier_uses_virtualbox_usb_machine_field() {
+        let machine = parse_machine_info(
+            "clipboard=\"disabled\"\ndraganddrop=\"disabled\"\nusb=\"off\"\nehci=\"off\"\nxhci=\"off\"\n",
+        );
+        assert!(isolation_settings_are_disabled(&machine));
+
+        let still_enabled = parse_machine_info(
+            "clipboard=\"disabled\"\ndraganddrop=\"disabled\"\nusb=\"on\"\nehci=\"on\"\nxhci=\"off\"\n",
+        );
+        assert!(!isolation_settings_are_disabled(&still_enabled));
+    }
+
+    #[test]
+    fn adapter_observations_only_attach_forwarding_to_nat_adapters() {
+        let info = parse_machine_info(
+            "nic1=\"nat\"\nnic2=\"none\"\nForwarding(0)=\"HTTP,tcp,,8080,,80\"\n",
+        );
+        let adapters = adapter_observations(&info);
+        assert_eq!(adapters.len(), 2);
+        assert_eq!(adapters[0]["forwarding"][0], "HTTP,tcp,,8080,,80");
+        assert!(adapters[1]["forwarding"].as_array().unwrap().is_empty());
     }
 }

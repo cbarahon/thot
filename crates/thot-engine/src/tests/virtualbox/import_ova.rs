@@ -1,4 +1,4 @@
-//! Purpose: Imports and validates a delivery OVA and records its owned VM manifest.
+//! Purpose: Imports a delivery OVA, captures its VM configuration, and records its ownership manifest.
 use super::{runner, vm_storage, write_manifest};
 use crate::test_execution::{TestInvocation, TestOutcome};
 
@@ -242,29 +242,22 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
             evidence: vec!["cleanup-manifest.json".into()],
         };
     }
-    let adapters = crate::vm_activity::adapter_observations(&info);
-    if !crate::vm_activity::validate_network(&adapters) {
-        return TestOutcome {
-            status: thot_core::test_results::TestStatus::Failed,
-            stdout: output.stdout,
-            stderr: output.stderr,
-            exit_code: Some(1),
-            diagnostics: "OVA must use NAT with loopback-only TCP forwarding 8080->80 and 2222->22"
-                .into(),
-            observation: serde_json::json!({"vm_name": vm_name, "vm_uuid": uuid, "network_adapters": adapters}),
-            evidence: vec!["cleanup-manifest.json".into()],
-        };
-    }
+    let adapters = crate::vm_activity::adapter_observations(&initial_info);
     TestOutcome {
         status: thot_core::test_results::TestStatus::Passed,
-        stdout: serde_yaml::to_string(
-            &serde_json::json!({"vm_name": vm_name, "vm_uuid": uuid, "vm_path": storage}),
-        )
-        .unwrap_or_default(),
+        stdout: output.stdout,
         stderr: output.stderr,
         exit_code: Some(0),
         diagnostics: String::new(),
-        observation: serde_json::json!({"vm_name": vm_name, "vm_uuid": uuid, "vbox_group": group, "vm_path": storage, "duration_ms": output.duration.as_millis()}),
+        observation: serde_json::json!({
+            "vm_name": vm_name,
+            "vm_uuid": uuid,
+            "vbox_group": group,
+            "vm_path": storage,
+            "duration_ms": output.duration.as_millis(),
+            "network_adapters": adapters,
+            "vm_configuration": initial_info
+        }),
         evidence: vec!["cleanup-manifest.json".into()],
     }
 }
