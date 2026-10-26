@@ -112,6 +112,14 @@ sudo systemctl enable --now thotd
 sudo systemctl status thotd
 ```
 
+When updating either binary, install `thot` and `thotd` from the same build, then restart the daemon so it loads the new API contract:
+
+```sh
+sudo systemctl restart thotd
+```
+
+The project-path CLI sends `project_path`; an older running daemon that only accepts `project_id` must be upgraded before it can run an archive by path.
+
 ## Create and inspect a run
 
 Pass the path to the project archive directly. With no delivery override, the engine uses `delivery_folder`; relative paths resolve from the archive's containing directory, and absolute paths are accepted. An optional delivery override may also point anywhere the daemon can read:

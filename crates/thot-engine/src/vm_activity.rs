@@ -568,7 +568,7 @@ pub async fn execute_delivery(
             match imported {
                 Ok(output) if output.exit_code == Some(0) => {
                     write_command_log(report_dir, "import", &output);
-                    let safety_result = disable_guest_features(runtime, &vm_name, "/thot").await;
+                    let safety_result = disable_guest_features(runtime, &vm_name).await;
                     match vbox(
                         runtime,
                         &["showvminfo", &vm_name, "--machinereadable"],
@@ -1209,7 +1209,6 @@ async fn diagnostic_boot(
 pub(crate) async fn disable_guest_features(
     runtime: &VmActivityRuntime,
     vm: &str,
-    group: &str,
 ) -> Result<(), String> {
     let info = vbox(
         runtime,
@@ -1229,8 +1228,6 @@ pub(crate) async fn disable_guest_features(
         &[
             "modifyvm",
             vm,
-            "--groups",
-            group,
             "--clipboard",
             "disabled",
             "--draganddrop",
@@ -1601,7 +1598,7 @@ pub(crate) fn attached_media_paths(
         .collect()
 }
 
-fn is_owned_vm(
+pub(crate) fn is_owned_vm(
     info: &std::collections::HashMap<String, String>,
     name: &str,
     uuid: &str,

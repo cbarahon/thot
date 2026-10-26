@@ -41,11 +41,37 @@ impl ApiClient {
                         .map(ToOwned::to_owned)
                 })
                 .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-            return Err(format!("thotd returned HTTP {}: {}", status, message).into());
+            return Err(api_error_message(status, path, &message).into());
         }
         if status == StatusCode::NO_CONTENT || bytes.is_empty() {
             return Ok(json!({"status":"ok"}));
         }
         Ok(serde_json::from_slice(&bytes)?)
+    }
+}
+
+fn api_error_message(status: StatusCode, path: &str, message: &str) -> String {
+    if status == StatusCode::UNPROCESSABLE_ENTITY
+        && path == "/api/v1/runs"
+        && message.contains("missing field `project_id`")
+    {
+        return "thotd is running an older API build: this CLI sends `project_path`, but the daemon expects `project_id`. Install the matching thotd binary and restart the service.".into();
+    }
+    format!("thotd returned HTTP {status}: {message}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifies_daemon_that_only_accepts_project_ids() {
+        let message = api_error_message(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "/api/v1/runs",
+            "missing field `project_id` at line 1 column 58",
+        );
+        assert!(message.contains("older API build"));
+        assert!(message.contains("restart the service"));
     }
 }

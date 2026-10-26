@@ -12,7 +12,7 @@ External tests are trusted teacher programs. They run as child processes with th
 
 ## Runtime configuration
 
-The service defaults to `127.0.0.1:8081` and a SQLite database at `/var/lib/thot/thot.sqlite3`. VM activity paths default below `/var/lib/thot`, except projects (`/etc/thot/projects`) and `VBoxManage` (`/usr/bin/VBoxManage`). Important variables include:
+The service defaults to `127.0.0.1:8081` and a SQLite database at `/var/lib/thot/thot.sqlite3`. Artifact, VM storage, and VirtualBox profile paths default below `/var/lib/thot`; project archives and delivery directories are supplied by path and are not bound to a daemon-configured root. `VBoxManage` defaults to `/usr/bin/VBoxManage`. Important variables include:
 
 - `THOTD_BIND_HOST`, `THOTD_BIND_PORT`, `THOTD_DATABASE_URL`
 - `THOTD_ARTIFACT_ROOT`

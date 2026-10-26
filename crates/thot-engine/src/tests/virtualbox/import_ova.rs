@@ -64,6 +64,8 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
             invocation.delivery.source.to_string_lossy().into_owned(),
             "--vsys".into(),
             "0".into(),
+            "--group".into(),
+            group.into(),
             "--vmname".into(),
             vm_name.clone(),
             "--basefolder".into(),
@@ -101,22 +103,6 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
         }
     };
 
-    if let Err(reason) =
-        crate::vm_activity::disable_guest_features(&invocation.runtime, &vm_name, group).await
-    {
-        return TestOutcome {
-            status: thot_core::test_results::TestStatus::Failed,
-            stdout: output.stdout,
-            stderr: format!("{}{}", output.stderr, reason),
-            exit_code: Some(1),
-            diagnostics:
-                "VM imported but isolation settings could not be verified; cleanup remains pending"
-                    .into(),
-            observation: serde_json::json!({"vm_name": vm_name, "storage_path": storage}),
-            evidence: Vec::new(),
-        };
-    }
-
     let info = runner(invocation)
         .run(&[
             "showvminfo".into(),
@@ -124,18 +110,37 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
             "--machinereadable".into(),
         ])
         .await;
-    let (uuid, disks) = match info {
+    let initial_info = match info {
         Ok(info) if info.exit_code == Some(0) => {
             output.stdout.push_str(&info.stdout);
             output.stderr.push_str(&info.stderr);
-            let parsed = crate::vm_activity::parse_machine_info(&info.stdout);
-            (
-                parsed.get("UUID").cloned(),
-                crate::vm_activity::attached_media_paths(&parsed),
-            )
+            crate::vm_activity::parse_machine_info(&info.stdout)
         }
-        _ => (None, Vec::new()),
+        Ok(info) => {
+            return TestOutcome {
+                status: thot_core::test_results::TestStatus::Failed,
+                stdout: output.stdout,
+                stderr: format!("{}{}", output.stderr, info.stderr),
+                exit_code: info.exit_code,
+                diagnostics: "VM imported but its identity could not be inspected".into(),
+                observation: serde_json::json!({"vm_name": vm_name, "storage_path": storage}),
+                evidence: vec!["cleanup-manifest.json".into()],
+            };
+        }
+        Err(error) => {
+            return TestOutcome {
+                status: thot_core::test_results::TestStatus::Error,
+                stdout: output.stdout,
+                stderr: format!("{}showvminfo failed: {error}", output.stderr),
+                exit_code: None,
+                diagnostics: "VM imported but its identity could not be inspected".into(),
+                observation: serde_json::json!({"vm_name": vm_name, "storage_path": storage}),
+                evidence: vec!["cleanup-manifest.json".into()],
+            };
+        }
     };
+    let uuid = initial_info.get("UUID").cloned();
+    let disks = crate::vm_activity::attached_media_paths(&initial_info);
     let updated = serde_json::json!({
         "schema_version": 2,
         "run_id": invocation.run_id,
@@ -162,7 +167,81 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
             evidence: Vec::new(),
         };
     }
-    let info = crate::vm_activity::parse_machine_info(&output.stdout);
+    let uuid = uuid.unwrap();
+    if !crate::vm_activity::is_owned_vm(&initial_info, &vm_name, &uuid, &storage) {
+        return TestOutcome {
+            status: thot_core::test_results::TestStatus::Failed,
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: Some(1),
+            diagnostics: "VM name, UUID, and settings path do not match the imported run storage"
+                .into(),
+            observation: serde_json::json!({
+                "vm_name": vm_name,
+                "vm_uuid": uuid,
+                "vm_config_path": initial_info.get("CfgFile"),
+                "storage_path": storage
+            }),
+            evidence: vec!["cleanup-manifest.json".into()],
+        };
+    }
+    if let Err(reason) =
+        crate::vm_activity::disable_guest_features(&invocation.runtime, &uuid).await
+    {
+        return TestOutcome {
+            status: thot_core::test_results::TestStatus::Failed,
+            stdout: output.stdout,
+            stderr: format!("{}{}", output.stderr, reason),
+            exit_code: Some(1),
+            diagnostics:
+                "VM imported but isolation settings could not be verified; cleanup remains pending"
+                    .into(),
+            observation: serde_json::json!({"vm_name": vm_name, "vm_uuid": uuid, "storage_path": storage}),
+            evidence: vec!["cleanup-manifest.json".into()],
+        };
+    }
+    let info = runner(invocation)
+        .run(&[
+            "showvminfo".into(),
+            uuid.clone(),
+            "--machinereadable".into(),
+        ])
+        .await;
+    let info = match info {
+        Ok(info) if info.exit_code == Some(0) => {
+            output.stdout.push_str(&info.stdout);
+            output.stderr.push_str(&info.stderr);
+            crate::vm_activity::parse_machine_info(&info.stdout)
+        }
+        _ => {
+            return TestOutcome {
+                status: thot_core::test_results::TestStatus::Failed,
+                stdout: output.stdout,
+                stderr: output.stderr,
+                exit_code: Some(1),
+                diagnostics: "VM was hardened but its final configuration could not be inspected"
+                    .into(),
+                observation: serde_json::json!({"vm_name": vm_name, "vm_uuid": uuid, "storage_path": storage}),
+                evidence: vec!["cleanup-manifest.json".into()],
+            };
+        }
+    };
+    if !crate::vm_activity::is_owned_vm(&info, &vm_name, &uuid, &storage) {
+        return TestOutcome {
+            status: thot_core::test_results::TestStatus::Failed,
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: Some(1),
+            diagnostics: "VM settings path changed outside the imported run storage".into(),
+            observation: serde_json::json!({
+                "vm_name": vm_name,
+                "vm_uuid": uuid,
+                "vm_config_path": info.get("CfgFile"),
+                "storage_path": storage
+            }),
+            evidence: vec!["cleanup-manifest.json".into()],
+        };
+    }
     let adapters = crate::vm_activity::adapter_observations(&info);
     if !crate::vm_activity::validate_network(&adapters) {
         return TestOutcome {
