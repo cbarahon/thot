@@ -1,9 +1,10 @@
 //! Purpose: Connects to a guest over SSH and reports host, memory, and filesystem information.
-use ssh2::{CheckResult, KnownHostFileKind, KnownHostKeyFormat, Session};
+use ssh2::{CheckResult, ErrorCode, KnownHostFileKind, KnownHostKeyFormat, Session};
 use std::{
     io::Read,
     net::{TcpStream, ToSocketAddrs},
-    time::Duration,
+    thread::sleep,
+    time::{Duration, Instant},
 };
 use thot_core::test_results::TestStatus;
 
@@ -88,18 +89,7 @@ fn collect_host_info(
         .map_err(|e| format!("cannot resolve SSH host: {e}"))?
         .next()
         .ok_or("SSH host resolved to no addresses")?;
-    let tcp = TcpStream::connect_timeout(&address, timeout)
-        .map_err(|e| format!("SSH connection failed: {e}"))?;
-    tcp.set_read_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
-    tcp.set_write_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
-    let mut session = Session::new().map_err(|e| format!("cannot create SSH session: {e}"))?;
-    session.set_timeout(timeout.as_millis().min(u32::MAX as u128) as u32);
-    session.set_tcp_stream(tcp);
-    session
-        .handshake()
-        .map_err(|e| format!("SSH handshake failed: {e}"))?;
+    let session = connect_ssh(&address, timeout)?;
     verify_host_key(&session, host, port, known_hosts_path)?;
     session
         .userauth_password(user, password)
@@ -157,6 +147,60 @@ fn collect_host_info(
         observation,
         out_truncated || err_truncated,
     ))
+}
+
+/// Waits for the guest SSH service to become ready, retrying transient connection and banner
+/// timeouts until the configured SSH deadline. VirtualBox reports a VM as started before its OS
+/// has necessarily finished booting, so a single handshake immediately after `start_vm` races
+/// guest startup.
+fn connect_ssh(address: &std::net::SocketAddr, timeout: Duration) -> Result<Session, String> {
+    const HANDSHAKE_ATTEMPT: Duration = Duration::from_secs(2);
+    const RETRY_DELAY: Duration = Duration::from_millis(250);
+
+    let deadline = Instant::now() + timeout;
+    let mut last_error = String::from("SSH server did not respond");
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "SSH server did not become ready within {} seconds; last attempt: {last_error}",
+                timeout.as_secs_f64()
+            ));
+        }
+
+        let tcp = match TcpStream::connect_timeout(address, remaining.min(HANDSHAKE_ATTEMPT)) {
+            Ok(tcp) => tcp,
+            Err(error) => {
+                last_error = format!("TCP connection failed: {error}");
+                sleep(RETRY_DELAY.min(remaining));
+                continue;
+            }
+        };
+        if let Err(error) = tcp
+            .set_read_timeout(Some(timeout))
+            .and_then(|()| tcp.set_write_timeout(Some(timeout)))
+        {
+            return Err(format!("cannot configure SSH socket timeouts: {error}"));
+        }
+
+        let mut session =
+            Session::new().map_err(|error| format!("cannot create SSH session: {error}"))?;
+        let attempt_timeout = remaining.min(HANDSHAKE_ATTEMPT);
+        session.set_timeout(attempt_timeout.as_millis().min(u32::MAX as u128) as u32);
+        session.set_tcp_stream(tcp);
+        match session.handshake() {
+            Ok(()) => {
+                session.set_timeout(timeout.as_millis().min(u32::MAX as u128) as u32);
+                return Ok(session);
+            }
+            Err(error) if error.code() == ErrorCode::Session(-9) => {
+                last_error = format!("SSH handshake timed out: {error}");
+            }
+            Err(error) => return Err(format!("SSH handshake failed: {error}")),
+        }
+
+        sleep(RETRY_DELAY.min(deadline.saturating_duration_since(Instant::now())));
+    }
 }
 
 #[derive(Debug)]

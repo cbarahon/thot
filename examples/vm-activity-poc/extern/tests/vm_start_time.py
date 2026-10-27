@@ -36,6 +36,7 @@ def stop_vm(vm_name):
     result = command(["VBoxManage", "controlvm", vm_name, "poweroff"], timeout=10)
     if result.returncode != 0:
         raise RuntimeError("VBoxManage poweroff failed: " + result.stderr.strip())
+    time.sleep(5)
 
 
 def main():

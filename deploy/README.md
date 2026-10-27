@@ -1,18 +1,46 @@
-# Native VirtualBox POC deployment
+# Native Linux VirtualBox deployment
 
-The POC runs `thotd` natively on the Linux host where VirtualBox is installed. It does not support invoking the host VirtualBox registry from the existing container deployment. Run the service under a dedicated, unprivileged OS account with a dedicated VirtualBox profile.
+Thot runs natively on an x86_64 Linux host with systemd and VirtualBox installed. It uses a dedicated unprivileged `thotd` account and VirtualBox profile. The container deployment does not provide the host VirtualBox registry or kernel driver required by this POC.
 
-## Build
+## Build and publish a release
 
-Build on a Linux machine compatible with the target host. Rust and Cargo are needed only on the build machine.
+GitHub Releases are the distribution channel. A release tag such as `v0.1.0` triggers GitHub Actions to build `thot` and `thotd` on Ubuntu 22.04, package the binaries and service files, create a SHA-256 checksum, and publish a release. The build supports x86_64 Linux hosts with compatible glibc, OpenSSL 3, zlib, and zstd runtime libraries; the installer checks binary dependencies. Cargo and Rust are not needed on installation servers.
+
+Merge and push changes to `main` first. Update `[workspace.package].version` in `Cargo.toml` in a commit on `main`, push that commit, then run:
 
 ```sh
-cargo build --release --locked -p thotd -p thot-cli
-install -D -m 0755 target/release/thotd ./dist/thotd
-install -D -m 0755 target/release/thot ./dist/thot
+make deploy
 ```
 
-Copy the binaries and a teacher-created `.thot.zip` or `.thot.tgz` project archive to the target. The archive must contain `configuration.yaml` at its root; external checks such as `extern/tests/vm_start_time.py` are packaged beside it. The repository example is in `examples/vm-activity-poc/`. Neither the UI, lighttpd, Docker, nor Cargo is needed on the target.
+The target refuses a dirty or unpushed worktree, builds both release binaries locally, and pushes an annotated `v<version>` tag for the current `main` commit. It does not commit changes or connect to any server. GitHub Actions publishes the downloadable release after the tag push; check the Actions run before installing it. A version tag can be published only once. `DEPLOY_BRANCH` defaults to `main` and can be overridden for a different release branch.
+
+## Install or update on a server
+
+Install VirtualBox and configure the host firewall and guest egress policy first. Then download and review the installer, and run it as root:
+
+```sh
+curl --fail --location --output thot-install.sh \
+  https://github.com/cbarahon/thot/releases/latest/download/thot-install.sh
+curl --fail --location --output SHA256SUMS \
+  https://github.com/cbarahon/thot/releases/latest/download/SHA256SUMS
+set -o pipefail
+awk '$2 == "thot-install.sh" { print; count++ } END { if (count != 1) exit 1 }' SHA256SUMS \
+  | sha256sum --check
+sed -n '1,240p' thot-install.sh
+sudo bash thot-install.sh
+```
+
+The installer supports repeat runs and preserves `/etc/thot/thotd.env` and data. It downloads the latest stable release over HTTPS, verifies the binary archive against the release SHA-256 checksum, installs both binaries and the systemd unit, creates the service account and data directories, then enables and restarts `thotd`. To install a specific release, pass `THOT_VERSION` through `sudo`:
+
+```sh
+sudo env THOT_VERSION=v0.1.0 bash thot-install.sh
+```
+
+The installer checks that `VBoxManage`, `/dev/vboxdrv`, and systemd are available. If `/dev/vboxdrv` is group-owned by `vboxusers`, it adds `thotd` to that group so it can use the driver. This group may also permit host USB access; Thot disables USB for imported guests. The installer does not install VirtualBox or change firewall rules.
+
+The installer creates `/etc/thot/thotd.env` and starts with `THOTD_FIREWALL_CONFIRMATION=false`. Review the file and set this value to `true` only after the firewall and guest egress policy are configured. The expected VirtualBox version is detected during initial installation and pinned in the environment file. When updating VirtualBox itself, update that value to the new `VBoxManage --version` without its trailing `r<build>` suffix.
+
+Rust, Cargo, Docker, the web UI, and lighttpd are not needed on the server.
 
 ## Prepare the host
 
@@ -30,25 +58,21 @@ VBox profile:   /var/lib/thot/vbox-profile
 The project archive can be placed anywhere readable by the service account. Keep it and its scripts read-only to the daemon. A relative `delivery_folder` is resolved from the archive's containing directory; an absolute folder can be anywhere the service can read. The project `vm_path` remains relative to the archive's containing directory, so provision a separate writable subdirectory such as `vms/` next to the archive.
 
 ```sh
-sudo useradd --system --create-home --home-dir /var/lib/thot --shell /usr/sbin/nologin thotd
-sudo install -d -o thotd -g thotd -m 0750 \
-  /var/lib/thot/artifacts /var/lib/thot/vms \
-  /var/lib/thot/vbox-profile
 sudo install -d -o root -g thotd -m 0750 /etc/thot/projects
+sudo install -d -o thotd -g thotd -m 0750 \
+  /etc/thot/projects/vms /etc/thot/projects/delivery \
+  /srv/course/linux-competition-deliveries
 sudo install -o root -g thotd -m 0640 linux_competition.thot.tgz \
   /etc/thot/projects/linux_competition.thot.tgz
-sudo install -d -o thotd -g thotd -m 0750 \
-  /etc/thot/projects/delivery /etc/thot/projects/vms \
-  /srv/course/linux-competition-deliveries
 ```
 
 Project extraction happens into a run-scoped snapshot under the artifact root. Treat external scripts as trusted instructor code: they execute as child processes with the daemon account's access to the host and VirtualBox profile. The runner applies per-test timeouts and output limits, but it is not a script sandbox.
 
-The service requires free loopback TCP ports 8080 and 2222 before VM runs. Guest networking must forward guest TCP 80 to `127.0.0.1:8080` and guest TCP 22 to `127.0.0.1:2222` through NAT. Configure host firewall and guest egress rules to block access to unrelated host services and unnecessary destinations. Do not use bridged networking or attach host folders, clipboard, drag-and-drop, or USB devices to imported guests. `THOTD_FIREWALL_CONFIRMATION=true` records the administrator's manual confirmation; the daemon does not inspect firewall policy.
+The service requires free loopback TCP ports 8080 and 2222 before VM runs. Guest networking must forward guest TCP 80 to `127.0.0.1:8080` and guest TCP 22 to `127.0.0.1:2222` through NAT. Configure host firewall and guest egress rules to block access to unrelated host services and unnecessary destinations. Do not use bridged networking or attach host folders, clipboard, drag-and-drop, or USB devices to imported guests. The installer leaves `THOTD_FIREWALL_CONFIRMATION=false`; change it only after the administrator has configured and checked the firewall policy.
 
 ## Configure `thotd`
 
-Create `/etc/thot/thotd.env` owned by root and readable by the service account (mode `0640`):
+The installer creates `/etc/thot/thotd.env` owned by root and readable by the service account (mode `0640`). It pins the installed VirtualBox version and uses these defaults:
 
 ```ini
 THOTD_BIND_HOST=127.0.0.1
@@ -58,67 +82,36 @@ THOTD_ARTIFACT_ROOT=/var/lib/thot/artifacts
 THOTD_STORAGE_ROOT=/var/lib/thot/vms
 THOTD_VBOX_USER_HOME=/var/lib/thot/vbox-profile
 THOTD_VBOX_MANAGE_PATH=/usr/bin/VBoxManage
-THOTD_EXPECTED_VBOX_VERSION=<qualified-version-without-r-build-suffix>
+THOTD_EXPECTED_VBOX_VERSION=<detected-version-without-r-build-suffix>
 THOTD_OVA_SIZE_LIMIT=10737418240
 THOTD_FREE_SPACE_RESERVE=10737418240
 THOTD_OUTPUT_LIMIT=1048576
 THOTD_IMPORT_TIMEOUT=1800
 THOTD_STARTUP_TIMEOUT=180
-THOTD_SSH_TIMEOUT=15
+THOTD_SSH_TIMEOUT=120
 THOTD_SHUTDOWN_GRACE=30
-THOTD_FIREWALL_CONFIRMATION=true
+THOTD_FIREWALL_CONFIRMATION=false
 ```
 
-Set `THOTD_EXPECTED_VBOX_VERSION` to the qualified `VBoxManage --version` value without the trailing build suffix. Runs fail preflight if the installed version differs. Project parameters supply guest SSH credentials, so no `THOTD_SSH_SECRET_FILE` is required. The example password is public sample data; replace it with the guest credentials for the assignment and protect the project archive with host permissions. Never put real credentials in a public or student-accessible project archive.
+Runs fail preflight if the installed VirtualBox version differs from the pinned value. Project parameters supply guest SSH credentials, so no `THOTD_SSH_SECRET_FILE` is required. The example password is public sample data; replace it with the guest credentials for the assignment and protect the project archive with host permissions. Never put real credentials in a public or student-accessible project archive.
 
 Optional `THOTD_DATA_ROOT` changes the default data base used for artifact, VM, profile, and database paths. Explicit values above are easier to review. Keep `THOTD_STORAGE_ROOT`, the project `vm_path`, the VirtualBox profile, and artifact storage separate. The service checks that its configured profile, storage, and artifact roots do not overlap and that its dedicated storage root is empty before a VM run.
 
-Example systemd unit:
+The installed systemd unit runs as `thotd`, keeps a private `/tmp`, and protects system binaries and configuration from writes. It deliberately sets `NoNewPrivileges=false`: VirtualBox headless startup failed on the qualified host when privilege gains were blocked. Project-provided scripts must therefore be trusted instructor code; they run as `thotd` and can use setuid or file-capability programs that the service account can execute.
 
-```ini
-[Unit]
-Description=Thot VM activity service
-After=network-online.target
-Wants=network-online.target
+Project archives and delivery directories can be anywhere accessible to `thotd`. The default writable project VM paths are `/srv` and `/etc/thot/projects/vms`; if a project's `vm_path` is elsewhere in a protected system directory, add it to the service's `ReadWritePaths` with `sudo systemctl edit thotd`. The installer includes the service definition at `deploy/thotd.service`.
 
-[Service]
-Type=simple
-User=thotd
-Group=thotd
-EnvironmentFile=/etc/thot/thotd.env
-Environment=RUST_LOG=info
-ExecStart=/usr/local/sbin/thotd
-Restart=on-failure
-RestartSec=3
-UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/thot /etc/thot/projects/vms
+The installer is the recommended path because it creates the environment file and service-owned directories consistently. After installing, place a teacher-created `.thot.zip` or `.thot.tgz` project archive and its delivery directory on the host. The archive must contain `configuration.yaml` at its root; external checks such as `extern/tests/vm_start_time.py` are packaged beside it. The repository example is in `examples/vm-activity-poc/`.
 
-[Install]
-WantedBy=multi-user.target
-```
+## Manual build
 
-Adjust `ReadWritePaths` for the actual project `vm_path`. Give the daemon read access to the project archive and configured delivery directory wherever they reside. Review the systemd sandbox against the installed VirtualBox driver and host paths before use; grant only the access required by the service account.
-
-Install the binaries and start the service:
+Build on a compatible Linux x86_64 machine when a GitHub release is not suitable:
 
 ```sh
-sudo install -o root -g root -m 0755 dist/thotd /usr/local/sbin/thotd
-sudo install -o root -g root -m 0755 dist/thot /usr/local/bin/thot
-sudo systemctl daemon-reload
-sudo systemctl enable --now thotd
-sudo systemctl status thotd
+cargo build --release --locked -p thotd -p thot-cli
 ```
 
-When updating either binary, install `thot` and `thotd` from the same build, then restart the daemon so it loads the new API contract:
-
-```sh
-sudo systemctl restart thotd
-```
-
-The project-path CLI sends `project_path`; an older running daemon that only accepts `project_id` must be upgraded before it can run an archive by path.
+Install `thot` and `thotd` from the same build, install `deploy/thotd.service`, create `/etc/thot/thotd.env` from `deploy/thotd.env.example` with the actual VirtualBox version, and create the service-owned paths shown above. Restart `thotd` after replacing either binary.
 
 ## Create and inspect a run
 

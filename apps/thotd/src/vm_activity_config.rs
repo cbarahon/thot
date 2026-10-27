@@ -53,7 +53,7 @@ impl VmActivityConfig {
             output_limit: parse_env("THOTD_OUTPUT_LIMIT", 1024 * 1024usize)?,
             import_timeout: Duration::from_secs(parse_env("THOTD_IMPORT_TIMEOUT", 1800u64)?),
             startup_timeout: Duration::from_secs(parse_env("THOTD_STARTUP_TIMEOUT", 180u64)?),
-            ssh_timeout: Duration::from_secs(parse_env("THOTD_SSH_TIMEOUT", 15u64)?),
+            ssh_timeout: Duration::from_secs(parse_env("THOTD_SSH_TIMEOUT", 120u64)?),
             shutdown_grace: Duration::from_secs(parse_env("THOTD_SHUTDOWN_GRACE", 30u64)?),
             ssh_secret_source: env_path(
                 "THOTD_SSH_SECRET_FILE",

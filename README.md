@@ -28,7 +28,9 @@ outside this POC.
 Read [`docs/THOT_VM_ACTIVITY_POC.md`](docs/THOT_VM_ACTIVITY_POC.md) for the
 activity contract and [`deploy/README.md`](deploy/README.md) for production
 artifact installation, host configuration, and manual acceptance steps. The
-static web UI is not required for this POC.
+`make deploy` target publishes a versioned GitHub release; Linux servers pull
+the binaries with the release installer and never receive an inbound GitHub
+connection. The static web UI is not required for this POC.
 
 ## Desarrollo
 

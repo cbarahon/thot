@@ -1,0 +1,24 @@
+# Purpose: Runs the Thot daemon as a dedicated unprivileged account with persistent VM state.
+[Unit]
+Description=Thot VM activity service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thotd
+Group=thotd
+EnvironmentFile=/etc/thot/thotd.env
+Environment=RUST_LOG=info
+ExecStart=/usr/local/sbin/thotd
+Restart=on-failure
+RestartSec=3
+UMask=0077
+# VirtualBox headless startup failed on the qualified host with this enabled.
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/thot /srv /etc/thot/projects/vms
+
+[Install]
+WantedBy=multi-user.target
