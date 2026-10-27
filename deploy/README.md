@@ -6,7 +6,7 @@ Thot runs natively on an x86_64 Linux host with systemd and VirtualBox installed
 
 GitHub Releases are the distribution channel. A release tag such as `v0.1.0` triggers GitHub Actions to build `thot` and `thotd` on Ubuntu 22.04, package the binaries and service files, create a SHA-256 checksum, and publish a release. The build supports x86_64 Linux hosts with compatible glibc, OpenSSL 3, zlib, and zstd runtime libraries; the installer checks binary dependencies. Cargo and Rust are not needed on installation servers.
 
-Merge and push changes to `main` first. Update `[workspace.package].version` in `Cargo.toml` in a commit on `main`, push that commit, then run:
+Merge and push changes to `main` first. For a new release, update `[workspace.package].version` in `Cargo.toml`, run `cargo check --offline --workspace` to refresh the lockfile, then commit and push both files on `main`. Finally run:
 
 ```sh
 make deploy

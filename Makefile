@@ -35,7 +35,10 @@ deploy:
 	@git fetch origin --tags
 	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/$(DEPLOY_BRANCH))" || { echo "Push or merge this commit to origin/$(DEPLOY_BRANCH) before deploying" >&2; exit 1; }
 	@if git show-ref --verify --quiet "refs/tags/$(RELEASE_TAG)" || git ls-remote --exit-code --tags --refs origin "refs/tags/$(RELEASE_TAG)" >/dev/null 2>&1; then echo "Release tag $(RELEASE_TAG) already exists; bump workspace version first" >&2; exit 1; fi
-	cargo build --release --locked -p thot-cli -p thotd
+	@cargo build --release --locked -p thot-cli -p thotd || { \
+		echo "If the workspace version changed, run cargo check --offline --workspace and commit/push the updated Cargo.lock before retrying." >&2; \
+		exit 1; \
+	}
 	@git tag -a "$(RELEASE_TAG)" -m "Thot $(RELEASE_TAG)"
 	@if git push origin "refs/tags/$(RELEASE_TAG)"; then \
 		echo "Pushed $(RELEASE_TAG). GitHub Actions will publish the release."; \
