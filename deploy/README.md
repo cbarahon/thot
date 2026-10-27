@@ -36,7 +36,7 @@ The installer supports repeat runs and preserves `/etc/thot/thotd.env` and data.
 sudo env THOT_VERSION=v0.1.0 bash thot-install.sh
 ```
 
-The installer checks that `VBoxManage`, `/dev/vboxdrv`, and systemd are available. If `/dev/vboxdrv` is group-owned by `vboxusers`, it adds `thotd` to that group so it can use the driver. This group may also permit host USB access; Thot disables USB for imported guests. The installer does not install VirtualBox or change firewall rules.
+The installer checks that `VBoxManage`, `/dev/vboxdrv`, and systemd are available. `thotd` does not need direct read/write permission on `/dev/vboxdrv`: VirtualBox starts its headless VM process through its privileged helper. Keep the service's `NoNewPrivileges=false` setting so that helper can gain its installed privileges. The installer does not change VirtualBox device permissions, add `thotd` to `vboxusers`, install VirtualBox, or change firewall rules. VirtualBox's `vboxusers` group is for guest USB access, which Thot does not use.
 
 The installer creates `/etc/thot/thotd.env` and starts with `THOTD_FIREWALL_CONFIRMATION=false`. Review the file and set this value to `true` only after the firewall and guest egress policy are configured. The expected VirtualBox version is detected during initial installation and pinned in the environment file. When updating VirtualBox itself, update that value to the new `VBoxManage --version` without its trailing `r<build>` suffix.
 
@@ -44,7 +44,7 @@ Rust, Cargo, Docker, the web UI, and lighttpd are not needed on the server.
 
 ## Prepare the host
 
-Install VirtualBox from the host's approved package source. The service account must be allowed to use its kernel driver. Set up separate service-owned locations for artifacts, VM storage, and the VirtualBox profile. Project archives and delivery directories can be stored anywhere the service account can access. Do not run `thotd` as root or reuse a teacher's normal VirtualBox profile.
+Install VirtualBox from the host's approved package source. Its headless helper must retain the privileges installed by the VirtualBox package, and the Thot service must keep `NoNewPrivileges=false` for that helper to start VMs. Do not grant `thotd` direct access to `/dev/vboxdrv` or run `thotd` as root. Set up separate service-owned locations for artifacts, VM storage, and the VirtualBox profile. Project archives and delivery directories can be stored anywhere the service account can access. Do not reuse a teacher's normal VirtualBox profile.
 
 Example paths:
 

@@ -17,7 +17,7 @@ fail() {
 [[ "$(uname -s)" == "Linux" ]] || fail "this release supports Linux hosts only"
 [[ "$(uname -m)" == "x86_64" ]] || fail "this release supports x86_64 hosts only"
 
-for command_name in curl sha256sum tar install systemctl useradd usermod groupadd getent runuser stat awk sed grep ldd cat; do
+for command_name in curl sha256sum tar install systemctl useradd groupadd getent awk sed grep ldd cat; do
     command -v "${command_name}" >/dev/null 2>&1 || fail "required command is missing: ${command_name}"
 done
 [[ -d /run/systemd/system ]] || fail "systemd is required"
@@ -66,14 +66,6 @@ if ! getent group thotd >/dev/null; then
 fi
 if ! getent passwd thotd >/dev/null; then
     useradd --system --gid thotd --home-dir "${DATA_ROOT}" --create-home --shell /usr/sbin/nologin thotd
-fi
-
-# On common VirtualBox packages, this group owns the host driver device.
-if [[ "$(stat -c '%G' /dev/vboxdrv)" == "vboxusers" ]] && getent group vboxusers >/dev/null; then
-    usermod --append --groups vboxusers thotd
-fi
-if ! runuser -u thotd -- sh -c 'test -r /dev/vboxdrv && test -w /dev/vboxdrv'; then
-    fail "thotd needs read/write access to /dev/vboxdrv; grant the service account the driver's group permissions, then rerun this installer"
 fi
 
 install -d -o thotd -g thotd -m 0750 \
