@@ -1,0 +1,7 @@
+id: "080-cli-output-dependencies"
+title: "Add CLI dependencies for YAML output and confirmation codes"
+depends_on: []
+file: "/home/carlos/worktrees/thot/apps/thot-cli/Cargo.toml"
+action: modify
+prompt: |-
+  In this package's `[dependencies]` section, add `serde_yaml.workspace = true` and `uuid.workspace = true`. `serde_yaml` will serialize API JSON values as user-facing YAML; UUID v4 will provide input for the reset command's six-digit confirmation challenge. Keep versions and features controlled by `[workspace.dependencies]`, and leave every existing dependency unchanged. Edit only this file.

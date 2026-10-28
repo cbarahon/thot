@@ -1,0 +1,167 @@
+2026-10-27 21:14:52+0100 INFO ========== TASK START ==========
+2026-10-27 21:14:52+0100 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/090-maintenance-plan.yaml
+2026-10-27 21:14:52+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/090-maintenance-plan.yaml
+2026-10-27 21:14:52+0100 INFO Reading YAML task
+2026-10-27 21:14:52+0100 INFO Parsed YAML:
+id: 090-maintenance-plan
+title: Plan cleanup of orphaned Thot data
+depends_on: []
+file: /home/carlos/worktrees/thot/crates/thot-engine/src/maintenance_plan.rs
+action: create
+prompt: 'In `crates/thot-engine/src/maintenance_plan.rs`, define public `CleanupManifest`,
+  `PlannedPath`, and `CleanPlan` types plus async `build_clean_plan(pool: &SqlitePool,
+  artifact_root: &Path, storage_root: &Path) -> Result<CleanPlan, String>`. `CleanPlan`
+  fields are `saved_run_ids: HashSet<String>`, `saved_vm_uuids: HashSet<String>`,
+  `orphan_manifests: Vec<CleanupManifest>`, and `orphan_paths: Vec<PlannedPath>`.
+  `CleanupManifest` fields are `manifest_path`, `report_dir`, `run_id`, `delivery_id`,
+  `vm_uuid: Option<String>`, and `storage_path`; `PlannedPath` fields are `path` and
+  `manifest_path: Option<PathBuf>`. Query the existing `vm_activity_runs`, `vm_activity_expedients`,
+  and `vm_activity_deliveries` tables. Inventory `<artifact_root>/project-snapshots/<run_id>`,
+  project report trees `<artifact_root>/<project_id>/<run_id>/<delivery_id>`, retained
+  copies `<artifact_root>/sources/<delivery_id>.ova`, and default storage `<storage_root>/<run_id>/<delivery_id>`.
+  Treat an item as orphaned if its run, expedient, or delivery ID is absent from matching
+  database records. Scan `cleanup-manifest.json` files under artifact_root; retain
+  valid manifests for saved expedients and classify manifests for absent runs/expedients
+  as orphan manifests. Use `symlink_metadata`, do not follow symlinks, and canonicalize
+  candidates to prove they remain under artifact_root or storage_root. External VM
+  paths are manifest metadata for later validation, never direct deletion candidates.
+  Do not include original project archives or delivery files. Add a file-purpose header
+  comment. Edit only this file.'
+
+2026-10-27 21:14:52+0100 INFO Task ID: 090-maintenance-plan
+2026-10-27 21:14:52+0100 INFO Task title: Plan cleanup of orphaned Thot data
+2026-10-27 21:14:52+0100 INFO Action: create
+2026-10-27 21:14:52+0100 INFO Target: /home/carlos/worktrees/thot/crates/thot-engine/src/maintenance_plan.rs
+2026-10-27 21:14:52+0100 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 090-maintenance-plan
+Title: Plan cleanup of orphaned Thot data
+Action: create
+Target file: /home/carlos/worktrees/thot/crates/thot-engine/src/maintenance_plan.rs
+
+TASK INSTRUCTIONS
+In `crates/thot-engine/src/maintenance_plan.rs`, define public `CleanupManifest`, `PlannedPath`, and `CleanPlan` types plus async `build_clean_plan(pool: &SqlitePool, artifact_root: &Path, storage_root: &Path) -> Result<CleanPlan, String>`. `CleanPlan` fields are `saved_run_ids: HashSet<String>`, `saved_vm_uuids: HashSet<String>`, `orphan_manifests: Vec<CleanupManifest>`, and `orphan_paths: Vec<PlannedPath>`. `CleanupManifest` fields are `manifest_path`, `report_dir`, `run_id`, `delivery_id`, `vm_uuid: Option<String>`, and `storage_path`; `PlannedPath` fields are `path` and `manifest_path: Option<PathBuf>`. Query the existing `vm_activity_runs`, `vm_activity_expedients`, and `vm_activity_deliveries` tables. Inventory `<artifact_root>/project-snapshots/<run_id>`, project report trees `<artifact_root>/<project_id>/<run_id>/<delivery_id>`, retained copies `<artifact_root>/sources/<delivery_id>.ova`, and default storage `<storage_root>/<run_id>/<delivery_id>`. Treat an item as orphaned if its run, expedient, or delivery ID is absent from matching database records. Scan `cleanup-manifest.json` files under artifact_root; retain valid manifests for saved expedients and classify manifests for absent runs/expedients as orphan manifests. Use `symlink_metadata`, do not follow symlinks, and canonicalize candidates to prove they remain under artifact_root or storage_root. External VM paths are manifest metadata for later validation, never direct deletion candidates. Do not include original project archives or delivery files. Add a file-purpose header comment. Edit only this file.
+
+The target file does not exist yet. Generate its complete contents.
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-27 21:14:52+0100 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-27 21:14:52+0100 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-27 21:14:52+0100 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 090-maintenance-plan\nTitle: Plan cleanup of orphaned Thot data\nAction: create\nTarget file: /home/carlos/worktrees/thot/crates/thot-engine/src/maintenance_plan.rs\n\nTASK INSTRUCTIONS\nIn `crates/thot-engine/src/maintenance_plan.rs`, define public `CleanupManifest`, `PlannedPath`, and `CleanPlan` types plus async `build_clean_plan(pool: &SqlitePool, artifact_root: &Path, storage_root: &Path) -> Result<CleanPlan, String>`. `CleanPlan` fields are `saved_run_ids: HashSet<String>`, `saved_vm_uuids: HashSet<String>`, `orphan_manifests: Vec<CleanupManifest>`, and `orphan_paths: Vec<PlannedPath>`. `CleanupManifest` fields are `manifest_path`, `report_dir`, `run_id`, `delivery_id`, `vm_uuid: Option<String>`, and `storage_path`; `PlannedPath` fields are `path` and `manifest_path: Option<PathBuf>`. Query the existing `vm_activity_runs`, `vm_activity_expedients`, and `vm_activity_deliveries` tables. Inventory `<artifact_root>/project-snapshots/<run_id>`, project report trees `<artifact_root>/<project_id>/<run_id>/<delivery_id>`, retained copies `<artifact_root>/sources/<delivery_id>.ova`, and default storage `<storage_root>/<run_id>/<delivery_id>`. Treat an item as orphaned if its run, expedient, or delivery ID is absent from matching database records. Scan `cleanup-manifest.json` files under artifact_root; retain valid manifests for saved expedients and classify manifests for absent runs/expedients as orphan manifests. Use `symlink_metadata`, do not follow symlinks, and canonicalize candidates to prove they remain under artifact_root or storage_root. External VM paths are manifest metadata for later validation, never direct deletion candidates. Do not include original project archives or delivery files. Add a file-purpose header comment. Edit only this file.\n\nThe target file does not exist yet. Generate its complete contents.\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-27 21:14:52+0100 ERROR ========== TASK FAILURE: ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response')) ==========
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 516, in getresponse
+    httplib_response = super().getresponse()
+  File "/usr/lib/python3.13/http/client.py", line 1459, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 305, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+                             " response")
+http.client.RemoteDisconnected: Remote end closed connection without response
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/retry.py", line 474, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/urllib3/util/util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 516, in getresponse
+    httplib_response = super().getresponse()
+  File "/usr/lib/python3.13/http/client.py", line 1459, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 305, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+                             " response")
+urllib3.exceptions.ProtocolError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 393, in process_one
+    apply_task(
+    ~~~~~~~~~~^
+        task,
+        ^^^^^
+    ...<4 lines>...
+        logger=logger,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 315, in apply_task
+    output = call_ollama(
+        prompt,
+    ...<3 lines>...
+        logger=logger,
+    )
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 186, in call_ollama
+    response = requests.post(url, json=payload, timeout=timeout)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 682, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-10-27 21:14:52+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/failure/090-maintenance-plan.yaml

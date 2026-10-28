@@ -1,0 +1,7 @@
+id: "081-cli-yaml-renderer"
+title: "Create a shared YAML output renderer for the CLI"
+depends_on: ["080-cli-output-dependencies"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/output.rs"
+action: create
+prompt: |-
+  Create `apps/thot-cli/src/output.rs` with a file-purpose header and `pub fn print_yaml(value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>>`. Use `serde_yaml::to_string` and write exactly one complete YAML document to stdout, propagating serialization and I/O errors. Do not manually escape JSON strings: ensure multiline fields such as stdout and stderr are serialized as valid YAML that displays embedded newlines as readable text. This module is the shared renderer for structured CLI responses; it must not change API JSON encoding. Edit only this file.

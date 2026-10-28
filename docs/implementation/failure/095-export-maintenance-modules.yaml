@@ -1,0 +1,7 @@
+id: "095-export-maintenance-modules"
+title: "Export cleanup planning and maintenance modules"
+depends_on: ["094-maintenance-reset"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/lib.rs"
+action: modify
+prompt: |-
+  In `crates/thot-engine/src/lib.rs`, declare `pub mod maintenance;`, `pub mod maintenance_plan;`, and `pub mod maintenance_vms;` so other workspace crates can use `MaintenanceReport`, cleanup operations, `CleanPlan`, and the VM cleanup report. Keep all existing public modules and exports unchanged. Edit only this file.

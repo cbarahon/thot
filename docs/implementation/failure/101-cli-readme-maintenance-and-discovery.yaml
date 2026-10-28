@@ -1,0 +1,7 @@
+id: "101-cli-readme-maintenance-and-discovery"
+title: "Document maintenance and project discovery commands"
+depends_on: ["100-cli-maintenance-dispatch"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/README.md"
+action: modify
+prompt: |-
+  Update `apps/thot-cli/README.md` with concise user-facing examples and behavior for `thot clean`, `thot prune`, `thot reset`, bare `thot run`, `thot run list`, and `thot run status [RUN_ID]`. State that bare run auto-selects exactly one `.thot.gz`, `.thot.tgz`, `.thot.zip`, or root `configuration.yaml` from the current directory and errors on ambiguity. State that status without an ID requires exactly one queued/running/cancelling run. Explain that clean removes only proven orphaned Thot data, prune retains the latest run per project and requires confirmation, and reset requires typing a generated six-digit code and clears Thot database/runtime state while preserving installation configuration, project archives, and original delivery files. Do not claim unknown external files are deleted. Edit only this file.

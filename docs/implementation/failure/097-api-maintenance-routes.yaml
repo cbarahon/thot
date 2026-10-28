@@ -1,0 +1,7 @@
+id: "097-api-maintenance-routes"
+title: "Add HTTP endpoints for maintenance operations"
+depends_on: ["096-run-service-maintenance-facade"]
+file: "/home/carlos/worktrees/thot/crates/thot-api/src/maintenance.rs"
+action: create
+prompt: |-
+  Create `crates/thot-api/src/maintenance.rs` with a file-purpose header and `pub(super) fn router(service: DeliveryRunService) -> Router`. Add `POST /api/v1/maintenance/clean`, `/prune`, and `/reset`, each with an Axum handler that calls the corresponding `service.clean()`, `service.prune()`, or `service.reset()` method and returns `Json<MaintenanceReport>` on success. Convert `ServiceError::Conflict` to HTTP 409; convert other service errors to HTTP 500 with a generic JSON `{"error":"internal maintenance error"}` body. Use the same `DeliveryRunService` state for all three routes and accept no request body. Edit only this file.

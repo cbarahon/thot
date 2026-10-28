@@ -1,0 +1,7 @@
+id: "088-run-auto-project-discovery"
+title: "Discover the current project for thot run"
+depends_on: ["083-cli-run-yaml-output", "086-load-project-folders", "087-run-id-thot-gz-name"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/delivery_commands.rs"
+action: modify
+prompt: |-
+  In `apps/thot-cli/src/delivery_commands.rs`, change the `handle(args, settings)` case for an empty `args` slice. Search only the current directory for regular project archives ending in `.thot.gz`, `.thot.tgz`, or `.thot.zip`, and for a root `configuration.yaml`. If exactly one source exists, send `POST /api/v1/runs` with JSON `{"project_path":"<absolute path>"}`; when the source is `configuration.yaml`, send the current directory path so the daemon loads the directory project. Return a clear error if none exists or if more than one source exists, including an archive plus configuration file, and suggest `thot run create PATH`. Keep `["list"]` as the run-list command and preserve existing `create PATH [--deliveries DIR]` behavior. Render the response with `crate::output::print_yaml`. Edit only this file.

@@ -1,0 +1,277 @@
+2026-10-27 21:14:53+0100 INFO ========== TASK START ==========
+2026-10-27 21:14:53+0100 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/096-run-service-maintenance-facade.yaml
+2026-10-27 21:14:53+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/096-run-service-maintenance-facade.yaml
+2026-10-27 21:14:53+0100 INFO Reading YAML task
+2026-10-27 21:14:53+0100 INFO Parsed YAML:
+id: 096-run-service-maintenance-facade
+title: Expose maintenance operations through DeliveryRunService
+depends_on:
+- 087-run-id-thot-gz-name
+- 095-export-maintenance-modules
+file: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs
+action: modify
+prompt: In `crates/thot-engine/src/delivery_run_service.rs`, add public async `clean`,
+  `prune`, and `reset` methods to `DeliveryRunService`; each returns `Result<MaintenanceReport,
+  ServiceError>` and calls the matching function in `crate::maintenance`. Pass `&self.pool`,
+  `&self.artifact_root`, `&self.runtime.storage_root`, and `&self.runtime`. Acquire
+  `self.create_gate` for the whole operation and, while holding it, query for any
+  `queued`, `running`, or `cancelling` run; return `ServiceError::Conflict` before
+  mutation if one exists. This also prevents clean from racing with incomplete VM
+  registration. Convert maintenance errors to `ServiceError::Internal`. Preserve `delete_run`
+  behavior and all existing routes' service methods. Edit only this file.
+
+2026-10-27 21:14:53+0100 INFO Task ID: 096-run-service-maintenance-facade
+2026-10-27 21:14:53+0100 INFO Task title: Expose maintenance operations through DeliveryRunService
+2026-10-27 21:14:53+0100 INFO Action: modify
+2026-10-27 21:14:53+0100 INFO Target: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs
+2026-10-27 21:14:53+0100 INFO Read current file: 1274 characters
+2026-10-27 21:14:53+0100 DEBUG Current file content:
+use std::path::{Path, PathBuf};
+
+fn project_file_component(path: &Path) -> String {
+    let filename = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let lower = filename.to_ascii_lowercase();
+    let stem = [
+        ".thot.tar.gz",
+        ".thot.tgz",
+        ".thot.zip",
+        ".tar.gz",
+        ".tgz",
+        ".zip",
+    ]
+    .iter()
+    .find_map(|suffix| {
+        lower
+            .ends_with(suffix)
+            .then(|| filename[..filename.len() - suffix.len()].to_owned())
+    })
+    .unwrap_or_else(|| {
+        Path::new(&filename)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or(filename)
+    });
+    safe_id_component(&stem)
+}
+
+fn safe_id_component(value: &str) -> String {
+    let component: String = value
+        .chars()
+        .take(100)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let component = component.trim_matches('_');
+    if component.is_empty() {
+        "project".into()
+    } else {
+        component.to_owned()
+    }
+}
+
+2026-10-27 21:14:53+0100 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 096-run-service-maintenance-facade
+Title: Expose maintenance operations through DeliveryRunService
+Action: modify
+Target file: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs
+
+TASK INSTRUCTIONS
+In `crates/thot-engine/src/delivery_run_service.rs`, add public async `clean`, `prune`, and `reset` methods to `DeliveryRunService`; each returns `Result<MaintenanceReport, ServiceError>` and calls the matching function in `crate::maintenance`. Pass `&self.pool`, `&self.artifact_root`, `&self.runtime.storage_root`, and `&self.runtime`. Acquire `self.create_gate` for the whole operation and, while holding it, query for any `queued`, `running`, or `cancelling` run; return `ServiceError::Conflict` before mutation if one exists. This also prevents clean from racing with incomplete VM registration. Convert maintenance errors to `ServiceError::Internal`. Preserve `delete_run` behavior and all existing routes' service methods. Edit only this file.
+
+CURRENT CONTENT OF THE TARGET FILE
+The following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.
+----- BEGIN CURRENT FILE -----
+use std::path::{Path, PathBuf};
+
+fn project_file_component(path: &Path) -> String {
+    let filename = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let lower = filename.to_ascii_lowercase();
+    let stem = [
+        ".thot.tar.gz",
+        ".thot.tgz",
+        ".thot.zip",
+        ".tar.gz",
+        ".tgz",
+        ".zip",
+    ]
+    .iter()
+    .find_map(|suffix| {
+        lower
+            .ends_with(suffix)
+            .then(|| filename[..filename.len() - suffix.len()].to_owned())
+    })
+    .unwrap_or_else(|| {
+        Path::new(&filename)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or(filename)
+    });
+    safe_id_component(&stem)
+}
+
+fn safe_id_component(value: &str) -> String {
+    let component: String = value
+        .chars()
+        .take(100)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let component = component.trim_matches('_');
+    if component.is_empty() {
+        "project".into()
+    } else {
+        component.to_owned()
+    }
+}
+
+----- END CURRENT FILE -----
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-27 21:14:53+0100 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-27 21:14:53+0100 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-27 21:14:53+0100 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 096-run-service-maintenance-facade\nTitle: Expose maintenance operations through DeliveryRunService\nAction: modify\nTarget file: /home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs\n\nTASK INSTRUCTIONS\nIn `crates/thot-engine/src/delivery_run_service.rs`, add public async `clean`, `prune`, and `reset` methods to `DeliveryRunService`; each returns `Result<MaintenanceReport, ServiceError>` and calls the matching function in `crate::maintenance`. Pass `&self.pool`, `&self.artifact_root`, `&self.runtime.storage_root`, and `&self.runtime`. Acquire `self.create_gate` for the whole operation and, while holding it, query for any `queued`, `running`, or `cancelling` run; return `ServiceError::Conflict` before mutation if one exists. This also prevents clean from racing with incomplete VM registration. Convert maintenance errors to `ServiceError::Internal`. Preserve `delete_run` behavior and all existing routes' service methods. Edit only this file.\n\nCURRENT CONTENT OF THE TARGET FILE\nThe following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.\n----- BEGIN CURRENT FILE -----\nuse std::path::{Path, PathBuf};\n\nfn project_file_component(path: &Path) -> String {\n    let filename = path\n        .file_name()\n        .map(|name| name.to_string_lossy().into_owned())\n        .unwrap_or_default();\n    let lower = filename.to_ascii_lowercase();\n    let stem = [\n        \".thot.tar.gz\",\n        \".thot.tgz\",\n        \".thot.zip\",\n        \".tar.gz\",\n        \".tgz\",\n        \".zip\",\n    ]\n    .iter()\n    .find_map(|suffix| {\n        lower\n            .ends_with(suffix)\n            .then(|| filename[..filename.len() - suffix.len()].to_owned())\n    })\n    .unwrap_or_else(|| {\n        Path::new(&filename)\n            .file_stem()\n            .map(|stem| stem.to_string_lossy().into_owned())\n            .unwrap_or(filename)\n    });\n    safe_id_component(&stem)\n}\n\nfn safe_id_component(value: &str) -> String {\n    let component: String = value\n        .chars()\n        .take(100)\n        .map(|character| {\n            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {\n                character\n            } else {\n                '_'\n            }\n        })\n        .collect();\n    let component = component.trim_matches('_');\n    if component.is_empty() {\n        \"project\".into()\n    } else {\n        component.to_owned()\n    }\n}\n\n----- END CURRENT FILE -----\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-27 21:14:53+0100 ERROR ========== TASK FAILURE: ConnectionError: HTTPConnectionPool(host='192.168.1.106', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7e7591469370>: Failed to establish a new connection: [Errno 111] Connection refused')) ==========
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+        (self._dns_host, self.port),
+    ...<2 lines>...
+        socket_options=self.socket_options,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/usr/lib/python3/dist-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+ConnectionRefusedError: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+    ~~~~~~~~~~~~^
+        method,
+        ^^^^^^^
+    ...<6 lines>...
+        enforce_content_length=enforce_content_length,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 445, in request
+    self.endheaders()
+    ~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 1362, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/http/client.py", line 1122, in _send_output
+    self.send(msg)
+    ~~~~~~~~~^^^^^
+  File "/usr/lib/python3.13/http/client.py", line 1066, in send
+    self.connect()
+    ~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 276, in connect
+    self.sock = self._new_conn()
+                ~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 213, in _new_conn
+    raise NewConnectionError(
+        self, f"Failed to establish a new connection: {e}"
+    ) from e
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x7e7591469370>: Failed to establish a new connection: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='192.168.1.106', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7e7591469370>: Failed to establish a new connection: [Errno 111] Connection refused'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 393, in process_one
+    apply_task(
+    ~~~~~~~~~~^
+        task,
+        ^^^^^
+    ...<4 lines>...
+        logger=logger,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 315, in apply_task
+    output = call_ollama(
+        prompt,
+    ...<3 lines>...
+        logger=logger,
+    )
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 186, in call_ollama
+    response = requests.post(url, json=payload, timeout=timeout)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='192.168.1.106', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7e7591469370>: Failed to establish a new connection: [Errno 111] Connection refused'))
+2026-10-27 21:14:53+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/failure/096-run-service-maintenance-facade.yaml

@@ -1,0 +1,7 @@
+id: "087-run-id-thot-gz-name"
+title: "Derive run names from .thot.gz project archives"
+depends_on: ["084-project-thot-gz-support"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs"
+action: modify
+prompt: |-
+  In `crates/thot-engine/src/delivery_run_service.rs`, update the existing `project_file_component(path: &Path) -> String`. Strip `.thot.gz` as well as `.thot.tgz` and `.thot.zip` before applying the existing safe-character conversion, so `linux_competition.thot.gz` yields `linux_competition`. For a directory input use its basename. Preserve existing run timestamp and collision handling. Edit only this file.

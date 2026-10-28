@@ -1,0 +1,7 @@
+id: "086-load-project-folders"
+title: "Load either project archives or project folders"
+depends_on: ["084-project-thot-gz-support", "085-project-folder-snapshot"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/vm_activity.rs"
+action: modify
+prompt: |-
+  In `crates/thot-engine/src/vm_activity.rs`, update the existing async `load_project(project_file: &Path, snapshot_dir: &Path) -> Result<ProjectSnapshot, String>`. For archive inputs, retain current extraction behavior and accept `.thot.gz`, `.thot.tgz`, and `.thot.zip`. For a directory input, use `symlink_metadata` to reject a symlink source, read and parse `<source>/configuration.yaml`, resolve `delivery_folder` relative to the source unless absolute, pass that excluded path to `project_archive::snapshot_project_directory`, and use `<snapshot_dir>/project` as `extracted_root`. Set the directory itself as `archive_path` and `archive_parent` so relative delivery and test `vm_path` values resolve beside the configuration. Set `bytes` to the configuration bytes for a directory and preserve archive bytes for archives. Compute SHA-256 deterministically by sorting copied relative paths and hashing each path and file content. Update `project_identifier` to use the directory basename for directory inputs and strip the full supported archive suffix for files. Preserve all `ProjectSnapshot` fields and existing SSH username extraction. Edit only this file.

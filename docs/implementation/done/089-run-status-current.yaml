@@ -1,0 +1,7 @@
+id: "089-run-status-current"
+title: "Resolve run status without an explicit run ID"
+depends_on: ["088-run-auto-project-discovery"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/delivery_commands.rs"
+action: modify
+prompt: |-
+  In `apps/thot-cli/src/delivery_commands.rs`, add a match arm for `[action] if action == "status"` in `handle(args: &[String], settings: &Settings)`. Request `GET /api/v1/runs`, whose JSON array records contain `run_id` and `status`. Select records with status `queued`, `running`, or `cancelling`. If exactly one exists, request `GET /api/v1/runs/{run_id}` and print the full response using `crate::output::print_yaml`; if zero or multiple exist, return an error with the count and tell the user to specify `RUN_ID`. Keep `[action, id] if action == "status"` unchanged. Edit only this file.

@@ -1,0 +1,7 @@
+id: "098-register-maintenance-routes"
+title: "Register the maintenance API router"
+depends_on: ["097-api-maintenance-routes"]
+file: "/home/carlos/worktrees/thot/crates/thot-api/src/lib.rs"
+action: modify
+prompt: |-
+  In `crates/thot-api/src/lib.rs`, add `mod maintenance;` and merge both routers in `router_with_runs`: `delivery_runs::router(runs.clone())` and `maintenance::router(runs)`. Both routers must receive the same `DeliveryRunService` state. Keep the student-only `router` and all existing routes unchanged. Edit only this file.

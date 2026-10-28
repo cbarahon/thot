@@ -1,0 +1,7 @@
+id: "084-project-thot-gz-support"
+title: "Accept gzip tar project archives with the .thot.gz suffix"
+depends_on: []
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/project_archive.rs"
+action: modify
+prompt: |-
+  In `crates/thot-engine/src/project_archive.rs`, update `extract_project_archive(archive: &Path, destination: &Path)` to accept `.thot.gz` as a gzip-compressed tar archive and route it through the existing `extract_tgz` implementation. Keep `.thot.tgz` and `.thot.zip` support unchanged. Preserve regular-file and symlink checks, path traversal rejection, entry/expanded-size limits, cleanup after extraction failure, and the requirement that root `configuration.yaml` be a regular file. Edit only this file.

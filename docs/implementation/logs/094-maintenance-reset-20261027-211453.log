@@ -1,0 +1,44 @@
+2026-10-27 21:14:53+0100 INFO ========== TASK START ==========
+2026-10-27 21:14:53+0100 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/094-maintenance-reset.yaml
+2026-10-27 21:14:53+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/094-maintenance-reset.yaml
+2026-10-27 21:14:53+0100 INFO Reading YAML task
+2026-10-27 21:14:53+0100 INFO Parsed YAML:
+id: 094-maintenance-reset
+title: Reset Thot runtime data to a fresh state
+depends_on:
+- 092-maintenance-clean
+- 093-maintenance-prune
+file: /home/carlos/worktrees/thot/crates/thot-engine/src/maintenance.rs
+action: modify
+prompt: 'In `crates/thot-engine/src/maintenance.rs`, add async `reset_data(pool: &SqlitePool,
+  artifact_root: &Path, storage_root: &Path, runtime: &VmActivityRuntime) -> Result<MaintenanceReport,
+  String>`. Before mutation, refuse if `vm_activity_runs` contains a `queued`, `running`,
+  or `cancelling` row. In one transaction delete rows from `vm_activity_expedients`,
+  `vm_activity_runs`, `vm_activity_deliveries`, and `students`, preserving the database
+  file and schema. After commit, call `clean_orphans(pool, artifact_root, storage_root,
+  runtime)` so all manifests and VMs are reconciled as unassigned, then report operation
+  `reset`, deleted run IDs, removed paths, preserved external paths, and failures.
+  Reset only Thot runtime/database data: do not delete binaries, systemd/configuration
+  files, project archives, or original delivery files. Leave anything whose ownership
+  cannot be proven and report it. Edit only this file.'
+
+2026-10-27 21:14:53+0100 INFO Task ID: 094-maintenance-reset
+2026-10-27 21:14:53+0100 INFO Task title: Reset Thot runtime data to a fresh state
+2026-10-27 21:14:53+0100 INFO Action: modify
+2026-10-27 21:14:53+0100 INFO Target: /home/carlos/worktrees/thot/crates/thot-engine/src/maintenance.rs
+2026-10-27 21:14:53+0100 ERROR ========== TASK FAILURE: FileNotFoundError: Modify action requires an existing target: /home/carlos/worktrees/thot/crates/thot-engine/src/maintenance.rs ==========
+Traceback (most recent call last):
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 393, in process_one
+    apply_task(
+    ~~~~~~~~~~^
+        task,
+        ^^^^^
+    ...<4 lines>...
+        logger=logger,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 306, in apply_task
+    raise FileNotFoundError(f"Modify action requires an existing target: {target}")
+FileNotFoundError: Modify action requires an existing target: /home/carlos/worktrees/thot/crates/thot-engine/src/maintenance.rs
+2026-10-27 21:14:53+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/failure/094-maintenance-reset.yaml

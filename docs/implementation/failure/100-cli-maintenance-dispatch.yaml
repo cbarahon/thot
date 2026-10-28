@@ -1,0 +1,7 @@
+id: "100-cli-maintenance-dispatch"
+title: "Dispatch top-level maintenance commands"
+depends_on: ["082-cli-student-yaml-output", "083-cli-run-yaml-output", "088-run-auto-project-discovery", "089-run-status-current", "099-cli-maintenance-commands"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/main.rs"
+action: modify
+prompt: |-
+  In `apps/thot-cli/src/main.rs`, declare `mod maintenance_commands;`. In the top-level command dispatch, recognize exactly `clean`, `prune`, and `reset` and call `maintenance_commands::handle(command, &settings).await`; do not route these through `delivery_commands`. Update `print_usage` to show `thot clean`, `thot prune`, `thot reset`, bare `thot run` project discovery, `thot run list`, and both `thot run status` and `thot run status RUN_ID`. Keep import/get student, run creation, and all explicit run subcommands intact. Edit only this file.

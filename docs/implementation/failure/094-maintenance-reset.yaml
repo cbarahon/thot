@@ -1,0 +1,7 @@
+id: "094-maintenance-reset"
+title: "Reset Thot runtime data to a fresh state"
+depends_on: ["092-maintenance-clean", "093-maintenance-prune"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/maintenance.rs"
+action: modify
+prompt: |-
+  In `crates/thot-engine/src/maintenance.rs`, add async `reset_data(pool: &SqlitePool, artifact_root: &Path, storage_root: &Path, runtime: &VmActivityRuntime) -> Result<MaintenanceReport, String>`. Before mutation, refuse if `vm_activity_runs` contains a `queued`, `running`, or `cancelling` row. In one transaction delete rows from `vm_activity_expedients`, `vm_activity_runs`, `vm_activity_deliveries`, and `students`, preserving the database file and schema. After commit, call `clean_orphans(pool, artifact_root, storage_root, runtime)` so all manifests and VMs are reconciled as unassigned, then report operation `reset`, deleted run IDs, removed paths, preserved external paths, and failures. Reset only Thot runtime/database data: do not delete binaries, systemd/configuration files, project archives, or original delivery files. Leave anything whose ownership cannot be proven and report it. Edit only this file.

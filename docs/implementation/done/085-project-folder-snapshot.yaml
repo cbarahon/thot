@@ -1,0 +1,7 @@
+id: "085-project-folder-snapshot"
+title: "Safely snapshot a project directory"
+depends_on: ["084-project-thot-gz-support"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/project_archive.rs"
+action: modify
+prompt: |-
+  In `crates/thot-engine/src/project_archive.rs`, add `pub fn snapshot_project_directory(source: &Path, destination: &Path, excluded_paths: &[PathBuf]) -> Result<PathBuf, String>`. Require `source` to be an existing real directory and `destination` to be new and outside the source. Recursively copy regular files/directories while rejecting symlinks and special files, preserving file permissions so external scripts remain executable, enforcing the module's existing 2,000-entry and 500 MiB expanded-size limits, and preventing traversal outside either root. Treat `excluded_paths` as paths to skip when they equal or descend from an excluded path; callers pass canonical absolute paths. Always skip root-level generated `vms` and `test_records` directories and root-level `.thot.gz`, `.thot.tgz`, and `.thot.zip` archives. Keep `configuration.yaml` and external test files. On any error remove the partial destination, as archive extraction does. Edit only this file.

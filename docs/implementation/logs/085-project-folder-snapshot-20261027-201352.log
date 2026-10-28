@@ -1,0 +1,1017 @@
+2026-10-27 20:13:52+0100 INFO ========== TASK START ==========
+2026-10-27 20:13:52+0100 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/085-project-folder-snapshot.yaml
+2026-10-27 20:13:52+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/085-project-folder-snapshot.yaml
+2026-10-27 20:13:52+0100 INFO Reading YAML task
+2026-10-27 20:13:52+0100 INFO Parsed YAML:
+id: 085-project-folder-snapshot
+title: Safely snapshot a project directory
+depends_on:
+- 084-project-thot-gz-support
+file: /home/carlos/worktrees/thot/crates/thot-engine/src/project_archive.rs
+action: modify
+prompt: 'In `crates/thot-engine/src/project_archive.rs`, add `pub fn snapshot_project_directory(source:
+  &Path, destination: &Path, excluded_paths: &[PathBuf]) -> Result<PathBuf, String>`.
+  Require `source` to be an existing real directory and `destination` to be new and
+  outside the source. Recursively copy regular files/directories while rejecting symlinks
+  and special files, preserving file permissions so external scripts remain executable,
+  enforcing the module''s existing 2,000-entry and 500 MiB expanded-size limits, and
+  preventing traversal outside either root. Treat `excluded_paths` as paths to skip
+  when they equal or descend from an excluded path; callers pass canonical absolute
+  paths. Always skip root-level generated `vms` and `test_records` directories and
+  root-level `.thot.gz`, `.thot.tgz`, and `.thot.zip` archives. Keep `configuration.yaml`
+  and external test files. On any error remove the partial destination, as archive
+  extraction does. Edit only this file.'
+
+2026-10-27 20:13:52+0100 INFO Task ID: 085-project-folder-snapshot
+2026-10-27 20:13:52+0100 INFO Task title: Safely snapshot a project directory
+2026-10-27 20:13:52+0100 INFO Action: modify
+2026-10-27 20:13:52+0100 INFO Target: /home/carlos/worktrees/thot/crates/thot-engine/src/project_archive.rs
+2026-10-27 20:13:52+0100 INFO Read current file: 11369 characters
+2026-10-27 20:13:52+0100 DEBUG Current file content:
+use flate2::read::GzDecoder;
+use std::{
+    collections::HashSet,
+    fs::{self, File, OpenOptions},
+    io,
+    path::{Component, Path, PathBuf},
+};
+
+const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_EXPANDED_BYTES: u64 = 500 * 1024 * 1024;
+const MAX_ENTRIES: usize = 2_000;
+
+pub fn extract_project_archive(archive: &Path, destination: &Path) -> Result<PathBuf, String> {
+    let metadata = fs::symlink_metadata(archive)
+        .map_err(|e| format!("cannot inspect project archive: {e}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("project archive must be a regular file".into());
+    }
+    if metadata.len() > MAX_ARCHIVE_BYTES {
+        return Err("project archive exceeds the 100 MiB limit".into());
+    }
+    if destination.exists() {
+        return Err("project extraction destination already exists".into());
+    }
+    fs::create_dir_all(destination)
+        .map_err(|e| format!("cannot create project staging directory: {e}"))?;
+    let result = if archive
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(".zip"))
+    {
+        extract_zip(archive, destination)
+    } else if archive
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(".tgz") || n.ends_with(".thot.gz"))
+    {
+        extract_tgz(archive, destination)
+    } else {
+        Err("project archive extension must be .thot.zip, .thot.tgz, or .thot.gz".into())
+    };
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(destination);
+        return Err(error);
+    }
+    let config = destination.join("configuration.yaml");
+    let config_meta = fs::symlink_metadata(&config)
+        .map_err(|_| "archive root must contain configuration.yaml")?;
+    if config_meta.file_type().is_symlink() || !config_meta.is_file() {
+        let _ = fs::remove_dir_all(destination);
+        return Err("archive root configuration.yaml must be a regular file".into());
+    }
+    Ok(destination.to_path_buf())
+}
+
+fn safe_relative(name: &Path) -> Result<PathBuf, String> {
+    if name.as_os_str().is_empty() || name.is_absolute() {
+        return Err("archive entry has an empty or absolute path".into());
+    }
+    let mut clean = PathBuf::new();
+    for component in name.components() {
+        match component {
+            Component::Normal(value) => clean.push(value),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!("unsafe archive entry path: {}", name.display()));
+            }
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return Ok(PathBuf::from("."));
+    }
+    Ok(clean)
+}
+
+fn create_entry(
+    root: &Path,
+    relative: &Path,
+    is_dir: bool,
+    executable: bool,
+) -> Result<Option<File>, String> {
+    let path = root.join(relative);
+    if !path.starts_with(root) {
+        return Err("archive entry escapes staging directory".into());
+    }
+    if is_dir {
+        fs::create_dir_all(&path).map_err(|e| format!("cannot create archive directory: {e}"))?;
+        return Ok(None);
+    }
+    let parent = path
+        .parent()
+        .ok_or("archive file has no parent directory")?;
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("cannot create archive parent directory: {e}"))?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| {
+            format!(
+                "duplicate archive path or cannot create file {}: {e}",
+                path.display()
+            )
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if executable { 0o750 } else { 0o640 };
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode))
+            .map_err(|e| format!("cannot set project file permissions: {e}"))?;
+    }
+    Ok(Some(file))
+}
+
+fn extract_zip(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let file = File::open(archive_path).map_err(|e| format!("cannot open ZIP project: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("invalid ZIP project: {e}"))?;
+    if archive.len() > MAX_ENTRIES {
+        return Err("project archive contains more than 2,000 entries".into());
+    }
+    let mut seen = HashSet::new();
+    let mut expanded = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| format!("invalid ZIP entry: {e}"))?;
+        let relative = safe_relative(Path::new(entry.name()))?;
+        if !seen.insert(relative.clone()) {
+            return Err(format!("duplicate archive path: {}", relative.display()));
+        }
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err(format!(
+                "ZIP symlinks are not allowed: {}",
+                relative.display()
+            ));
+        }
+        let is_dir = entry.is_dir();
+        expanded = expanded.saturating_add(entry.size());
+        if expanded > MAX_EXPANDED_BYTES {
+            return Err("expanded project archive exceeds 500 MiB".into());
+        }
+        let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
+        if let Some(mut output) = create_entry(destination, &relative, is_dir, executable)? {
+            io::copy(&mut entry, &mut output)
+                .map_err(|e| format!("cannot extract ZIP entry: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn extract_tgz(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let file = File::open(archive_path).map_err(|e| format!("cannot open tgz project: {e}"))?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("invalid tar project: {e}"))?;
+    let mut seen = HashSet::new();
+    let mut expanded = 0u64;
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_ENTRIES {
+            return Err("project archive contains more than 2,000 entries".into());
+        }
+        let mut entry = entry.map_err(|e| format!("invalid tar entry: {e}"))?;
+        let relative = safe_relative(&entry.path().map_err(|e| format!("invalid tar path: {e}"))?)?;
+        if !seen.insert(relative.clone()) {
+            return Err(format!("duplicate archive path: {}", relative.display()));
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            create_entry(destination, &relative, true, false)?;
+        } else if kind.is_file() {
+            expanded = expanded.saturating_add(entry.size());
+            if expanded > MAX_EXPANDED_BYTES {
+                return Err("expanded project archive exceeds 500 MiB".into());
+            }
+            let executable = entry.header().mode().unwrap_or_default() & 0o111 != 0;
+            if let Some(mut output) = create_entry(destination, &relative, false, executable)? {
+                io::copy(&mut entry, &mut output)
+                    .map_err(|e| format!("cannot extract tar entry: {e}"))?;
+            }
+        } else {
+            return Err(format!(
+                "tar links and special entries are not allowed: {}",
+                relative.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::{Cursor, Write};
+    use tar::{Builder, Header};
+    use zip::{ZipWriter, write::FileOptions};
+
+    fn temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("thot-{label}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_zip() {
+        let root = temp_path("project");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.zip");
+        let destination = root.join("staging");
+        let file = File::create(&archive).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("configuration.yaml", FileOptions::default())
+            .unwrap();
+        writer.write_all(b"activity_name: Demo\n").unwrap();
+        writer.finish().unwrap();
+        let extracted = extract_project_archive(&archive, &destination).unwrap();
+        assert_eq!(
+            fs::read(extracted.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_zip_path_traversal() {
+        let root = temp_path("unsafe");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("unsafe.thot.zip");
+        let destination = root.join("staging");
+        let file = File::create(&archive).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("../outside", FileOptions::default())
+            .unwrap();
+        writer.write_all(b"bad").unwrap();
+        writer.finish().unwrap();
+        assert!(extract_project_archive(&archive, &destination).is_err());
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_tgz_with_dot_entries() {
+        let root = temp_path("tgz");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.tgz");
+        let destination = root.join("staging");
+        let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());
+        let mut builder = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_size(20);
+        header.set_mode(0o640);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "./configuration.yaml",
+                Cursor::new(b"activity_name: Demo\n"),
+            )
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        extract_project_archive(&archive, &destination).unwrap();
+        assert_eq!(
+            fs::read(destination.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_thot_gz() {
+        let root = temp_path("thot_gz");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.gz");
+        let destination = root.join("staging");
+        let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());
+        let mut builder = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_size(20);
+        header.set_mode(0o640);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "configuration.yaml",
+                Cursor::new(b"activity_name: Demo\n"),
+            )
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        extract_project_archive(&archive, &destination).unwrap();
+        assert_eq!(
+            fs::read(destination.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+2026-10-27 20:13:52+0100 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 085-project-folder-snapshot
+Title: Safely snapshot a project directory
+Action: modify
+Target file: /home/carlos/worktrees/thot/crates/thot-engine/src/project_archive.rs
+
+TASK INSTRUCTIONS
+In `crates/thot-engine/src/project_archive.rs`, add `pub fn snapshot_project_directory(source: &Path, destination: &Path, excluded_paths: &[PathBuf]) -> Result<PathBuf, String>`. Require `source` to be an existing real directory and `destination` to be new and outside the source. Recursively copy regular files/directories while rejecting symlinks and special files, preserving file permissions so external scripts remain executable, enforcing the module's existing 2,000-entry and 500 MiB expanded-size limits, and preventing traversal outside either root. Treat `excluded_paths` as paths to skip when they equal or descend from an excluded path; callers pass canonical absolute paths. Always skip root-level generated `vms` and `test_records` directories and root-level `.thot.gz`, `.thot.tgz`, and `.thot.zip` archives. Keep `configuration.yaml` and external test files. On any error remove the partial destination, as archive extraction does. Edit only this file.
+
+CURRENT CONTENT OF THE TARGET FILE
+The following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.
+----- BEGIN CURRENT FILE -----
+use flate2::read::GzDecoder;
+use std::{
+    collections::HashSet,
+    fs::{self, File, OpenOptions},
+    io,
+    path::{Component, Path, PathBuf},
+};
+
+const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_EXPANDED_BYTES: u64 = 500 * 1024 * 1024;
+const MAX_ENTRIES: usize = 2_000;
+
+pub fn extract_project_archive(archive: &Path, destination: &Path) -> Result<PathBuf, String> {
+    let metadata = fs::symlink_metadata(archive)
+        .map_err(|e| format!("cannot inspect project archive: {e}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("project archive must be a regular file".into());
+    }
+    if metadata.len() > MAX_ARCHIVE_BYTES {
+        return Err("project archive exceeds the 100 MiB limit".into());
+    }
+    if destination.exists() {
+        return Err("project extraction destination already exists".into());
+    }
+    fs::create_dir_all(destination)
+        .map_err(|e| format!("cannot create project staging directory: {e}"))?;
+    let result = if archive
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(".zip"))
+    {
+        extract_zip(archive, destination)
+    } else if archive
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(".tgz") || n.ends_with(".thot.gz"))
+    {
+        extract_tgz(archive, destination)
+    } else {
+        Err("project archive extension must be .thot.zip, .thot.tgz, or .thot.gz".into())
+    };
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(destination);
+        return Err(error);
+    }
+    let config = destination.join("configuration.yaml");
+    let config_meta = fs::symlink_metadata(&config)
+        .map_err(|_| "archive root must contain configuration.yaml")?;
+    if config_meta.file_type().is_symlink() || !config_meta.is_file() {
+        let _ = fs::remove_dir_all(destination);
+        return Err("archive root configuration.yaml must be a regular file".into());
+    }
+    Ok(destination.to_path_buf())
+}
+
+fn safe_relative(name: &Path) -> Result<PathBuf, String> {
+    if name.as_os_str().is_empty() || name.is_absolute() {
+        return Err("archive entry has an empty or absolute path".into());
+    }
+    let mut clean = PathBuf::new();
+    for component in name.components() {
+        match component {
+            Component::Normal(value) => clean.push(value),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!("unsafe archive entry path: {}", name.display()));
+            }
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return Ok(PathBuf::from("."));
+    }
+    Ok(clean)
+}
+
+fn create_entry(
+    root: &Path,
+    relative: &Path,
+    is_dir: bool,
+    executable: bool,
+) -> Result<Option<File>, String> {
+    let path = root.join(relative);
+    if !path.starts_with(root) {
+        return Err("archive entry escapes staging directory".into());
+    }
+    if is_dir {
+        fs::create_dir_all(&path).map_err(|e| format!("cannot create archive directory: {e}"))?;
+        return Ok(None);
+    }
+    let parent = path
+        .parent()
+        .ok_or("archive file has no parent directory")?;
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("cannot create archive parent directory: {e}"))?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| {
+            format!(
+                "duplicate archive path or cannot create file {}: {e}",
+                path.display()
+            )
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if executable { 0o750 } else { 0o640 };
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode))
+            .map_err(|e| format!("cannot set project file permissions: {e}"))?;
+    }
+    Ok(Some(file))
+}
+
+fn extract_zip(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let file = File::open(archive_path).map_err(|e| format!("cannot open ZIP project: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("invalid ZIP project: {e}"))?;
+    if archive.len() > MAX_ENTRIES {
+        return Err("project archive contains more than 2,000 entries".into());
+    }
+    let mut seen = HashSet::new();
+    let mut expanded = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| format!("invalid ZIP entry: {e}"))?;
+        let relative = safe_relative(Path::new(entry.name()))?;
+        if !seen.insert(relative.clone()) {
+            return Err(format!("duplicate archive path: {}", relative.display()));
+        }
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err(format!(
+                "ZIP symlinks are not allowed: {}",
+                relative.display()
+            ));
+        }
+        let is_dir = entry.is_dir();
+        expanded = expanded.saturating_add(entry.size());
+        if expanded > MAX_EXPANDED_BYTES {
+            return Err("expanded project archive exceeds 500 MiB".into());
+        }
+        let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
+        if let Some(mut output) = create_entry(destination, &relative, is_dir, executable)? {
+            io::copy(&mut entry, &mut output)
+                .map_err(|e| format!("cannot extract ZIP entry: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn extract_tgz(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let file = File::open(archive_path).map_err(|e| format!("cannot open tgz project: {e}"))?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("invalid tar project: {e}"))?;
+    let mut seen = HashSet::new();
+    let mut expanded = 0u64;
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_ENTRIES {
+            return Err("project archive contains more than 2,000 entries".into());
+        }
+        let mut entry = entry.map_err(|e| format!("invalid tar entry: {e}"))?;
+        let relative = safe_relative(&entry.path().map_err(|e| format!("invalid tar path: {e}"))?)?;
+        if !seen.insert(relative.clone()) {
+            return Err(format!("duplicate archive path: {}", relative.display()));
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            create_entry(destination, &relative, true, false)?;
+        } else if kind.is_file() {
+            expanded = expanded.saturating_add(entry.size());
+            if expanded > MAX_EXPANDED_BYTES {
+                return Err("expanded project archive exceeds 500 MiB".into());
+            }
+            let executable = entry.header().mode().unwrap_or_default() & 0o111 != 0;
+            if let Some(mut output) = create_entry(destination, &relative, false, executable)? {
+                io::copy(&mut entry, &mut output)
+                    .map_err(|e| format!("cannot extract tar entry: {e}"))?;
+            }
+        } else {
+            return Err(format!(
+                "tar links and special entries are not allowed: {}",
+                relative.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::{Cursor, Write};
+    use tar::{Builder, Header};
+    use zip::{ZipWriter, write::FileOptions};
+
+    fn temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("thot-{label}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_zip() {
+        let root = temp_path("project");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.zip");
+        let destination = root.join("staging");
+        let file = File::create(&archive).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("configuration.yaml", FileOptions::default())
+            .unwrap();
+        writer.write_all(b"activity_name: Demo\n").unwrap();
+        writer.finish().unwrap();
+        let extracted = extract_project_archive(&archive, &destination).unwrap();
+        assert_eq!(
+            fs::read(extracted.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_zip_path_traversal() {
+        let root = temp_path("unsafe");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("unsafe.thot.zip");
+        let destination = root.join("staging");
+        let file = File::create(&archive).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("../outside", FileOptions::default())
+            .unwrap();
+        writer.write_all(b"bad").unwrap();
+        writer.finish().unwrap();
+        assert!(extract_project_archive(&archive, &destination).is_err());
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_tgz_with_dot_entries() {
+        let root = temp_path("tgz");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.tgz");
+        let destination = root.join("staging");
+        let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());
+        let mut builder = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_size(20);
+        header.set_mode(0o640);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "./configuration.yaml",
+                Cursor::new(b"activity_name: Demo\n"),
+            )
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        extract_project_archive(&archive, &destination).unwrap();
+        assert_eq!(
+            fs::read(destination.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_thot_gz() {
+        let root = temp_path("thot_gz");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.gz");
+        let destination = root.join("staging");
+        let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());
+        let mut builder = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_size(20);
+        header.set_mode(0o640);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "configuration.yaml",
+                Cursor::new(b"activity_name: Demo\n"),
+            )
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        extract_project_archive(&archive, &destination).unwrap();
+        assert_eq!(
+            fs::read(destination.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+----- END CURRENT FILE -----
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-27 20:13:52+0100 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-27 20:13:52+0100 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-27 20:13:52+0100 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 085-project-folder-snapshot\nTitle: Safely snapshot a project directory\nAction: modify\nTarget file: /home/carlos/worktrees/thot/crates/thot-engine/src/project_archive.rs\n\nTASK INSTRUCTIONS\nIn `crates/thot-engine/src/project_archive.rs`, add `pub fn snapshot_project_directory(source: &Path, destination: &Path, excluded_paths: &[PathBuf]) -> Result<PathBuf, String>`. Require `source` to be an existing real directory and `destination` to be new and outside the source. Recursively copy regular files/directories while rejecting symlinks and special files, preserving file permissions so external scripts remain executable, enforcing the module's existing 2,000-entry and 500 MiB expanded-size limits, and preventing traversal outside either root. Treat `excluded_paths` as paths to skip when they equal or descend from an excluded path; callers pass canonical absolute paths. Always skip root-level generated `vms` and `test_records` directories and root-level `.thot.gz`, `.thot.tgz`, and `.thot.zip` archives. Keep `configuration.yaml` and external test files. On any error remove the partial destination, as archive extraction does. Edit only this file.\n\nCURRENT CONTENT OF THE TARGET FILE\nThe following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.\n----- BEGIN CURRENT FILE -----\nuse flate2::read::GzDecoder;\nuse std::{\n    collections::HashSet,\n    fs::{self, File, OpenOptions},\n    io,\n    path::{Component, Path, PathBuf},\n};\n\nconst MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024;\nconst MAX_EXPANDED_BYTES: u64 = 500 * 1024 * 1024;\nconst MAX_ENTRIES: usize = 2_000;\n\npub fn extract_project_archive(archive: &Path, destination: &Path) -> Result<PathBuf, String> {\n    let metadata = fs::symlink_metadata(archive)\n        .map_err(|e| format!(\"cannot inspect project archive: {e}\"))?;\n    if metadata.file_type().is_symlink() || !metadata.is_file() {\n        return Err(\"project archive must be a regular file\".into());\n    }\n    if metadata.len() > MAX_ARCHIVE_BYTES {\n        return Err(\"project archive exceeds the 100 MiB limit\".into());\n    }\n    if destination.exists() {\n        return Err(\"project extraction destination already exists\".into());\n    }\n    fs::create_dir_all(destination)\n        .map_err(|e| format!(\"cannot create project staging directory: {e}\"))?;\n    let result = if archive\n        .file_name()\n        .and_then(|n| n.to_str())\n        .is_some_and(|n| n.ends_with(\".zip\"))\n    {\n        extract_zip(archive, destination)\n    } else if archive\n        .file_name()\n        .and_then(|n| n.to_str())\n        .is_some_and(|n| n.ends_with(\".tgz\") || n.ends_with(\".thot.gz\"))\n    {\n        extract_tgz(archive, destination)\n    } else {\n        Err(\"project archive extension must be .thot.zip, .thot.tgz, or .thot.gz\".into())\n    };\n    if let Err(error) = result {\n        let _ = fs::remove_dir_all(destination);\n        return Err(error);\n    }\n    let config = destination.join(\"configuration.yaml\");\n    let config_meta = fs::symlink_metadata(&config)\n        .map_err(|_| \"archive root must contain configuration.yaml\")?;\n    if config_meta.file_type().is_symlink() || !config_meta.is_file() {\n        let _ = fs::remove_dir_all(destination);\n        return Err(\"archive root configuration.yaml must be a regular file\".into());\n    }\n    Ok(destination.to_path_buf())\n}\n\nfn safe_relative(name: &Path) -> Result<PathBuf, String> {\n    if name.as_os_str().is_empty() || name.is_absolute() {\n        return Err(\"archive entry has an empty or absolute path\".into());\n    }\n    let mut clean = PathBuf::new();\n    for component in name.components() {\n        match component {\n            Component::Normal(value) => clean.push(value),\n            Component::CurDir => {}\n            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {\n                return Err(format!(\"unsafe archive entry path: {}\", name.display()));\n            }\n        }\n    }\n    if clean.as_os_str().is_empty() {\n        return Ok(PathBuf::from(\".\"));\n    }\n    Ok(clean)\n}\n\nfn create_entry(\n    root: &Path,\n    relative: &Path,\n    is_dir: bool,\n    executable: bool,\n) -> Result<Option<File>, String> {\n    let path = root.join(relative);\n    if !path.starts_with(root) {\n        return Err(\"archive entry escapes staging directory\".into());\n    }\n    if is_dir {\n        fs::create_dir_all(&path).map_err(|e| format!(\"cannot create archive directory: {e}\"))?;\n        return Ok(None);\n    }\n    let parent = path\n        .parent()\n        .ok_or(\"archive file has no parent directory\")?;\n    fs::create_dir_all(parent)\n        .map_err(|e| format!(\"cannot create archive parent directory: {e}\"))?;\n    let file = OpenOptions::new()\n        .write(true)\n        .create_new(true)\n        .open(&path)\n        .map_err(|e| {\n            format!(\n                \"duplicate archive path or cannot create file {}: {e}\",\n                path.display()\n            )\n        })?;\n    #[cfg(unix)]\n    {\n        use std::os::unix::fs::PermissionsExt;\n        let mode = if executable { 0o750 } else { 0o640 };\n        fs::set_permissions(&path, fs::Permissions::from_mode(mode))\n            .map_err(|e| format!(\"cannot set project file permissions: {e}\"))?;\n    }\n    Ok(Some(file))\n}\n\nfn extract_zip(archive_path: &Path, destination: &Path) -> Result<(), String> {\n    let file = File::open(archive_path).map_err(|e| format!(\"cannot open ZIP project: {e}\"))?;\n    let mut archive =\n        zip::ZipArchive::new(file).map_err(|e| format!(\"invalid ZIP project: {e}\"))?;\n    if archive.len() > MAX_ENTRIES {\n        return Err(\"project archive contains more than 2,000 entries\".into());\n    }\n    let mut seen = HashSet::new();\n    let mut expanded = 0u64;\n    for index in 0..archive.len() {\n        let mut entry = archive\n            .by_index(index)\n            .map_err(|e| format!(\"invalid ZIP entry: {e}\"))?;\n        let relative = safe_relative(Path::new(entry.name()))?;\n        if !seen.insert(relative.clone()) {\n            return Err(format!(\"duplicate archive path: {}\", relative.display()));\n        }\n        if entry\n            .unix_mode()\n            .is_some_and(|mode| mode & 0o170000 == 0o120000)\n        {\n            return Err(format!(\n                \"ZIP symlinks are not allowed: {}\",\n                relative.display()\n            ));\n        }\n        let is_dir = entry.is_dir();\n        expanded = expanded.saturating_add(entry.size());\n        if expanded > MAX_EXPANDED_BYTES {\n            return Err(\"expanded project archive exceeds 500 MiB\".into());\n        }\n        let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);\n        if let Some(mut output) = create_entry(destination, &relative, is_dir, executable)? {\n            io::copy(&mut entry, &mut output)\n                .map_err(|e| format!(\"cannot extract ZIP entry: {e}\"))?;\n        }\n    }\n    Ok(())\n}\n\nfn extract_tgz(archive_path: &Path, destination: &Path) -> Result<(), String> {\n    let file = File::open(archive_path).map_err(|e| format!(\"cannot open tgz project: {e}\"))?;\n    let decoder = GzDecoder::new(file);\n    let mut archive = tar::Archive::new(decoder);\n    let entries = archive\n        .entries()\n        .map_err(|e| format!(\"invalid tar project: {e}\"))?;\n    let mut seen = HashSet::new();\n    let mut expanded = 0u64;\n    for (index, entry) in entries.enumerate() {\n        if index >= MAX_ENTRIES {\n            return Err(\"project archive contains more than 2,000 entries\".into());\n        }\n        let mut entry = entry.map_err(|e| format!(\"invalid tar entry: {e}\"))?;\n        let relative = safe_relative(&entry.path().map_err(|e| format!(\"invalid tar path: {e}\"))?)?;\n        if !seen.insert(relative.clone()) {\n            return Err(format!(\"duplicate archive path: {}\", relative.display()));\n        }\n        let kind = entry.header().entry_type();\n        if kind.is_dir() {\n            create_entry(destination, &relative, true, false)?;\n        } else if kind.is_file() {\n            expanded = expanded.saturating_add(entry.size());\n            if expanded > MAX_EXPANDED_BYTES {\n                return Err(\"expanded project archive exceeds 500 MiB\".into());\n            }\n            let executable = entry.header().mode().unwrap_or_default() & 0o111 != 0;\n            if let Some(mut output) = create_entry(destination, &relative, false, executable)? {\n                io::copy(&mut entry, &mut output)\n                    .map_err(|e| format!(\"cannot extract tar entry: {e}\"))?;\n            }\n        } else {\n            return Err(format!(\n                \"tar links and special entries are not allowed: {}\",\n                relative.display()\n            ));\n        }\n    }\n    Ok(())\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use flate2::{Compression, write::GzEncoder};\n    use std::io::{Cursor, Write};\n    use tar::{Builder, Header};\n    use zip::{ZipWriter, write::FileOptions};\n\n    fn temp_path(label: &str) -> PathBuf {\n        std::env::temp_dir().join(format!(\"thot-{label}-{}\", uuid::Uuid::new_v4()))\n    }\n\n    #[test]\n    fn extracts_root_configuration_from_zip() {\n        let root = temp_path(\"project\");\n        fs::create_dir_all(&root).unwrap();\n        let archive = root.join(\"project.thot.zip\");\n        let destination = root.join(\"staging\");\n        let file = File::create(&archive).unwrap();\n        let mut writer = ZipWriter::new(file);\n        writer\n            .start_file(\"configuration.yaml\", FileOptions::default())\n            .unwrap();\n        writer.write_all(b\"activity_name: Demo\\n\").unwrap();\n        writer.finish().unwrap();\n        let extracted = extract_project_archive(&archive, &destination).unwrap();\n        assert_eq!(\n            fs::read(extracted.join(\"configuration.yaml\")).unwrap(),\n            b\"activity_name: Demo\\n\"\n        );\n        fs::remove_dir_all(root).unwrap();\n    }\n\n    #[test]\n    fn rejects_zip_path_traversal() {\n        let root = temp_path(\"unsafe\");\n        fs::create_dir_all(&root).unwrap();\n        let archive = root.join(\"unsafe.thot.zip\");\n        let destination = root.join(\"staging\");\n        let file = File::create(&archive).unwrap();\n        let mut writer = ZipWriter::new(file);\n        writer\n            .start_file(\"../outside\", FileOptions::default())\n            .unwrap();\n        writer.write_all(b\"bad\").unwrap();\n        writer.finish().unwrap();\n        assert!(extract_project_archive(&archive, &destination).is_err());\n        assert!(!destination.exists());\n        fs::remove_dir_all(root).unwrap();\n    }\n\n    #[test]\n    fn extracts_root_configuration_from_tgz_with_dot_entries() {\n        let root = temp_path(\"tgz\");\n        fs::create_dir_all(&root).unwrap();\n        let archive = root.join(\"project.thot.tgz\");\n        let destination = root.join(\"staging\");\n        let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());\n        let mut builder = Builder::new(encoder);\n        let mut header = Header::new_gnu();\n        header.set_size(20);\n        header.set_mode(0o640);\n        header.set_cksum();\n        builder\n            .append_data(\n                &mut header,\n                \"./configuration.yaml\",\n                Cursor::new(b\"activity_name: Demo\\n\"),\n            )\n            .unwrap();\n        let encoder = builder.into_inner().unwrap();\n        encoder.finish().unwrap();\n        extract_project_archive(&archive, &destination).unwrap();\n        assert_eq!(\n            fs::read(destination.join(\"configuration.yaml\")).unwrap(),\n            b\"activity_name: Demo\\n\"\n        );\n        fs::remove_dir_all(root).unwrap();\n    }\n\n    #[test]\n    fn extracts_root_configuration_from_thot_gz() {\n        let root = temp_path(\"thot_gz\");\n        fs::create_dir_all(&root).unwrap();\n        let archive = root.join(\"project.thot.gz\");\n        let destination = root.join(\"staging\");\n        let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());\n        let mut builder = Builder::new(encoder);\n        let mut header = Header::new_gnu();\n        header.set_size(20);\n        header.set_mode(0o640);\n        header.set_cksum();\n        builder\n            .append_data(\n                &mut header,\n                \"configuration.yaml\",\n                Cursor::new(b\"activity_name: Demo\\n\"),\n            )\n            .unwrap();\n        let encoder = builder.into_inner().unwrap();\n        encoder.finish().unwrap();\n        extract_project_archive(&archive, &destination).unwrap();\n        assert_eq!(\n            fs::read(destination.join(\"configuration.yaml\")).unwrap(),\n            b\"activity_name: Demo\\n\"\n        );\n        fs::remove_dir_all(root).unwrap();\n    }\n}\n\n----- END CURRENT FILE -----\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-27 20:33:17+0100 INFO Ollama HTTP status: 200; elapsed: 1165.40 seconds
+2026-10-27 20:33:17+0100 DEBUG Raw Ollama HTTP response:
+{"model":"qwen2.5-coder.16K:7B","created_at":"2026-10-27T19:33:17.897862432Z","message":{"role":"assistant","content":"```rust\nuse flate2::read::GzDecoder;\nuse std::{\n    collections::HashSet,\n    fs::{self, File, OpenOptions},\n    io,\n    path::{Component, Path, PathBuf},\n};\n\nconst MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024;\nconst MAX_EXPANDED_BYTES: u64 = 500 * 1024 * 1024;\nconst MAX_ENTRIES: usize = 2_000;\n\npub fn snapshot_project_directory(source: \u0026Path, destination: \u0026Path, excluded_paths: \u0026[PathBuf]) -\u003e Result\u003cPathBuf, String\u003e {\n    if !source.is_dir() {\n        return Err(\"source must be a directory\".into());\n    }\n    if destination.exists() {\n        return Err(\"destination must not exist\".into());\n    }\n    fs::create_dir_all(destination)\n        .map_err(|e| format!(\"cannot create destination directory: {e}\"))?;\n    let mut seen = HashSet::new();\n    let mut expanded = 0u64;\n    for entry in fs::read_dir(source)\n        .map_err(|e| format!(\"cannot read source directory: {e}\"))?\n    {\n        let entry = entry\n            .map_err(|e| format!(\"cannot read directory entry: {e}\"))?;\n        let path = entry.path();\n        let relative = path.strip_prefix(source).map_err(|_| \"path is not within source\")?;\n        if excluded_paths.iter().any(|excluded| relative.starts_with(excluded)) {\n            continue;\n        }\n        if seen.insert(relative.clone()) {\n            if relative == Path::new(\"vms\") || relative == Path::new(\"test_records\") {\n                continue;\n            }\n            if relative.extension().map_or(false, |ext| ext == \"thot\" \u0026\u0026 (ext == \"gz\" || ext == \"tgz\" || ext == \"zip\")) {\n                continue;\n            }\n            if relative == Path::new(\"configuration.yaml\") {\n                let file = File::create(destination.join(relative))\n                    .map_err(|e| format!(\"cannot create configuration file: {e}\"))?;\n                fs::copy(\u0026path, \u0026file)\n                    .map_err(|e| format!(\"cannot copy configuration file: {e}\"))?;\n                continue;\n            }\n            if relative.is_dir() {\n                fs::create_dir_all(destination.join(relative))\n                    .map_err(|e| format!(\"cannot create directory: {e}\"))?;\n            } else {\n                let file = OpenOptions::new()\n                    .write(true)\n                    .create_new(true)\n                    .open(destination.join(relative))\n                    .map_err(|e| format!(\"cannot create file: {e}\"))?;\n                #[cfg(unix)]\n                {\n                    use std::os::unix::fs::PermissionsExt;\n                    let metadata = fs::metadata(\u0026path)\n                        .map_err(|e| format!(\"cannot get file metadata: {e}\"))?;\n                    let mode = metadata.permissions().mode();\n                    fs::set_permissions(\u0026destination.join(relative), fs::Permissions::from_mode(mode))\n                        .map_err(|e| format!(\"cannot set file permissions: {e}\"))?;\n                }\n                fs::copy(\u0026path, \u0026file)\n                    .map_err(|e| format!(\"cannot copy file: {e}\"))?;\n            }\n            expanded = expanded.saturating_add(entry.metadata().map_err(|e| format!(\"cannot get file metadata: {e}\"))?.len());\n            if expanded \u003e MAX_EXPANDED_BYTES {\n                return Err(\"expanded project archive exceeds 500 MiB\".into());\n            }\n        }\n    }\n    Ok(destination.to_path_buf())\n}\n\nfn safe_relative(name: \u0026Path) -\u003e Result\u003cPathBuf, String\u003e {\n    if name.as_os_str().is_empty() || name.is_absolute() {\n        return Err(\"archive entry has an empty or absolute path\".into());\n    }\n    let mut clean = PathBuf::new();\n    for component in name.components() {\n        match component {\n            Component::Normal(value) =\u003e clean.push(value),\n            Component::CurDir =\u003e {}\n            Component::ParentDir | Component::RootDir | Component::Prefix(_) =\u003e {\n                return Err(format!(\"unsafe archive entry path: {}\", name.display()));\n            }\n        }\n    }\n    if clean.as_os_str().is_empty() {\n        return Ok(PathBuf::from(\".\"));\n    }\n    Ok(clean)\n}\n\nfn create_entry(\n    root: \u0026Path,\n    relative: \u0026Path,\n    is_dir: bool,\n    executable: bool,\n) -\u003e Result\u003cOption\u003cFile\u003e, String\u003e {\n    let path = root.join(relative);\n    if !path.starts_with(root) {\n        return Err(\"archive entry escapes staging directory\".into());\n    }\n    if is_dir {\n        fs::create_dir_all(\u0026path).map_err(|e| format!(\"cannot create archive directory: {e}\"))?;\n        return Ok(None);\n    }\n    let parent = path\n        .parent()\n        .ok_or(\"archive file has no parent directory\")?;\n    fs::create_dir_all(parent)\n        .map_err(|e| format!(\"cannot create archive parent directory: {e}\"))?;\n    let file = OpenOptions::new()\n        .write(true)\n        .create_new(true)\n        .open(\u0026path)\n        .map_err(|e| {\n            format!(\n                \"duplicate archive path or cannot create file {}: {e}\",\n                path.display()\n            )\n        })?;\n    #[cfg(unix)]\n    {\n        use std::os::unix::fs::PermissionsExt;\n        let mode = if executable { 0o750 } else { 0o640 };\n        fs::set_permissions(\u0026path, fs::Permissions::from_mode(mode))\n            .map_err(|e| format!(\"cannot set project file permissions: {e}\"))?;\n    }\n    Ok(Some(file))\n}\n\nfn extract_zip(archive_path: \u0026Path, destination: \u0026Path) -\u003e Result\u003c(), String\u003e {\n    let file = File::open(archive_path).map_err(|e| format!(\"cannot open ZIP project: {e}\"))?;\n    let mut archive =\n        zip::ZipArchive::new(file).map_err(|e| format!(\"invalid ZIP project: {e}\"))?;\n    if archive.len() \u003e MAX_ENTRIES {\n        return Err(\"project archive contains more than 2,000 entries\".into());\n    }\n    let mut seen = HashSet::new();\n    let mut expanded = 0u64;\n    for index in 0..archive.len() {\n        let mut entry = archive\n            .by_index(index)\n            .map_err(|e| format!(\"invalid ZIP entry: {e}\"))?;\n        let relative = safe_relative(Path::new(entry.name()))?;\n        if !seen.insert(relative.clone()) {\n            return Err(format!(\"duplicate archive path: {}\", relative.display()));\n        }\n        if entry\n            .unix_mode()\n            .is_some_and(|mode| mode \u0026 0o170000 == 0o120000)\n        {\n            return Err(format!(\n                \"ZIP symlinks are not allowed: {}\",\n                relative.display()\n            ));\n        }\n        let is_dir = entry.is_dir();\n        expanded = expanded.saturating_add(entry.size());\n        if expanded \u003e MAX_EXPANDED_BYTES {\n            return Err(\"expanded project archive exceeds 500 MiB\".into());\n        }\n        let executable = entry.unix_mode().is_some_and(|mode| mode \u0026 0o111 != 0);\n        if let Some(mut output) = create_entry(destination, \u0026relative, is_dir, executable)? {\n            io::copy(\u0026mut entry, \u0026mut output)\n                .map_err(|e| format!(\"cannot extract ZIP entry: {e}\"))?;\n        }\n    }\n    Ok(())\n}\n\nfn extract_tgz(archive_path: \u0026Path, destination: \u0026Path) -\u003e Result\u003c(), String\u003e {\n    let file = File::open(archive_path).map_err(|e| format!(\"cannot open tgz project: {e}\"))?;\n    let decoder = GzDecoder::new(file);\n    let mut archive = tar::Archive::new(decoder);\n    let entries = archive\n        .entries()\n        .map_err(|e| format!(\"invalid tar project: {e}\"))?;\n    let mut seen = HashSet::new();\n    let mut expanded = 0u64;\n    for (index, entry) in entries.enumerate() {\n        if index \u003e= MAX_ENTRIES {\n            return Err(\"project archive contains more than 2,000 entries\".into());\n        }\n        let mut entry = entry.map_err(|e| format!(\"invalid tar entry: {e}\"))?;\n        let relative = safe_relative(\u0026entry.path().map_err(|e| format!(\"invalid tar path: {e}\"))?)?;\n        if !seen.insert(relative.clone()) {\n            return Err(format!(\"duplicate archive path: {}\", relative.display()));\n        }\n        let kind = entry.header().entry_type();\n        if kind.is_dir() {\n            create_entry(destination, \u0026relative, true, false)?;\n        } else if kind.is_file() {\n            expanded = expanded.saturating_add(entry.size());\n            if expanded \u003e MAX_EXPANDED_BYTES {\n                return Err(\"expanded project archive exceeds 500 MiB\".into());\n            }\n            let executable = entry.header().mode().unwrap_or_default() \u0026 0o111 != 0;\n            if let Some(mut output) = create_entry(destination, \u0026relative, false, executable)? {\n                io::copy(\u0026mut entry, \u0026mut output)\n                    .map_err(|e| format!(\"cannot extract tar entry: {e}\"))?;\n            }\n        } else {\n            return Err(format!(\n                \"tar links and special entries are not allowed: {}\",\n                relative.display()\n            ));\n        }\n    }\n    Ok(())\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use flate2::{Compression, write::GzEncoder};\n    use std::io::{Cursor, Write};\n    use tar::{Builder, Header};\n    use zip::{ZipWriter, write::FileOptions};\n\n    fn temp_path(label: \u0026str) -\u003e PathBuf {\n        std::env::temp_dir().join(format!(\"thot-{label}-{}\", uuid::Uuid::new_v4()))\n    }\n\n    #[test]\n    fn extracts_root_configuration_from_zip() {\n        let root = temp_path(\"project\");\n        fs::create_dir_all(\u0026root).unwrap();\n        let archive = root.join(\"project.thot.zip\");\n        let destination = root.join(\"staging\");\n        let file = File::create(\u0026archive).unwrap();\n        let mut writer = ZipWriter::new(file);\n        writer\n            .start_file(\"configuration.yaml\", FileOptions::default())\n            .unwrap();\n        writer.write_all(b\"activity_name: Demo\\n\").unwrap();\n        writer.finish().unwrap();\n        let extracted = snapshot_project_directory(\u0026root, \u0026destination, \u0026[]).unwrap();\n        assert_eq!(\n            fs::read(extracted.join(\"configuration.yaml\")).unwrap(),\n            b\"activity_name: Demo\\n\"\n        );\n        fs::remove_dir_all(root).unwrap();\n    }\n\n    #[test]\n    fn rejects_zip_path_traversal() {\n        let root = temp_path(\"unsafe\");\n        fs::create_dir_all(\u0026root).unwrap();\n        let archive = root.join(\"unsafe.thot.zip\");\n        let destination = root.join(\"staging\");\n        let file = File::create(\u0026archive).unwrap();\n        let mut writer = ZipWriter::new(file);\n        writer\n            .start_file(\"../outside\", FileOptions::default())\n            .unwrap();\n        writer.write_all(b\"bad\").unwrap();\n        writer.finish().unwrap();\n        assert!(snapshot_project_directory(\u0026root, \u0026destination, \u0026[]).is_err());\n        assert!(!destination.exists());\n        fs::remove_dir_all(root).unwrap();\n    }\n\n    #[test]\n    fn extracts_root_configuration_from_tgz_with_dot_entries() {\n        let root = temp_path(\"tgz\");\n        fs::create_dir_all(\u0026root).unwrap();\n        let archive = root.join(\"project.thot.tgz\");\n        let destination = root.join(\"staging\");\n        let encoder = GzEncoder::new(File::create(\u0026archive).unwrap(), Compression::default());\n        let mut builder = Builder::new(encoder);\n        let mut header = Header::new_gnu();\n        header.set_size(20);\n        header.set_mode(0o640);\n        header.set_cksum();\n        builder\n            .append_data(\n                \u0026mut header,\n                \"./configuration.yaml\",\n                Cursor::new(b\"activity_name: Demo\\n\"),\n            )\n            .unwrap();\n        let encoder = builder.into_inner().unwrap();\n        encoder.finish().unwrap();\n        snapshot_project_directory(\u0026root, \u0026destination, \u0026[]).unwrap();\n        assert_eq!(\n            fs::read(destination.join(\"configuration.yaml\")).unwrap(),\n            b\"activity_name: Demo\\n\"\n        );\n        fs::remove_dir_all(root).unwrap();\n    }\n\n    #[test]\n    fn extracts_root_configuration_from_thot_gz() {\n        let root = temp_path(\"thot_gz\");\n        fs::create_dir_all(\u0026root).unwrap();\n        let archive = root.join(\"project.thot.gz\");\n        let destination = root.join(\"staging\");\n        let encoder = GzEncoder::new(File::create(\u0026archive).unwrap(), Compression::default());\n        let mut builder = Builder::new(encoder);\n        let mut header = Header::new_gnu();\n        header.set_size(20);\n        header.set_mode(0o640);\n        header.set_cksum();\n        builder\n            .append_data(\n                \u0026mut header,\n                \"configuration.yaml\",\n                Cursor::new(b\"activity_name: Demo\\n\"),\n            )\n            .unwrap();\n        let encoder = builder.into_inner().unwrap();\n        encoder.finish().unwrap();\n        snapshot_project_directory(\u0026root, \u0026destination, \u0026[]).unwrap();\n        assert_eq!(\n            fs::read(destination.join(\"configuration.yaml\")).unwrap(),\n            b\"activity_name: Demo\\n\"\n        );\n        fs::remove_dir_all(root).unwrap();\n    }\n}\n```"},"done":true,"done_reason":"stop","total_duration":1165397916394,"load_duration":4407840,"prompt_eval_count":3150,"prompt_eval_cached_count":51,"prompt_eval_duration":211808381000,"eval_count":2964,"eval_duration":953373549000}
+2026-10-27 20:33:17+0100 INFO Model response received: 12693 characters; done_reason='stop'
+2026-10-27 20:33:17+0100 DEBUG Model response content:
+```rust
+use flate2::read::GzDecoder;
+use std::{
+    collections::HashSet,
+    fs::{self, File, OpenOptions},
+    io,
+    path::{Component, Path, PathBuf},
+};
+
+const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_EXPANDED_BYTES: u64 = 500 * 1024 * 1024;
+const MAX_ENTRIES: usize = 2_000;
+
+pub fn snapshot_project_directory(source: &Path, destination: &Path, excluded_paths: &[PathBuf]) -> Result<PathBuf, String> {
+    if !source.is_dir() {
+        return Err("source must be a directory".into());
+    }
+    if destination.exists() {
+        return Err("destination must not exist".into());
+    }
+    fs::create_dir_all(destination)
+        .map_err(|e| format!("cannot create destination directory: {e}"))?;
+    let mut seen = HashSet::new();
+    let mut expanded = 0u64;
+    for entry in fs::read_dir(source)
+        .map_err(|e| format!("cannot read source directory: {e}"))?
+    {
+        let entry = entry
+            .map_err(|e| format!("cannot read directory entry: {e}"))?;
+        let path = entry.path();
+        let relative = path.strip_prefix(source).map_err(|_| "path is not within source")?;
+        if excluded_paths.iter().any(|excluded| relative.starts_with(excluded)) {
+            continue;
+        }
+        if seen.insert(relative.clone()) {
+            if relative == Path::new("vms") || relative == Path::new("test_records") {
+                continue;
+            }
+            if relative.extension().map_or(false, |ext| ext == "thot" && (ext == "gz" || ext == "tgz" || ext == "zip")) {
+                continue;
+            }
+            if relative == Path::new("configuration.yaml") {
+                let file = File::create(destination.join(relative))
+                    .map_err(|e| format!("cannot create configuration file: {e}"))?;
+                fs::copy(&path, &file)
+                    .map_err(|e| format!("cannot copy configuration file: {e}"))?;
+                continue;
+            }
+            if relative.is_dir() {
+                fs::create_dir_all(destination.join(relative))
+                    .map_err(|e| format!("cannot create directory: {e}"))?;
+            } else {
+                let file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(destination.join(relative))
+                    .map_err(|e| format!("cannot create file: {e}"))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let metadata = fs::metadata(&path)
+                        .map_err(|e| format!("cannot get file metadata: {e}"))?;
+                    let mode = metadata.permissions().mode();
+                    fs::set_permissions(&destination.join(relative), fs::Permissions::from_mode(mode))
+                        .map_err(|e| format!("cannot set file permissions: {e}"))?;
+                }
+                fs::copy(&path, &file)
+                    .map_err(|e| format!("cannot copy file: {e}"))?;
+            }
+            expanded = expanded.saturating_add(entry.metadata().map_err(|e| format!("cannot get file metadata: {e}"))?.len());
+            if expanded > MAX_EXPANDED_BYTES {
+                return Err("expanded project archive exceeds 500 MiB".into());
+            }
+        }
+    }
+    Ok(destination.to_path_buf())
+}
+
+fn safe_relative(name: &Path) -> Result<PathBuf, String> {
+    if name.as_os_str().is_empty() || name.is_absolute() {
+        return Err("archive entry has an empty or absolute path".into());
+    }
+    let mut clean = PathBuf::new();
+    for component in name.components() {
+        match component {
+            Component::Normal(value) => clean.push(value),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!("unsafe archive entry path: {}", name.display()));
+            }
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return Ok(PathBuf::from("."));
+    }
+    Ok(clean)
+}
+
+fn create_entry(
+    root: &Path,
+    relative: &Path,
+    is_dir: bool,
+    executable: bool,
+) -> Result<Option<File>, String> {
+    let path = root.join(relative);
+    if !path.starts_with(root) {
+        return Err("archive entry escapes staging directory".into());
+    }
+    if is_dir {
+        fs::create_dir_all(&path).map_err(|e| format!("cannot create archive directory: {e}"))?;
+        return Ok(None);
+    }
+    let parent = path
+        .parent()
+        .ok_or("archive file has no parent directory")?;
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("cannot create archive parent directory: {e}"))?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| {
+            format!(
+                "duplicate archive path or cannot create file {}: {e}",
+                path.display()
+            )
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if executable { 0o750 } else { 0o640 };
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode))
+            .map_err(|e| format!("cannot set project file permissions: {e}"))?;
+    }
+    Ok(Some(file))
+}
+
+fn extract_zip(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let file = File::open(archive_path).map_err(|e| format!("cannot open ZIP project: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("invalid ZIP project: {e}"))?;
+    if archive.len() > MAX_ENTRIES {
+        return Err("project archive contains more than 2,000 entries".into());
+    }
+    let mut seen = HashSet::new();
+    let mut expanded = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| format!("invalid ZIP entry: {e}"))?;
+        let relative = safe_relative(Path::new(entry.name()))?;
+        if !seen.insert(relative.clone()) {
+            return Err(format!("duplicate archive path: {}", relative.display()));
+        }
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err(format!(
+                "ZIP symlinks are not allowed: {}",
+                relative.display()
+            ));
+        }
+        let is_dir = entry.is_dir();
+        expanded = expanded.saturating_add(entry.size());
+        if expanded > MAX_EXPANDED_BYTES {
+            return Err("expanded project archive exceeds 500 MiB".into());
+        }
+        let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
+        if let Some(mut output) = create_entry(destination, &relative, is_dir, executable)? {
+            io::copy(&mut entry, &mut output)
+                .map_err(|e| format!("cannot extract ZIP entry: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn extract_tgz(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let file = File::open(archive_path).map_err(|e| format!("cannot open tgz project: {e}"))?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("invalid tar project: {e}"))?;
+    let mut seen = HashSet::new();
+    let mut expanded = 0u64;
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_ENTRIES {
+            return Err("project archive contains more than 2,000 entries".into());
+        }
+        let mut entry = entry.map_err(|e| format!("invalid tar entry: {e}"))?;
+        let relative = safe_relative(&entry.path().map_err(|e| format!("invalid tar path: {e}"))?)?;
+        if !seen.insert(relative.clone()) {
+            return Err(format!("duplicate archive path: {}", relative.display()));
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            create_entry(destination, &relative, true, false)?;
+        } else if kind.is_file() {
+            expanded = expanded.saturating_add(entry.size());
+            if expanded > MAX_EXPANDED_BYTES {
+                return Err("expanded project archive exceeds 500 MiB".into());
+            }
+            let executable = entry.header().mode().unwrap_or_default() & 0o111 != 0;
+            if let Some(mut output) = create_entry(destination, &relative, false, executable)? {
+                io::copy(&mut entry, &mut output)
+                    .map_err(|e| format!("cannot extract tar entry: {e}"))?;
+            }
+        } else {
+            return Err(format!(
+                "tar links and special entries are not allowed: {}",
+                relative.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::{Cursor, Write};
+    use tar::{Builder, Header};
+    use zip::{ZipWriter, write::FileOptions};
+
+    fn temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("thot-{label}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_zip() {
+        let root = temp_path("project");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.zip");
+        let destination = root.join("staging");
+        let file = File::create(&archive).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("configuration.yaml", FileOptions::default())
+            .unwrap();
+        writer.write_all(b"activity_name: Demo\n").unwrap();
+        writer.finish().unwrap();
+        let extracted = snapshot_project_directory(&root, &destination, &[]).unwrap();
+        assert_eq!(
+            fs::read(extracted.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_zip_path_traversal() {
+        let root = temp_path("unsafe");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("unsafe.thot.zip");
+        let destination = root.join("staging");
+        let file = File::create(&archive).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("../outside", FileOptions::default())
+            .unwrap();
+        writer.write_all(b"bad").unwrap();
+        writer.finish().unwrap();
+        assert!(snapshot_project_directory(&root, &destination, &[]).is_err());
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_tgz_with_dot_entries() {
+        let root = temp_path("tgz");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.tgz");
+        let destination = root.join("staging");
+        let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());
+        let mut builder = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_size(20);
+        header.set_mode(0o640);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "./configuration.yaml",
+                Cursor::new(b"activity_name: Demo\n"),
+            )
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        snapshot_project_directory(&root, &destination, &[]).unwrap();
+        assert_eq!(
+            fs::read(destination.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_thot_gz() {
+        let root = temp_path("thot_gz");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.gz");
+        let destination = root.join("staging");
+        let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());
+        let mut builder = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_size(20);
+        header.set_mode(0o640);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "configuration.yaml",
+                Cursor::new(b"activity_name: Demo\n"),
+            )
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        snapshot_project_directory(&root, &destination, &[]).unwrap();
+        assert_eq!(
+            fs::read(destination.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+```
+2026-10-27 20:33:17+0100 WARNING Model wrapped its code in Markdown fences (language=rust); removing the outer fence
+2026-10-27 20:33:17+0100 INFO Wrote modify file: 12682 bytes
+2026-10-27 20:33:17+0100 INFO ========== TASK SUCCESS ==========
+2026-10-27 20:33:17+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/done/085-project-folder-snapshot.yaml

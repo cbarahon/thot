@@ -1,0 +1,1839 @@
+2026-10-27 19:33:38+0100 INFO ========== TASK START ==========
+2026-10-27 19:33:38+0100 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/082-cli-student-yaml-output.yaml
+2026-10-27 19:33:38+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/082-cli-student-yaml-output.yaml
+2026-10-27 19:33:38+0100 INFO Reading YAML task
+2026-10-27 19:33:38+0100 INFO Parsed YAML:
+id: 082-cli-student-yaml-output
+title: Use YAML for structured student command output
+depends_on:
+- 081-cli-yaml-renderer
+file: /home/carlos/worktrees/thot/apps/thot-cli/src/main.rs
+action: modify
+prompt: In `apps/thot-cli/src/main.rs`, declare `mod output;`. For `import students
+  FILE`, convert the existing typed `ImportStudentsResponse` to `serde_json::Value`
+  with `serde_json::to_value` and pass it to `output::print_yaml`. For default `get
+  students`, render the full `GetStudentsResponse` as YAML instead of the current
+  table. Keep the explicit `get students csv` output as CSV, and preserve request
+  handling, malformed-row diagnostics, and errors. Remove private table-formatting
+  helpers that become unused. Do not implement another serializer. Edit only this
+  file.
+
+2026-10-27 19:33:38+0100 INFO Task ID: 082-cli-student-yaml-output
+2026-10-27 19:33:38+0100 INFO Task title: Use YAML for structured student command output
+2026-10-27 19:33:38+0100 INFO Action: modify
+2026-10-27 19:33:38+0100 INFO Target: /home/carlos/worktrees/thot/apps/thot-cli/src/main.rs
+2026-10-27 19:33:38+0100 INFO Read current file: 29489 characters
+2026-10-27 19:33:38+0100 DEBUG Current file content:
+//! Purpose: CLI entry point for student import/export and delivery-run commands.
+mod api_client;
+mod delivery_commands;
+
+use std::{
+    collections::HashMap,
+    error::Error,
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
+use thot_core::{GetStudentsResponse, ImportStudentsResponse, Student, StudentInput};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
+
+const DEFAULT_HOST: &str = "localhost";
+const DEFAULT_PORT: u16 = 8081;
+
+#[derive(Debug, Default)]
+struct CliOptions {
+    host: Option<String>,
+    port: Option<u16>,
+    command: Vec<String>,
+    help: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Settings {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+}
+
+#[derive(Debug, Default)]
+struct FileConfig {
+    host: Option<String>,
+    port: Option<u16>,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    run().await
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
+    let options = parse_args(std::env::args().skip(1))?;
+    if options.help {
+        print_usage();
+        return Ok(());
+    }
+
+    let cwd = std::env::current_dir()?;
+    let settings = resolve_settings(&options, &cwd, home_dir().as_deref())?;
+    match options.command.as_slice() {
+        [run, ..] if run == "run" => {
+            delivery_commands::handle(&options.command[1..], &settings).await?;
+        }
+        [import, students, path] if import == "import" && students == "students" => {
+            let (records, malformed) = read_students_csv(Path::new(path))?;
+            let payload = serde_json::to_vec(&serde_json::json!({ "students": records }))?;
+            let body = http_request(&settings, "POST", "/import/students", Some(&payload)).await?;
+            let response: ImportStudentsResponse = serde_json::from_slice(&body)?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            if !malformed.is_empty() {
+                eprintln!(
+                    "Se omitieron {} filas CSV malformadas antes de enviar los datos:",
+                    malformed.len()
+                );
+                for (row, reason) in malformed {
+                    eprintln!("  fila {row}: {reason}");
+                }
+            }
+        }
+        [get, students] if get == "get" && students == "students" => {
+            let body = http_request(&settings, "GET", "/get/students", None).await?;
+            let response: GetStudentsResponse = serde_json::from_slice(&body)?;
+            print_student_table(&response.students)?;
+        }
+        [get, students, format] if get == "get" && students == "students" && format == "csv" => {
+            let body = http_request(&settings, "GET", "/get/students", None).await?;
+            let response: GetStudentsResponse = serde_json::from_slice(&body)?;
+            print!("{}", format_students_csv(&response.students)?);
+        }
+        _ => {
+            print_usage();
+            return Err("comando no válido".into());
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_args(args: impl Iterator<Item = String>) -> Result<CliOptions, Box<dyn Error>> {
+    let mut options = CliOptions::default();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--help" => options.help = true,
+            "-h" | "--host" | "--server" => {
+                options.host = Some(args.next().ok_or("falta el servidor después de -h")?);
+            }
+            "-p" | "--port" => {
+                let value = args.next().ok_or("falta el puerto después de -p")?;
+                options.port = Some(value.parse()?);
+            }
+            option if option.starts_with('-') => {
+                return Err(format!("opción no reconocida: {option}").into());
+            }
+            command => {
+                options.command.push(command.to_owned());
+                options.command.extend(args);
+                break;
+            }
+        }
+    }
+    Ok(options)
+}
+
+fn resolve_settings(
+    options: &CliOptions,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> Result<Settings, Box<dyn Error>> {
+    let config = config_candidates(cwd, home)
+        .into_iter()
+        .find(|path| path.is_file())
+        .map(read_config)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(Settings {
+        host: options
+            .host
+            .clone()
+            .or(config.host)
+            .unwrap_or_else(|| DEFAULT_HOST.to_owned()),
+        port: options.port.or(config.port).unwrap_or(DEFAULT_PORT),
+    })
+}
+
+fn config_candidates(cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = vec![cwd.join("thot-config.yaml"), cwd.join(".thot-config.yaml")];
+    if let Some(home) = home {
+        candidates.push(home.join(".config/thot/thot-config.yaml"));
+    }
+    candidates
+}
+
+fn read_config(path: PathBuf) -> Result<FileConfig, Box<dyn Error>> {
+    let contents = fs::read_to_string(&path)?;
+    let mut config = FileConfig::default();
+    for (line_number, raw_line) in contents.lines().enumerate() {
+        let line = strip_yaml_comment(raw_line).trim();
+        if line.is_empty() || line == "---" || line == "..." {
+            continue;
+        }
+        let (key, value) = line.split_once(':').ok_or_else(|| {
+            format!(
+                "configuración no válida en {}:{}",
+                path.display(),
+                line_number + 1
+            )
+        })?;
+        let key = key.trim();
+        let value = unquote_yaml_scalar(value.trim());
+        match key {
+            "host" | "server" => config.host = Some(value),
+            "port" => {
+                config.port = Some(value.parse().map_err(|_| {
+                    format!("puerto no válido en {}:{}", path.display(), line_number + 1)
+                })?)
+            }
+            _ => {} // Other application settings do not affect this CLI functionality.
+        }
+    }
+    Ok(config)
+}
+
+fn strip_yaml_comment(line: &str) -> &str {
+    let mut quote = None;
+    for (index, character) in line.char_indices() {
+        if matches!(character, '\'' | '"') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+            }
+        } else if character == '#' && quote.is_none() {
+            let previous_is_space = index == 0 || line[..index].ends_with(char::is_whitespace);
+            if previous_is_space {
+                return &line[..index];
+            }
+        }
+    }
+    line
+}
+
+fn unquote_yaml_scalar(value: &str) -> String {
+    if value.len() >= 2 {
+        let first = value.as_bytes()[0];
+        let last = value.as_bytes()[value.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return value[1..value.len() - 1].to_owned();
+        }
+    }
+    value.to_owned()
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn normalize_header(header: &str) -> String {
+    header
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|character| match character {
+            'à' | 'á' | 'â' | 'ä' => 'a',
+            'è' | 'é' | 'ê' | 'ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'ò' | 'ó' | 'ô' | 'ö' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            'ñ' => 'n',
+            other => other,
+        })
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn field_kind(header: &str) -> Option<&'static str> {
+    match normalize_header(header).as_str() {
+        "nom" | "nombre" | "name" | "studentname" | "first" | "firstname" | "givenname"
+        | "nombrealumno" | "nombreestudiante" => Some("name"),
+        "adrecaelectronica"
+        | "direcciondecorreoelectronico"
+        | "correoelectronico"
+        | "correo"
+        | "emailaddress"
+        | "email"
+        | "mail" => Some("email"),
+        "cognom" | "cognoms" | "apellido" | "apellidos" | "surname" | "lastname" | "familyname" => {
+            Some("surname")
+        }
+        "id" | "identificador" | "studentid" | "idalumno" | "idestudiante" => Some("external_id"),
+        "grup" | "grupo" | "group" | "class" => Some("group"),
+        "centre" | "centro" | "center" | "school" | "institute" => Some("center"),
+        "datanaixement" | "fechanacimiento" | "birthdate" | "dateofbirth" | "dob" => {
+            Some("birth_date")
+        }
+        _ => None,
+    }
+}
+
+fn read_students_csv(
+    path: &Path,
+) -> Result<(Vec<StudentInput>, Vec<(u64, String)>), Box<dyn Error>> {
+    let contents = fs::read_to_string(path)?;
+    let mut parsed = parse_csv(&contents);
+    if parsed.is_empty() {
+        return Err("el fichero CSV está vacío".into());
+    }
+    let headers = parsed
+        .remove(0)
+        .map_err(|error| format!("cabecera CSV no válida: {error}"))?;
+    let mut indexes = HashMap::new();
+    for (index, header) in headers.iter().enumerate() {
+        if let Some(kind) = field_kind(header) {
+            indexes.entry(kind).or_insert(index);
+        }
+    }
+    let name_index = *indexes
+        .get("name")
+        .ok_or("el CSV debe incluir una columna de nombre: Nom, Nombre o Name")?;
+    let email_index = *indexes
+        .get("email")
+        .ok_or("el CSV debe incluir una columna de correo: Adreça electrònica, Email o Mail")?;
+
+    let mut students = Vec::new();
+    let mut malformed = Vec::new();
+    for (record_index, result) in parsed.into_iter().enumerate() {
+        let row = record_index as u64 + 2;
+        let record = match result {
+            Ok(record) => record,
+            Err(error) => {
+                malformed.push((row, error));
+                continue;
+            }
+        };
+        if record.len() != headers.len() {
+            malformed.push((
+                row,
+                format!(
+                    "se esperaban {} columnas y se encontraron {}",
+                    headers.len(),
+                    record.len()
+                ),
+            ));
+            continue;
+        }
+
+        let value = |kind: &str| {
+            indexes
+                .get(kind)
+                .and_then(|index| record.get(*index))
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
+        students.push(StudentInput {
+            source_row: Some(row),
+            name: record[name_index].trim().to_owned(),
+            email: record[email_index].trim().to_owned(),
+            surname: value("surname"),
+            external_id: value("external_id"),
+            group_name: value("group"),
+            center: value("center"),
+            birth_date: value("birth_date"),
+        });
+    }
+    Ok((students, malformed))
+}
+
+fn parse_csv(contents: &str) -> Vec<Result<Vec<String>, String>> {
+    let characters = contents.chars().collect::<Vec<_>>();
+    let mut records = Vec::new();
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut after_quote = false;
+    let mut record_error = None;
+    let mut record_has_content = false;
+    let mut index = 0;
+
+    while index < characters.len() {
+        let character = characters[index];
+        if quoted {
+            if character == '"' {
+                if characters.get(index + 1) == Some(&'"') {
+                    field.push('"');
+                    index += 1;
+                } else {
+                    quoted = false;
+                    after_quote = true;
+                }
+            } else {
+                field.push(character);
+            }
+        } else if character == '\n' || character == '\r' {
+            if character == '\r' && characters.get(index + 1) == Some(&'\n') {
+                index += 1;
+            }
+            if record_has_content
+                || !fields.is_empty()
+                || !field.is_empty()
+                || record_error.is_some()
+            {
+                fields.push(std::mem::take(&mut field));
+                records.push(match record_error.take() {
+                    Some(error) => Err(error),
+                    None => Ok(std::mem::take(&mut fields)),
+                });
+            }
+            fields.clear();
+            field.clear();
+            after_quote = false;
+            record_has_content = false;
+        } else if character == ',' {
+            fields.push(std::mem::take(&mut field));
+            after_quote = false;
+            record_has_content = true;
+        } else if character == '"' {
+            if field.is_empty() && !after_quote {
+                quoted = true;
+                record_has_content = true;
+            } else {
+                record_error.get_or_insert_with(|| "comilla en un campo sin escapar".to_owned());
+                field.push(character);
+                after_quote = false;
+                record_has_content = true;
+            }
+        } else if after_quote {
+            if !character.is_whitespace() {
+                record_error
+                    .get_or_insert_with(|| "contenido después del cierre de comillas".to_owned());
+            }
+        } else {
+            field.push(character);
+            if !character.is_whitespace() {
+                record_has_content = true;
+            }
+        }
+        index += 1;
+    }
+
+    if quoted {
+        records.push(Err("campo entrecomillado sin cerrar".into()));
+    } else if record_has_content
+        || !fields.is_empty()
+        || !field.is_empty()
+        || record_error.is_some()
+    {
+        fields.push(field);
+        records.push(match record_error {
+            Some(error) => Err(error),
+            None => Ok(fields),
+        });
+    }
+    records
+}
+
+async fn http_request(
+    settings: &Settings,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let host = settings
+        .host
+        .strip_prefix("http://")
+        .unwrap_or(&settings.host)
+        .trim_end_matches('/');
+    if host.is_empty() || host.contains('/') || host.contains("https://") {
+        return Err("servidor no válido; usa un nombre de host o una dirección HTTP".into());
+    }
+    let mut stream = TcpStream::connect((host, settings.port)).await?;
+    let host_header = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{}", settings.port)
+    } else {
+        format!("{host}:{}", settings.port)
+    };
+    let payload = body.unwrap_or_default();
+    let headers = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host_header}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n{}\r\n",
+        payload.len(),
+        if body.is_some() {
+            "Content-Type: application/json\r\n"
+        } else {
+            ""
+        }
+    );
+    stream.write_all(headers.as_bytes()).await?;
+    stream.write_all(payload).await?;
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await?;
+    parse_http_response(&response)
+}
+
+fn parse_http_response(response: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let split = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or("respuesta HTTP no válida")?;
+    let header_text = std::str::from_utf8(&response[..split])?;
+    let mut lines = header_text.split("\r\n");
+    let status_line = lines.next().ok_or("respuesta HTTP sin estado")?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or("respuesta HTTP sin código de estado")?
+        .parse::<u16>()?;
+    let chunked = lines.any(|line| {
+        line.split_once(':').is_some_and(|(key, value)| {
+            key.eq_ignore_ascii_case("transfer-encoding")
+                && value.to_ascii_lowercase().contains("chunked")
+        })
+    });
+    let raw_body = &response[split + 4..];
+    let response_body = if chunked {
+        decode_chunked(raw_body)?
+    } else {
+        raw_body.to_vec()
+    };
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "thotd respondió HTTP {status}: {}",
+            String::from_utf8_lossy(&response_body)
+        )
+        .into());
+    }
+    Ok(response_body)
+}
+
+fn decode_chunked(mut body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = body
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or("respuesta chunked no válida")?;
+        let length_text = std::str::from_utf8(&body[..line_end])?
+            .split(';')
+            .next()
+            .unwrap_or_default();
+        let length = usize::from_str_radix(length_text.trim(), 16)?;
+        body = &body[line_end + 2..];
+        if length == 0 {
+            break;
+        }
+        if body.len() < length + 2 || &body[length..length + 2] != b"\r\n" {
+            return Err("respuesta chunked truncada".into());
+        }
+        decoded.extend_from_slice(&body[..length]);
+        body = &body[length + 2..];
+    }
+    Ok(decoded)
+}
+
+fn print_student_table(students: &[Student]) -> Result<(), Box<dyn Error>> {
+    print!("{}", format_student_table(students));
+    io::stdout().flush()?;
+    Ok(())
+}
+
+fn format_student_table(students: &[Student]) -> String {
+    let headers = [
+        "ID",
+        "Nom",
+        "Apellidos",
+        "Email",
+        "ID externo",
+        "Grupo",
+        "Centro",
+        "Fecha nacimiento",
+    ];
+    let rows = students
+        .iter()
+        .map(|student| {
+            vec![
+                student.id.to_string(),
+                clean_display(&student.name),
+                optional_display(&student.surname),
+                clean_display(&student.email),
+                optional_display(&student.external_id),
+                optional_display(&student.group_name),
+                optional_display(&student.center),
+                optional_display(&student.birth_date),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let widths = (0..headers.len())
+        .map(|column| {
+            rows.iter()
+                .map(|row| row[column].chars().count())
+                .fold(headers[column].chars().count(), usize::max)
+        })
+        .collect::<Vec<_>>();
+    let mut output = String::new();
+    format_table_row(&mut output, &headers.map(str::to_owned), &widths);
+    output.push_str(&format!(
+        "+{}+",
+        widths
+            .iter()
+            .map(|width| "-".repeat(width + 2))
+            .collect::<Vec<_>>()
+            .join("+")
+    ));
+    output.push('\n');
+    for row in rows {
+        format_table_row(&mut output, &row, &widths);
+    }
+    output
+}
+
+fn format_table_row(output: &mut String, row: &[String], widths: &[usize]) {
+    output.push('|');
+    for (value, width) in row.iter().zip(widths) {
+        output.push(' ');
+        output.push_str(value);
+        output.push_str(&" ".repeat(width.saturating_sub(value.chars().count())));
+        output.push_str(" |");
+    }
+    output.push('\n');
+}
+
+fn format_students_csv(students: &[Student]) -> Result<String, Box<dyn Error>> {
+    let mut output = Vec::new();
+    write_csv_record(
+        &mut output,
+        &[
+            "id",
+            "nom",
+            "apellidos",
+            "email",
+            "id_externo",
+            "grupo",
+            "centro",
+            "fecha nacimiento",
+        ],
+    )?;
+    for student in students {
+        write_csv_record(
+            &mut output,
+            &[
+                &student.id.to_string(),
+                &student.name,
+                student.surname.as_deref().unwrap_or_default(),
+                &student.email,
+                student.external_id.as_deref().unwrap_or_default(),
+                student.group_name.as_deref().unwrap_or_default(),
+                student.center.as_deref().unwrap_or_default(),
+                student.birth_date.as_deref().unwrap_or_default(),
+            ],
+        )?;
+    }
+    Ok(String::from_utf8(output)?)
+}
+
+fn write_csv_record(output: &mut impl Write, fields: &[&str]) -> io::Result<()> {
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            output.write_all(b",")?;
+        }
+        if field.contains([',', '"', '\n', '\r']) {
+            output.write_all(b"\"")?;
+            output.write_all(field.replace('"', "\"\"").as_bytes())?;
+            output.write_all(b"\"")?;
+        } else {
+            output.write_all(field.as_bytes())?;
+        }
+    }
+    output.write_all(b"\r\n")
+}
+
+fn clean_display(value: &str) -> String {
+    value.replace(['\n', '\r'], " ")
+}
+
+fn optional_display(value: &Option<String>) -> String {
+    value.as_deref().map(clean_display).unwrap_or_default()
+}
+
+fn print_usage() {
+    println!(
+        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot [-h servidor] [-p puerto] run [list]\n  thot [-h servidor] [-p puerto] run create <ruta-archivo-proyecto> [--deliveries DIR]\n  thot [-h servidor] [-p puerto] run status RUN_ID\n  thot [-h servidor] [-p puerto] run delete RUN_ID\n  thot [-h servidor] [-p puerto] run expedient EXPEDIENT_ID\n  thot [-h servidor] [-p puerto] run cancel RUN_ID\n  thot [-h servidor] [-p puerto] run cleanup EXPEDIENT_ID\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use thot_engine::{SqliteStudentRepository, StudentService};
+    use tower::ServiceExt;
+
+    #[test]
+    fn recognizes_header_variants_and_aliases() {
+        assert_eq!(field_kind("Adreça electrònica"), Some("email"));
+        assert_eq!(field_kind("e-mail"), Some("email"));
+        assert_eq!(field_kind("Email address"), Some("email"));
+        assert_eq!(field_kind("Nombre"), Some("name"));
+        assert_eq!(field_kind("Birth date"), Some("birth_date"));
+    }
+
+    #[test]
+    fn local_config_precedes_home_and_cli_options_override_config() {
+        let root = std::env::temp_dir().join(format!(
+            "thot-cli-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let cwd = root.join("work");
+        let home = root.join("home");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(home.join(".config/thot")).unwrap();
+        fs::write(
+            cwd.join(".thot-config.yaml"),
+            "host: local-server\nport: 8000\n",
+        )
+        .unwrap();
+        fs::write(
+            home.join(".config/thot/thot-config.yaml"),
+            "host: home-server\nport: 9000\n",
+        )
+        .unwrap();
+        fs::write(
+            cwd.join("thot-config.yaml"),
+            "host: primary-local\nport: 8100\n",
+        )
+        .unwrap();
+
+        let no_overrides = CliOptions::default();
+        assert_eq!(
+            resolve_settings(&no_overrides, &cwd, Some(&home)).unwrap(),
+            Settings {
+                host: "primary-local".into(),
+                port: 8100,
+            }
+        );
+        fs::remove_file(cwd.join("thot-config.yaml")).unwrap();
+        fs::remove_file(cwd.join(".thot-config.yaml")).unwrap();
+        assert_eq!(
+            resolve_settings(&no_overrides, &cwd, Some(&home)).unwrap(),
+            Settings {
+                host: "home-server".into(),
+                port: 9000,
+            }
+        );
+        let overrides = CliOptions {
+            host: Some("cli-server".into()),
+            port: Some(8765),
+            ..CliOptions::default()
+        };
+        assert_eq!(
+            resolve_settings(&overrides, &cwd, Some(&home)).unwrap(),
+            Settings {
+                host: "cli-server".into(),
+                port: 8765,
+            }
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parses_quoted_csv_fields_and_skips_malformed_records() {
+        let records = parse_csv("Nom,Email\n\"Anna, Maria\",a@example.org\nBad\n");
+        assert_eq!(records[1].as_ref().unwrap()[0], "Anna, Maria");
+        assert_eq!(records[2].as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parses_plain_and_chunked_http_responses() {
+        let plain = parse_http_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        )
+        .unwrap();
+        assert_eq!(plain, b"{}");
+
+        let chunked = parse_http_response(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(chunked, b"{}");
+    }
+
+    #[tokio::test]
+    async fn imports_two_generated_csv_files_and_continues_after_a_malformed_row() {
+        let root = std::env::temp_dir().join(format!(
+            "thot-cli-csv-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let database_url = format!("sqlite:{}", root.join("thot.sqlite3").display());
+        let repository = SqliteStudentRepository::connect(&database_url)
+            .await
+            .unwrap();
+        let app = thot_api::router(StudentService::new(repository));
+
+        let valid_path = root.join("students.csv");
+        fs::write(
+            &valid_path,
+            "Nom,Adreça electrònica,Apellidos,id,grupo,centro,fecha nacimiento,otra\n\
+             Anna Garcia,anna@example.org,Garcia,A001,ASIX2,Institut,2004-01-02,ignorada\n",
+        )
+        .unwrap();
+        let (valid_students, valid_malformed) = read_students_csv(&valid_path).unwrap();
+        assert!(valid_malformed.is_empty());
+        assert_eq!(valid_students.len(), 1);
+        assert_eq!(valid_students[0].name, "Anna Garcia");
+        assert_eq!(valid_students[0].email, "anna@example.org");
+        assert_eq!(valid_students[0].group_name.as_deref(), Some("ASIX2"));
+        let valid_response = import_through_router(&app, valid_students).await;
+        assert_eq!(valid_response["imported"], 1);
+        assert_eq!(valid_response["discarded"], 0);
+
+        let malformed_path = root.join("students-malformed.csv");
+        fs::write(
+            &malformed_path,
+            "Nom,Adreça electrònica,Apellidos,id,grupo,centro,fecha nacimiento,otra\n\
+             Marc,marc@example.org,Serra,A002,ASIX2,Institut,2004-02-03,ignorada\n\
+             Sense correu,,Garcia,A003,ASIX2,Institut,2004-03-04,ignorada\n\
+             Fila incompleta,broken@example.org,Garcia,A004\n\
+             Nuria,nuria@example.org,Puig,A005,ASIX2,Institut,2004-05-06,ignorada\n",
+        )
+        .unwrap();
+        let (malformed_students, malformed_rows) = read_students_csv(&malformed_path).unwrap();
+        assert_eq!(malformed_rows.len(), 1);
+        assert_eq!(malformed_rows[0].0, 4);
+        assert_eq!(malformed_students.len(), 3);
+        let malformed_response = import_through_router(&app, malformed_students).await;
+        assert_eq!(malformed_response["imported"], 2);
+        assert_eq!(malformed_response["discarded"], 1);
+        assert_eq!(malformed_response["rejected"][0]["row"], 3);
+
+        let list_request = Request::builder()
+            .method("GET")
+            .uri("/get/students")
+            .body(Body::empty())
+            .unwrap();
+        let list_response = app.clone().oneshot(list_request).await.unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body = to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list_json: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
+        assert_eq!(list_json["total"], 3);
+        let listed: GetStudentsResponse = serde_json::from_value(list_json).unwrap();
+        let table = format_student_table(&listed.students);
+        assert!(table.contains("Anna Garcia"));
+        assert!(table.contains("Nuria"));
+        let exported_csv = format_students_csv(&listed.students).unwrap();
+        assert!(exported_csv.starts_with("id,nom,apellidos,email"));
+        assert!(exported_csv.contains("anna@example.org"));
+        assert!(exported_csv.contains("marc@example.org"));
+        assert!(exported_csv.contains("nuria@example.org"));
+
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    async fn import_through_router(
+        app: &axum::Router,
+        students: Vec<StudentInput>,
+    ) -> serde_json::Value {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/import/students")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "students": students })).unwrap(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+}
+
+2026-10-27 19:33:38+0100 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 082-cli-student-yaml-output
+Title: Use YAML for structured student command output
+Action: modify
+Target file: /home/carlos/worktrees/thot/apps/thot-cli/src/main.rs
+
+TASK INSTRUCTIONS
+In `apps/thot-cli/src/main.rs`, declare `mod output;`. For `import students FILE`, convert the existing typed `ImportStudentsResponse` to `serde_json::Value` with `serde_json::to_value` and pass it to `output::print_yaml`. For default `get students`, render the full `GetStudentsResponse` as YAML instead of the current table. Keep the explicit `get students csv` output as CSV, and preserve request handling, malformed-row diagnostics, and errors. Remove private table-formatting helpers that become unused. Do not implement another serializer. Edit only this file.
+
+CURRENT CONTENT OF THE TARGET FILE
+The following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.
+----- BEGIN CURRENT FILE -----
+//! Purpose: CLI entry point for student import/export and delivery-run commands.
+mod api_client;
+mod delivery_commands;
+
+use std::{
+    collections::HashMap,
+    error::Error,
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
+use thot_core::{GetStudentsResponse, ImportStudentsResponse, Student, StudentInput};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
+
+const DEFAULT_HOST: &str = "localhost";
+const DEFAULT_PORT: u16 = 8081;
+
+#[derive(Debug, Default)]
+struct CliOptions {
+    host: Option<String>,
+    port: Option<u16>,
+    command: Vec<String>,
+    help: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Settings {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+}
+
+#[derive(Debug, Default)]
+struct FileConfig {
+    host: Option<String>,
+    port: Option<u16>,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    run().await
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
+    let options = parse_args(std::env::args().skip(1))?;
+    if options.help {
+        print_usage();
+        return Ok(());
+    }
+
+    let cwd = std::env::current_dir()?;
+    let settings = resolve_settings(&options, &cwd, home_dir().as_deref())?;
+    match options.command.as_slice() {
+        [run, ..] if run == "run" => {
+            delivery_commands::handle(&options.command[1..], &settings).await?;
+        }
+        [import, students, path] if import == "import" && students == "students" => {
+            let (records, malformed) = read_students_csv(Path::new(path))?;
+            let payload = serde_json::to_vec(&serde_json::json!({ "students": records }))?;
+            let body = http_request(&settings, "POST", "/import/students", Some(&payload)).await?;
+            let response: ImportStudentsResponse = serde_json::from_slice(&body)?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            if !malformed.is_empty() {
+                eprintln!(
+                    "Se omitieron {} filas CSV malformadas antes de enviar los datos:",
+                    malformed.len()
+                );
+                for (row, reason) in malformed {
+                    eprintln!("  fila {row}: {reason}");
+                }
+            }
+        }
+        [get, students] if get == "get" && students == "students" => {
+            let body = http_request(&settings, "GET", "/get/students", None).await?;
+            let response: GetStudentsResponse = serde_json::from_slice(&body)?;
+            print_student_table(&response.students)?;
+        }
+        [get, students, format] if get == "get" && students == "students" && format == "csv" => {
+            let body = http_request(&settings, "GET", "/get/students", None).await?;
+            let response: GetStudentsResponse = serde_json::from_slice(&body)?;
+            print!("{}", format_students_csv(&response.students)?);
+        }
+        _ => {
+            print_usage();
+            return Err("comando no válido".into());
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_args(args: impl Iterator<Item = String>) -> Result<CliOptions, Box<dyn Error>> {
+    let mut options = CliOptions::default();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--help" => options.help = true,
+            "-h" | "--host" | "--server" => {
+                options.host = Some(args.next().ok_or("falta el servidor después de -h")?);
+            }
+            "-p" | "--port" => {
+                let value = args.next().ok_or("falta el puerto después de -p")?;
+                options.port = Some(value.parse()?);
+            }
+            option if option.starts_with('-') => {
+                return Err(format!("opción no reconocida: {option}").into());
+            }
+            command => {
+                options.command.push(command.to_owned());
+                options.command.extend(args);
+                break;
+            }
+        }
+    }
+    Ok(options)
+}
+
+fn resolve_settings(
+    options: &CliOptions,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> Result<Settings, Box<dyn Error>> {
+    let config = config_candidates(cwd, home)
+        .into_iter()
+        .find(|path| path.is_file())
+        .map(read_config)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(Settings {
+        host: options
+            .host
+            .clone()
+            .or(config.host)
+            .unwrap_or_else(|| DEFAULT_HOST.to_owned()),
+        port: options.port.or(config.port).unwrap_or(DEFAULT_PORT),
+    })
+}
+
+fn config_candidates(cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = vec![cwd.join("thot-config.yaml"), cwd.join(".thot-config.yaml")];
+    if let Some(home) = home {
+        candidates.push(home.join(".config/thot/thot-config.yaml"));
+    }
+    candidates
+}
+
+fn read_config(path: PathBuf) -> Result<FileConfig, Box<dyn Error>> {
+    let contents = fs::read_to_string(&path)?;
+    let mut config = FileConfig::default();
+    for (line_number, raw_line) in contents.lines().enumerate() {
+        let line = strip_yaml_comment(raw_line).trim();
+        if line.is_empty() || line == "---" || line == "..." {
+            continue;
+        }
+        let (key, value) = line.split_once(':').ok_or_else(|| {
+            format!(
+                "configuración no válida en {}:{}",
+                path.display(),
+                line_number + 1
+            )
+        })?;
+        let key = key.trim();
+        let value = unquote_yaml_scalar(value.trim());
+        match key {
+            "host" | "server" => config.host = Some(value),
+            "port" => {
+                config.port = Some(value.parse().map_err(|_| {
+                    format!("puerto no válido en {}:{}", path.display(), line_number + 1)
+                })?)
+            }
+            _ => {} // Other application settings do not affect this CLI functionality.
+        }
+    }
+    Ok(config)
+}
+
+fn strip_yaml_comment(line: &str) -> &str {
+    let mut quote = None;
+    for (index, character) in line.char_indices() {
+        if matches!(character, '\'' | '"') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+            }
+        } else if character == '#' && quote.is_none() {
+            let previous_is_space = index == 0 || line[..index].ends_with(char::is_whitespace);
+            if previous_is_space {
+                return &line[..index];
+            }
+        }
+    }
+    line
+}
+
+fn unquote_yaml_scalar(value: &str) -> String {
+    if value.len() >= 2 {
+        let first = value.as_bytes()[0];
+        let last = value.as_bytes()[value.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return value[1..value.len() - 1].to_owned();
+        }
+    }
+    value.to_owned()
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn normalize_header(header: &str) -> String {
+    header
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|character| match character {
+            'à' | 'á' | 'â' | 'ä' => 'a',
+            'è' | 'é' | 'ê' | 'ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'ò' | 'ó' | 'ô' | 'ö' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            'ñ' => 'n',
+            other => other,
+        })
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn field_kind(header: &str) -> Option<&'static str> {
+    match normalize_header(header).as_str() {
+        "nom" | "nombre" | "name" | "studentname" | "first" | "firstname" | "givenname"
+        | "nombrealumno" | "nombreestudiante" => Some("name"),
+        "adrecaelectronica"
+        | "direcciondecorreoelectronico"
+        | "correoelectronico"
+        | "correo"
+        | "emailaddress"
+        | "email"
+        | "mail" => Some("email"),
+        "cognom" | "cognoms" | "apellido" | "apellidos" | "surname" | "lastname" | "familyname" => {
+            Some("surname")
+        }
+        "id" | "identificador" | "studentid" | "idalumno" | "idestudiante" => Some("external_id"),
+        "grup" | "grupo" | "group" | "class" => Some("group"),
+        "centre" | "centro" | "center" | "school" | "institute" => Some("center"),
+        "datanaixement" | "fechanacimiento" | "birthdate" | "dateofbirth" | "dob" => {
+            Some("birth_date")
+        }
+        _ => None,
+    }
+}
+
+fn read_students_csv(
+    path: &Path,
+) -> Result<(Vec<StudentInput>, Vec<(u64, String)>), Box<dyn Error>> {
+    let contents = fs::read_to_string(path)?;
+    let mut parsed = parse_csv(&contents);
+    if parsed.is_empty() {
+        return Err("el fichero CSV está vacío".into());
+    }
+    let headers = parsed
+        .remove(0)
+        .map_err(|error| format!("cabecera CSV no válida: {error}"))?;
+    let mut indexes = HashMap::new();
+    for (index, header) in headers.iter().enumerate() {
+        if let Some(kind) = field_kind(header) {
+            indexes.entry(kind).or_insert(index);
+        }
+    }
+    let name_index = *indexes
+        .get("name")
+        .ok_or("el CSV debe incluir una columna de nombre: Nom, Nombre o Name")?;
+    let email_index = *indexes
+        .get("email")
+        .ok_or("el CSV debe incluir una columna de correo: Adreça electrònica, Email o Mail")?;
+
+    let mut students = Vec::new();
+    let mut malformed = Vec::new();
+    for (record_index, result) in parsed.into_iter().enumerate() {
+        let row = record_index as u64 + 2;
+        let record = match result {
+            Ok(record) => record,
+            Err(error) => {
+                malformed.push((row, error));
+                continue;
+            }
+        };
+        if record.len() != headers.len() {
+            malformed.push((
+                row,
+                format!(
+                    "se esperaban {} columnas y se encontraron {}",
+                    headers.len(),
+                    record.len()
+                ),
+            ));
+            continue;
+        }
+
+        let value = |kind: &str| {
+            indexes
+                .get(kind)
+                .and_then(|index| record.get(*index))
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
+        students.push(StudentInput {
+            source_row: Some(row),
+            name: record[name_index].trim().to_owned(),
+            email: record[email_index].trim().to_owned(),
+            surname: value("surname"),
+            external_id: value("external_id"),
+            group_name: value("group"),
+            center: value("center"),
+            birth_date: value("birth_date"),
+        });
+    }
+    Ok((students, malformed))
+}
+
+fn parse_csv(contents: &str) -> Vec<Result<Vec<String>, String>> {
+    let characters = contents.chars().collect::<Vec<_>>();
+    let mut records = Vec::new();
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut after_quote = false;
+    let mut record_error = None;
+    let mut record_has_content = false;
+    let mut index = 0;
+
+    while index < characters.len() {
+        let character = characters[index];
+        if quoted {
+            if character == '"' {
+                if characters.get(index + 1) == Some(&'"') {
+                    field.push('"');
+                    index += 1;
+                } else {
+                    quoted = false;
+                    after_quote = true;
+                }
+            } else {
+                field.push(character);
+            }
+        } else if character == '\n' || character == '\r' {
+            if character == '\r' && characters.get(index + 1) == Some(&'\n') {
+                index += 1;
+            }
+            if record_has_content
+                || !fields.is_empty()
+                || !field.is_empty()
+                || record_error.is_some()
+            {
+                fields.push(std::mem::take(&mut field));
+                records.push(match record_error.take() {
+                    Some(error) => Err(error),
+                    None => Ok(std::mem::take(&mut fields)),
+                });
+            }
+            fields.clear();
+            field.clear();
+            after_quote = false;
+            record_has_content = false;
+        } else if character == ',' {
+            fields.push(std::mem::take(&mut field));
+            after_quote = false;
+            record_has_content = true;
+        } else if character == '"' {
+            if field.is_empty() && !after_quote {
+                quoted = true;
+                record_has_content = true;
+            } else {
+                record_error.get_or_insert_with(|| "comilla en un campo sin escapar".to_owned());
+                field.push(character);
+                after_quote = false;
+                record_has_content = true;
+            }
+        } else if after_quote {
+            if !character.is_whitespace() {
+                record_error
+                    .get_or_insert_with(|| "contenido después del cierre de comillas".to_owned());
+            }
+        } else {
+            field.push(character);
+            if !character.is_whitespace() {
+                record_has_content = true;
+            }
+        }
+        index += 1;
+    }
+
+    if quoted {
+        records.push(Err("campo entrecomillado sin cerrar".into()));
+    } else if record_has_content
+        || !fields.is_empty()
+        || !field.is_empty()
+        || record_error.is_some()
+    {
+        fields.push(field);
+        records.push(match record_error {
+            Some(error) => Err(error),
+            None => Ok(fields),
+        });
+    }
+    records
+}
+
+async fn http_request(
+    settings: &Settings,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let host = settings
+        .host
+        .strip_prefix("http://")
+        .unwrap_or(&settings.host)
+        .trim_end_matches('/');
+    if host.is_empty() || host.contains('/') || host.contains("https://") {
+        return Err("servidor no válido; usa un nombre de host o una dirección HTTP".into());
+    }
+    let mut stream = TcpStream::connect((host, settings.port)).await?;
+    let host_header = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{}", settings.port)
+    } else {
+        format!("{host}:{}", settings.port)
+    };
+    let payload = body.unwrap_or_default();
+    let headers = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host_header}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n{}\r\n",
+        payload.len(),
+        if body.is_some() {
+            "Content-Type: application/json\r\n"
+        } else {
+            ""
+        }
+    );
+    stream.write_all(headers.as_bytes()).await?;
+    stream.write_all(payload).await?;
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await?;
+    parse_http_response(&response)
+}
+
+fn parse_http_response(response: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let split = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or("respuesta HTTP no válida")?;
+    let header_text = std::str::from_utf8(&response[..split])?;
+    let mut lines = header_text.split("\r\n");
+    let status_line = lines.next().ok_or("respuesta HTTP sin estado")?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or("respuesta HTTP sin código de estado")?
+        .parse::<u16>()?;
+    let chunked = lines.any(|line| {
+        line.split_once(':').is_some_and(|(key, value)| {
+            key.eq_ignore_ascii_case("transfer-encoding")
+                && value.to_ascii_lowercase().contains("chunked")
+        })
+    });
+    let raw_body = &response[split + 4..];
+    let response_body = if chunked {
+        decode_chunked(raw_body)?
+    } else {
+        raw_body.to_vec()
+    };
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "thotd respondió HTTP {status}: {}",
+            String::from_utf8_lossy(&response_body)
+        )
+        .into());
+    }
+    Ok(response_body)
+}
+
+fn decode_chunked(mut body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = body
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or("respuesta chunked no válida")?;
+        let length_text = std::str::from_utf8(&body[..line_end])?
+            .split(';')
+            .next()
+            .unwrap_or_default();
+        let length = usize::from_str_radix(length_text.trim(), 16)?;
+        body = &body[line_end + 2..];
+        if length == 0 {
+            break;
+        }
+        if body.len() < length + 2 || &body[length..length + 2] != b"\r\n" {
+            return Err("respuesta chunked truncada".into());
+        }
+        decoded.extend_from_slice(&body[..length]);
+        body = &body[length + 2..];
+    }
+    Ok(decoded)
+}
+
+fn print_student_table(students: &[Student]) -> Result<(), Box<dyn Error>> {
+    print!("{}", format_student_table(students));
+    io::stdout().flush()?;
+    Ok(())
+}
+
+fn format_student_table(students: &[Student]) -> String {
+    let headers = [
+        "ID",
+        "Nom",
+        "Apellidos",
+        "Email",
+        "ID externo",
+        "Grupo",
+        "Centro",
+        "Fecha nacimiento",
+    ];
+    let rows = students
+        .iter()
+        .map(|student| {
+            vec![
+                student.id.to_string(),
+                clean_display(&student.name),
+                optional_display(&student.surname),
+                clean_display(&student.email),
+                optional_display(&student.external_id),
+                optional_display(&student.group_name),
+                optional_display(&student.center),
+                optional_display(&student.birth_date),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let widths = (0..headers.len())
+        .map(|column| {
+            rows.iter()
+                .map(|row| row[column].chars().count())
+                .fold(headers[column].chars().count(), usize::max)
+        })
+        .collect::<Vec<_>>();
+    let mut output = String::new();
+    format_table_row(&mut output, &headers.map(str::to_owned), &widths);
+    output.push_str(&format!(
+        "+{}+",
+        widths
+            .iter()
+            .map(|width| "-".repeat(width + 2))
+            .collect::<Vec<_>>()
+            .join("+")
+    ));
+    output.push('\n');
+    for row in rows {
+        format_table_row(&mut output, &row, &widths);
+    }
+    output
+}
+
+fn format_table_row(output: &mut String, row: &[String], widths: &[usize]) {
+    output.push('|');
+    for (value, width) in row.iter().zip(widths) {
+        output.push(' ');
+        output.push_str(value);
+        output.push_str(&" ".repeat(width.saturating_sub(value.chars().count())));
+        output.push_str(" |");
+    }
+    output.push('\n');
+}
+
+fn format_students_csv(students: &[Student]) -> Result<String, Box<dyn Error>> {
+    let mut output = Vec::new();
+    write_csv_record(
+        &mut output,
+        &[
+            "id",
+            "nom",
+            "apellidos",
+            "email",
+            "id_externo",
+            "grupo",
+            "centro",
+            "fecha nacimiento",
+        ],
+    )?;
+    for student in students {
+        write_csv_record(
+            &mut output,
+            &[
+                &student.id.to_string(),
+                &student.name,
+                student.surname.as_deref().unwrap_or_default(),
+                &student.email,
+                student.external_id.as_deref().unwrap_or_default(),
+                student.group_name.as_deref().unwrap_or_default(),
+                student.center.as_deref().unwrap_or_default(),
+                student.birth_date.as_deref().unwrap_or_default(),
+            ],
+        )?;
+    }
+    Ok(String::from_utf8(output)?)
+}
+
+fn write_csv_record(output: &mut impl Write, fields: &[&str]) -> io::Result<()> {
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            output.write_all(b",")?;
+        }
+        if field.contains([',', '"', '\n', '\r']) {
+            output.write_all(b"\"")?;
+            output.write_all(field.replace('"', "\"\"").as_bytes())?;
+            output.write_all(b"\"")?;
+        } else {
+            output.write_all(field.as_bytes())?;
+        }
+    }
+    output.write_all(b"\r\n")
+}
+
+fn clean_display(value: &str) -> String {
+    value.replace(['\n', '\r'], " ")
+}
+
+fn optional_display(value: &Option<String>) -> String {
+    value.as_deref().map(clean_display).unwrap_or_default()
+}
+
+fn print_usage() {
+    println!(
+        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot [-h servidor] [-p puerto] run [list]\n  thot [-h servidor] [-p puerto] run create <ruta-archivo-proyecto> [--deliveries DIR]\n  thot [-h servidor] [-p puerto] run status RUN_ID\n  thot [-h servidor] [-p puerto] run delete RUN_ID\n  thot [-h servidor] [-p puerto] run expedient EXPEDIENT_ID\n  thot [-h servidor] [-p puerto] run cancel RUN_ID\n  thot [-h servidor] [-p puerto] run cleanup EXPEDIENT_ID\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use thot_engine::{SqliteStudentRepository, StudentService};
+    use tower::ServiceExt;
+
+    #[test]
+    fn recognizes_header_variants_and_aliases() {
+        assert_eq!(field_kind("Adreça electrònica"), Some("email"));
+        assert_eq!(field_kind("e-mail"), Some("email"));
+        assert_eq!(field_kind("Email address"), Some("email"));
+        assert_eq!(field_kind("Nombre"), Some("name"));
+        assert_eq!(field_kind("Birth date"), Some("birth_date"));
+    }
+
+    #[test]
+    fn local_config_precedes_home_and_cli_options_override_config() {
+        let root = std::env::temp_dir().join(format!(
+            "thot-cli-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let cwd = root.join("work");
+        let home = root.join("home");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(home.join(".config/thot")).unwrap();
+        fs::write(
+            cwd.join(".thot-config.yaml"),
+            "host: local-server\nport: 8000\n",
+        )
+        .unwrap();
+        fs::write(
+            home.join(".config/thot/thot-config.yaml"),
+            "host: home-server\nport: 9000\n",
+        )
+        .unwrap();
+        fs::write(
+            cwd.join("thot-config.yaml"),
+            "host: primary-local\nport: 8100\n",
+        )
+        .unwrap();
+
+        let no_overrides = CliOptions::default();
+        assert_eq!(
+            resolve_settings(&no_overrides, &cwd, Some(&home)).unwrap(),
+            Settings {
+                host: "primary-local".into(),
+                port: 8100,
+            }
+        );
+        fs::remove_file(cwd.join("thot-config.yaml")).unwrap();
+        fs::remove_file(cwd.join(".thot-config.yaml")).unwrap();
+        assert_eq!(
+            resolve_settings(&no_overrides, &cwd, Some(&home)).unwrap(),
+            Settings {
+                host: "home-server".into(),
+                port: 9000,
+            }
+        );
+        let overrides = CliOptions {
+            host: Some("cli-server".into()),
+            port: Some(8765),
+            ..CliOptions::default()
+        };
+        assert_eq!(
+            resolve_settings(&overrides, &cwd, Some(&home)).unwrap(),
+            Settings {
+                host: "cli-server".into(),
+                port: 8765,
+            }
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parses_quoted_csv_fields_and_skips_malformed_records() {
+        let records = parse_csv("Nom,Email\n\"Anna, Maria\",a@example.org\nBad\n");
+        assert_eq!(records[1].as_ref().unwrap()[0], "Anna, Maria");
+        assert_eq!(records[2].as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parses_plain_and_chunked_http_responses() {
+        let plain = parse_http_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        )
+        .unwrap();
+        assert_eq!(plain, b"{}");
+
+        let chunked = parse_http_response(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(chunked, b"{}");
+    }
+
+    #[tokio::test]
+    async fn imports_two_generated_csv_files_and_continues_after_a_malformed_row() {
+        let root = std::env::temp_dir().join(format!(
+            "thot-cli-csv-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let database_url = format!("sqlite:{}", root.join("thot.sqlite3").display());
+        let repository = SqliteStudentRepository::connect(&database_url)
+            .await
+            .unwrap();
+        let app = thot_api::router(StudentService::new(repository));
+
+        let valid_path = root.join("students.csv");
+        fs::write(
+            &valid_path,
+            "Nom,Adreça electrònica,Apellidos,id,grupo,centro,fecha nacimiento,otra\n\
+             Anna Garcia,anna@example.org,Garcia,A001,ASIX2,Institut,2004-01-02,ignorada\n",
+        )
+        .unwrap();
+        let (valid_students, valid_malformed) = read_students_csv(&valid_path).unwrap();
+        assert!(valid_malformed.is_empty());
+        assert_eq!(valid_students.len(), 1);
+        assert_eq!(valid_students[0].name, "Anna Garcia");
+        assert_eq!(valid_students[0].email, "anna@example.org");
+        assert_eq!(valid_students[0].group_name.as_deref(), Some("ASIX2"));
+        let valid_response = import_through_router(&app, valid_students).await;
+        assert_eq!(valid_response["imported"], 1);
+        assert_eq!(valid_response["discarded"], 0);
+
+        let malformed_path = root.join("students-malformed.csv");
+        fs::write(
+            &malformed_path,
+            "Nom,Adreça electrònica,Apellidos,id,grupo,centro,fecha nacimiento,otra\n\
+             Marc,marc@example.org,Serra,A002,ASIX2,Institut,2004-02-03,ignorada\n\
+             Sense correu,,Garcia,A003,ASIX2,Institut,2004-03-04,ignorada\n\
+             Fila incompleta,broken@example.org,Garcia,A004\n\
+             Nuria,nuria@example.org,Puig,A005,ASIX2,Institut,2004-05-06,ignorada\n",
+        )
+        .unwrap();
+        let (malformed_students, malformed_rows) = read_students_csv(&malformed_path).unwrap();
+        assert_eq!(malformed_rows.len(), 1);
+        assert_eq!(malformed_rows[0].0, 4);
+        assert_eq!(malformed_students.len(), 3);
+        let malformed_response = import_through_router(&app, malformed_students).await;
+        assert_eq!(malformed_response["imported"], 2);
+        assert_eq!(malformed_response["discarded"], 1);
+        assert_eq!(malformed_response["rejected"][0]["row"], 3);
+
+        let list_request = Request::builder()
+            .method("GET")
+            .uri("/get/students")
+            .body(Body::empty())
+            .unwrap();
+        let list_response = app.clone().oneshot(list_request).await.unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body = to_bytes(list_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list_json: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
+        assert_eq!(list_json["total"], 3);
+        let listed: GetStudentsResponse = serde_json::from_value(list_json).unwrap();
+        let table = format_student_table(&listed.students);
+        assert!(table.contains("Anna Garcia"));
+        assert!(table.contains("Nuria"));
+        let exported_csv = format_students_csv(&listed.students).unwrap();
+        assert!(exported_csv.starts_with("id,nom,apellidos,email"));
+        assert!(exported_csv.contains("anna@example.org"));
+        assert!(exported_csv.contains("marc@example.org"));
+        assert!(exported_csv.contains("nuria@example.org"));
+
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    async fn import_through_router(
+        app: &axum::Router,
+        students: Vec<StudentInput>,
+    ) -> serde_json::Value {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/import/students")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "students": students })).unwrap(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+}
+
+----- END CURRENT FILE -----
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-27 19:33:38+0100 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-27 19:33:38+0100 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-27 19:33:38+0100 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 082-cli-student-yaml-output\nTitle: Use YAML for structured student command output\nAction: modify\nTarget file: /home/carlos/worktrees/thot/apps/thot-cli/src/main.rs\n\nTASK INSTRUCTIONS\nIn `apps/thot-cli/src/main.rs`, declare `mod output;`. For `import students FILE`, convert the existing typed `ImportStudentsResponse` to `serde_json::Value` with `serde_json::to_value` and pass it to `output::print_yaml`. For default `get students`, render the full `GetStudentsResponse` as YAML instead of the current table. Keep the explicit `get students csv` output as CSV, and preserve request handling, malformed-row diagnostics, and errors. Remove private table-formatting helpers that become unused. Do not implement another serializer. Edit only this file.\n\nCURRENT CONTENT OF THE TARGET FILE\nThe following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.\n----- BEGIN CURRENT FILE -----\n//! Purpose: CLI entry point for student import/export and delivery-run commands.\nmod api_client;\nmod delivery_commands;\n\nuse std::{\n    collections::HashMap,\n    error::Error,\n    fs,\n    io::{self, Write},\n    path::{Path, PathBuf},\n};\nuse thot_core::{GetStudentsResponse, ImportStudentsResponse, Student, StudentInput};\nuse tokio::{\n    io::{AsyncReadExt, AsyncWriteExt},\n    net::TcpStream,\n};\n\nconst DEFAULT_HOST: &str = \"localhost\";\nconst DEFAULT_PORT: u16 = 8081;\n\n#[derive(Debug, Default)]\nstruct CliOptions {\n    host: Option<String>,\n    port: Option<u16>,\n    command: Vec<String>,\n    help: bool,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub(crate) struct Settings {\n    pub(crate) host: String,\n    pub(crate) port: u16,\n}\n\n#[derive(Debug, Default)]\nstruct FileConfig {\n    host: Option<String>,\n    port: Option<u16>,\n}\n\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn Error>> {\n    run().await\n}\n\nasync fn run() -> Result<(), Box<dyn Error>> {\n    let options = parse_args(std::env::args().skip(1))?;\n    if options.help {\n        print_usage();\n        return Ok(());\n    }\n\n    let cwd = std::env::current_dir()?;\n    let settings = resolve_settings(&options, &cwd, home_dir().as_deref())?;\n    match options.command.as_slice() {\n        [run, ..] if run == \"run\" => {\n            delivery_commands::handle(&options.command[1..], &settings).await?;\n        }\n        [import, students, path] if import == \"import\" && students == \"students\" => {\n            let (records, malformed) = read_students_csv(Path::new(path))?;\n            let payload = serde_json::to_vec(&serde_json::json!({ \"students\": records }))?;\n            let body = http_request(&settings, \"POST\", \"/import/students\", Some(&payload)).await?;\n            let response: ImportStudentsResponse = serde_json::from_slice(&body)?;\n            println!(\"{}\", serde_json::to_string_pretty(&response)?);\n            if !malformed.is_empty() {\n                eprintln!(\n                    \"Se omitieron {} filas CSV malformadas antes de enviar los datos:\",\n                    malformed.len()\n                );\n                for (row, reason) in malformed {\n                    eprintln!(\"  fila {row}: {reason}\");\n                }\n            }\n        }\n        [get, students] if get == \"get\" && students == \"students\" => {\n            let body = http_request(&settings, \"GET\", \"/get/students\", None).await?;\n            let response: GetStudentsResponse = serde_json::from_slice(&body)?;\n            print_student_table(&response.students)?;\n        }\n        [get, students, format] if get == \"get\" && students == \"students\" && format == \"csv\" => {\n            let body = http_request(&settings, \"GET\", \"/get/students\", None).await?;\n            let response: GetStudentsResponse = serde_json::from_slice(&body)?;\n            print!(\"{}\", format_students_csv(&response.students)?);\n        }\n        _ => {\n            print_usage();\n            return Err(\"comando no válido\".into());\n        }\n    }\n\n    Ok(())\n}\n\nfn parse_args(args: impl Iterator<Item = String>) -> Result<CliOptions, Box<dyn Error>> {\n    let mut options = CliOptions::default();\n    let mut args = args.peekable();\n    while let Some(arg) = args.next() {\n        match arg.as_str() {\n            \"--help\" => options.help = true,\n            \"-h\" | \"--host\" | \"--server\" => {\n                options.host = Some(args.next().ok_or(\"falta el servidor después de -h\")?);\n            }\n            \"-p\" | \"--port\" => {\n                let value = args.next().ok_or(\"falta el puerto después de -p\")?;\n                options.port = Some(value.parse()?);\n            }\n            option if option.starts_with('-') => {\n                return Err(format!(\"opción no reconocida: {option}\").into());\n            }\n            command => {\n                options.command.push(command.to_owned());\n                options.command.extend(args);\n                break;\n            }\n        }\n    }\n    Ok(options)\n}\n\nfn resolve_settings(\n    options: &CliOptions,\n    cwd: &Path,\n    home: Option<&Path>,\n) -> Result<Settings, Box<dyn Error>> {\n    let config = config_candidates(cwd, home)\n        .into_iter()\n        .find(|path| path.is_file())\n        .map(read_config)\n        .transpose()?\n        .unwrap_or_default();\n    Ok(Settings {\n        host: options\n            .host\n            .clone()\n            .or(config.host)\n            .unwrap_or_else(|| DEFAULT_HOST.to_owned()),\n        port: options.port.or(config.port).unwrap_or(DEFAULT_PORT),\n    })\n}\n\nfn config_candidates(cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {\n    let mut candidates = vec![cwd.join(\"thot-config.yaml\"), cwd.join(\".thot-config.yaml\")];\n    if let Some(home) = home {\n        candidates.push(home.join(\".config/thot/thot-config.yaml\"));\n    }\n    candidates\n}\n\nfn read_config(path: PathBuf) -> Result<FileConfig, Box<dyn Error>> {\n    let contents = fs::read_to_string(&path)?;\n    let mut config = FileConfig::default();\n    for (line_number, raw_line) in contents.lines().enumerate() {\n        let line = strip_yaml_comment(raw_line).trim();\n        if line.is_empty() || line == \"---\" || line == \"...\" {\n            continue;\n        }\n        let (key, value) = line.split_once(':').ok_or_else(|| {\n            format!(\n                \"configuración no válida en {}:{}\",\n                path.display(),\n                line_number + 1\n            )\n        })?;\n        let key = key.trim();\n        let value = unquote_yaml_scalar(value.trim());\n        match key {\n            \"host\" | \"server\" => config.host = Some(value),\n            \"port\" => {\n                config.port = Some(value.parse().map_err(|_| {\n                    format!(\"puerto no válido en {}:{}\", path.display(), line_number + 1)\n                })?)\n            }\n            _ => {} // Other application settings do not affect this CLI functionality.\n        }\n    }\n    Ok(config)\n}\n\nfn strip_yaml_comment(line: &str) -> &str {\n    let mut quote = None;\n    for (index, character) in line.char_indices() {\n        if matches!(character, '\\'' | '\"') {\n            if quote == Some(character) {\n                quote = None;\n            } else if quote.is_none() {\n                quote = Some(character);\n            }\n        } else if character == '#' && quote.is_none() {\n            let previous_is_space = index == 0 || line[..index].ends_with(char::is_whitespace);\n            if previous_is_space {\n                return &line[..index];\n            }\n        }\n    }\n    line\n}\n\nfn unquote_yaml_scalar(value: &str) -> String {\n    if value.len() >= 2 {\n        let first = value.as_bytes()[0];\n        let last = value.as_bytes()[value.len() - 1];\n        if (first == b'\"' && last == b'\"') || (first == b'\\'' && last == b'\\'') {\n            return value[1..value.len() - 1].to_owned();\n        }\n    }\n    value.to_owned()\n}\n\nfn home_dir() -> Option<PathBuf> {\n    std::env::var_os(\"HOME\")\n        .or_else(|| std::env::var_os(\"USERPROFILE\"))\n        .map(PathBuf::from)\n}\n\nfn normalize_header(header: &str) -> String {\n    header\n        .trim()\n        .to_lowercase()\n        .chars()\n        .map(|character| match character {\n            'à' | 'á' | 'â' | 'ä' => 'a',\n            'è' | 'é' | 'ê' | 'ë' => 'e',\n            'ì' | 'í' | 'î' | 'ï' => 'i',\n            'ò' | 'ó' | 'ô' | 'ö' => 'o',\n            'ù' | 'ú' | 'û' | 'ü' => 'u',\n            'ç' => 'c',\n            'ñ' => 'n',\n            other => other,\n        })\n        .filter(|character| character.is_ascii_alphanumeric())\n        .collect()\n}\n\nfn field_kind(header: &str) -> Option<&'static str> {\n    match normalize_header(header).as_str() {\n        \"nom\" | \"nombre\" | \"name\" | \"studentname\" | \"first\" | \"firstname\" | \"givenname\"\n        | \"nombrealumno\" | \"nombreestudiante\" => Some(\"name\"),\n        \"adrecaelectronica\"\n        | \"direcciondecorreoelectronico\"\n        | \"correoelectronico\"\n        | \"correo\"\n        | \"emailaddress\"\n        | \"email\"\n        | \"mail\" => Some(\"email\"),\n        \"cognom\" | \"cognoms\" | \"apellido\" | \"apellidos\" | \"surname\" | \"lastname\" | \"familyname\" => {\n            Some(\"surname\")\n        }\n        \"id\" | \"identificador\" | \"studentid\" | \"idalumno\" | \"idestudiante\" => Some(\"external_id\"),\n        \"grup\" | \"grupo\" | \"group\" | \"class\" => Some(\"group\"),\n        \"centre\" | \"centro\" | \"center\" | \"school\" | \"institute\" => Some(\"center\"),\n        \"datanaixement\" | \"fechanacimiento\" | \"birthdate\" | \"dateofbirth\" | \"dob\" => {\n            Some(\"birth_date\")\n        }\n        _ => None,\n    }\n}\n\nfn read_students_csv(\n    path: &Path,\n) -> Result<(Vec<StudentInput>, Vec<(u64, String)>), Box<dyn Error>> {\n    let contents = fs::read_to_string(path)?;\n    let mut parsed = parse_csv(&contents);\n    if parsed.is_empty() {\n        return Err(\"el fichero CSV está vacío\".into());\n    }\n    let headers = parsed\n        .remove(0)\n        .map_err(|error| format!(\"cabecera CSV no válida: {error}\"))?;\n    let mut indexes = HashMap::new();\n    for (index, header) in headers.iter().enumerate() {\n        if let Some(kind) = field_kind(header) {\n            indexes.entry(kind).or_insert(index);\n        }\n    }\n    let name_index = *indexes\n        .get(\"name\")\n        .ok_or(\"el CSV debe incluir una columna de nombre: Nom, Nombre o Name\")?;\n    let email_index = *indexes\n        .get(\"email\")\n        .ok_or(\"el CSV debe incluir una columna de correo: Adreça electrònica, Email o Mail\")?;\n\n    let mut students = Vec::new();\n    let mut malformed = Vec::new();\n    for (record_index, result) in parsed.into_iter().enumerate() {\n        let row = record_index as u64 + 2;\n        let record = match result {\n            Ok(record) => record,\n            Err(error) => {\n                malformed.push((row, error));\n                continue;\n            }\n        };\n        if record.len() != headers.len() {\n            malformed.push((\n                row,\n                format!(\n                    \"se esperaban {} columnas y se encontraron {}\",\n                    headers.len(),\n                    record.len()\n                ),\n            ));\n            continue;\n        }\n\n        let value = |kind: &str| {\n            indexes\n                .get(kind)\n                .and_then(|index| record.get(*index))\n                .map(|value| value.trim())\n                .filter(|value| !value.is_empty())\n                .map(str::to_owned)\n        };\n        students.push(StudentInput {\n            source_row: Some(row),\n            name: record[name_index].trim().to_owned(),\n            email: record[email_index].trim().to_owned(),\n            surname: value(\"surname\"),\n            external_id: value(\"external_id\"),\n            group_name: value(\"group\"),\n            center: value(\"center\"),\n            birth_date: value(\"birth_date\"),\n        });\n    }\n    Ok((students, malformed))\n}\n\nfn parse_csv(contents: &str) -> Vec<Result<Vec<String>, String>> {\n    let characters = contents.chars().collect::<Vec<_>>();\n    let mut records = Vec::new();\n    let mut fields = Vec::new();\n    let mut field = String::new();\n    let mut quoted = false;\n    let mut after_quote = false;\n    let mut record_error = None;\n    let mut record_has_content = false;\n    let mut index = 0;\n\n    while index < characters.len() {\n        let character = characters[index];\n        if quoted {\n            if character == '\"' {\n                if characters.get(index + 1) == Some(&'\"') {\n                    field.push('\"');\n                    index += 1;\n                } else {\n                    quoted = false;\n                    after_quote = true;\n                }\n            } else {\n                field.push(character);\n            }\n        } else if character == '\\n' || character == '\\r' {\n            if character == '\\r' && characters.get(index + 1) == Some(&'\\n') {\n                index += 1;\n            }\n            if record_has_content\n                || !fields.is_empty()\n                || !field.is_empty()\n                || record_error.is_some()\n            {\n                fields.push(std::mem::take(&mut field));\n                records.push(match record_error.take() {\n                    Some(error) => Err(error),\n                    None => Ok(std::mem::take(&mut fields)),\n                });\n            }\n            fields.clear();\n            field.clear();\n            after_quote = false;\n            record_has_content = false;\n        } else if character == ',' {\n            fields.push(std::mem::take(&mut field));\n            after_quote = false;\n            record_has_content = true;\n        } else if character == '\"' {\n            if field.is_empty() && !after_quote {\n                quoted = true;\n                record_has_content = true;\n            } else {\n                record_error.get_or_insert_with(|| \"comilla en un campo sin escapar\".to_owned());\n                field.push(character);\n                after_quote = false;\n                record_has_content = true;\n            }\n        } else if after_quote {\n            if !character.is_whitespace() {\n                record_error\n                    .get_or_insert_with(|| \"contenido después del cierre de comillas\".to_owned());\n            }\n        } else {\n            field.push(character);\n            if !character.is_whitespace() {\n                record_has_content = true;\n            }\n        }\n        index += 1;\n    }\n\n    if quoted {\n        records.push(Err(\"campo entrecomillado sin cerrar\".into()));\n    } else if record_has_content\n        || !fields.is_empty()\n        || !field.is_empty()\n        || record_error.is_some()\n    {\n        fields.push(field);\n        records.push(match record_error {\n            Some(error) => Err(error),\n            None => Ok(fields),\n        });\n    }\n    records\n}\n\nasync fn http_request(\n    settings: &Settings,\n    method: &str,\n    path: &str,\n    body: Option<&[u8]>,\n) -> Result<Vec<u8>, Box<dyn Error>> {\n    let host = settings\n        .host\n        .strip_prefix(\"http://\")\n        .unwrap_or(&settings.host)\n        .trim_end_matches('/');\n    if host.is_empty() || host.contains('/') || host.contains(\"https://\") {\n        return Err(\"servidor no válido; usa un nombre de host o una dirección HTTP\".into());\n    }\n    let mut stream = TcpStream::connect((host, settings.port)).await?;\n    let host_header = if host.contains(':') && !host.starts_with('[') {\n        format!(\"[{host}]:{}\", settings.port)\n    } else {\n        format!(\"{host}:{}\", settings.port)\n    };\n    let payload = body.unwrap_or_default();\n    let headers = format!(\n        \"{method} {path} HTTP/1.1\\r\\nHost: {host_header}\\r\\nAccept: application/json\\r\\nConnection: close\\r\\nContent-Length: {}\\r\\n{}\\r\\n\",\n        payload.len(),\n        if body.is_some() {\n            \"Content-Type: application/json\\r\\n\"\n        } else {\n            \"\"\n        }\n    );\n    stream.write_all(headers.as_bytes()).await?;\n    stream.write_all(payload).await?;\n\n    let mut response = Vec::new();\n    stream.read_to_end(&mut response).await?;\n    parse_http_response(&response)\n}\n\nfn parse_http_response(response: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {\n    let split = response\n        .windows(4)\n        .position(|window| window == b\"\\r\\n\\r\\n\")\n        .ok_or(\"respuesta HTTP no válida\")?;\n    let header_text = std::str::from_utf8(&response[..split])?;\n    let mut lines = header_text.split(\"\\r\\n\");\n    let status_line = lines.next().ok_or(\"respuesta HTTP sin estado\")?;\n    let status = status_line\n        .split_whitespace()\n        .nth(1)\n        .ok_or(\"respuesta HTTP sin código de estado\")?\n        .parse::<u16>()?;\n    let chunked = lines.any(|line| {\n        line.split_once(':').is_some_and(|(key, value)| {\n            key.eq_ignore_ascii_case(\"transfer-encoding\")\n                && value.to_ascii_lowercase().contains(\"chunked\")\n        })\n    });\n    let raw_body = &response[split + 4..];\n    let response_body = if chunked {\n        decode_chunked(raw_body)?\n    } else {\n        raw_body.to_vec()\n    };\n    if !(200..300).contains(&status) {\n        return Err(format!(\n            \"thotd respondió HTTP {status}: {}\",\n            String::from_utf8_lossy(&response_body)\n        )\n        .into());\n    }\n    Ok(response_body)\n}\n\nfn decode_chunked(mut body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {\n    let mut decoded = Vec::new();\n    loop {\n        let line_end = body\n            .windows(2)\n            .position(|window| window == b\"\\r\\n\")\n            .ok_or(\"respuesta chunked no válida\")?;\n        let length_text = std::str::from_utf8(&body[..line_end])?\n            .split(';')\n            .next()\n            .unwrap_or_default();\n        let length = usize::from_str_radix(length_text.trim(), 16)?;\n        body = &body[line_end + 2..];\n        if length == 0 {\n            break;\n        }\n        if body.len() < length + 2 || &body[length..length + 2] != b\"\\r\\n\" {\n            return Err(\"respuesta chunked truncada\".into());\n        }\n        decoded.extend_from_slice(&body[..length]);\n        body = &body[length + 2..];\n    }\n    Ok(decoded)\n}\n\nfn print_student_table(students: &[Student]) -> Result<(), Box<dyn Error>> {\n    print!(\"{}\", format_student_table(students));\n    io::stdout().flush()?;\n    Ok(())\n}\n\nfn format_student_table(students: &[Student]) -> String {\n    let headers = [\n        \"ID\",\n        \"Nom\",\n        \"Apellidos\",\n        \"Email\",\n        \"ID externo\",\n        \"Grupo\",\n        \"Centro\",\n        \"Fecha nacimiento\",\n    ];\n    let rows = students\n        .iter()\n        .map(|student| {\n            vec![\n                student.id.to_string(),\n                clean_display(&student.name),\n                optional_display(&student.surname),\n                clean_display(&student.email),\n                optional_display(&student.external_id),\n                optional_display(&student.group_name),\n                optional_display(&student.center),\n                optional_display(&student.birth_date),\n            ]\n        })\n        .collect::<Vec<_>>();\n    let widths = (0..headers.len())\n        .map(|column| {\n            rows.iter()\n                .map(|row| row[column].chars().count())\n                .fold(headers[column].chars().count(), usize::max)\n        })\n        .collect::<Vec<_>>();\n    let mut output = String::new();\n    format_table_row(&mut output, &headers.map(str::to_owned), &widths);\n    output.push_str(&format!(\n        \"+{}+\",\n        widths\n            .iter()\n            .map(|width| \"-\".repeat(width + 2))\n            .collect::<Vec<_>>()\n            .join(\"+\")\n    ));\n    output.push('\\n');\n    for row in rows {\n        format_table_row(&mut output, &row, &widths);\n    }\n    output\n}\n\nfn format_table_row(output: &mut String, row: &[String], widths: &[usize]) {\n    output.push('|');\n    for (value, width) in row.iter().zip(widths) {\n        output.push(' ');\n        output.push_str(value);\n        output.push_str(&\" \".repeat(width.saturating_sub(value.chars().count())));\n        output.push_str(\" |\");\n    }\n    output.push('\\n');\n}\n\nfn format_students_csv(students: &[Student]) -> Result<String, Box<dyn Error>> {\n    let mut output = Vec::new();\n    write_csv_record(\n        &mut output,\n        &[\n            \"id\",\n            \"nom\",\n            \"apellidos\",\n            \"email\",\n            \"id_externo\",\n            \"grupo\",\n            \"centro\",\n            \"fecha nacimiento\",\n        ],\n    )?;\n    for student in students {\n        write_csv_record(\n            &mut output,\n            &[\n                &student.id.to_string(),\n                &student.name,\n                student.surname.as_deref().unwrap_or_default(),\n                &student.email,\n                student.external_id.as_deref().unwrap_or_default(),\n                student.group_name.as_deref().unwrap_or_default(),\n                student.center.as_deref().unwrap_or_default(),\n                student.birth_date.as_deref().unwrap_or_default(),\n            ],\n        )?;\n    }\n    Ok(String::from_utf8(output)?)\n}\n\nfn write_csv_record(output: &mut impl Write, fields: &[&str]) -> io::Result<()> {\n    for (index, field) in fields.iter().enumerate() {\n        if index > 0 {\n            output.write_all(b\",\")?;\n        }\n        if field.contains([',', '\"', '\\n', '\\r']) {\n            output.write_all(b\"\\\"\")?;\n            output.write_all(field.replace('\"', \"\\\"\\\"\").as_bytes())?;\n            output.write_all(b\"\\\"\")?;\n        } else {\n            output.write_all(field.as_bytes())?;\n        }\n    }\n    output.write_all(b\"\\r\\n\")\n}\n\nfn clean_display(value: &str) -> String {\n    value.replace(['\\n', '\\r'], \" \")\n}\n\nfn optional_display(value: &Option<String>) -> String {\n    value.as_deref().map(clean_display).unwrap_or_default()\n}\n\nfn print_usage() {\n    println!(\n        \"Uso:\\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\\n  thot [-h servidor] [-p puerto] get students [csv]\\n  thot [-h servidor] [-p puerto] run [list]\\n  thot [-h servidor] [-p puerto] run create <ruta-archivo-proyecto> [--deliveries DIR]\\n  thot [-h servidor] [-p puerto] run status RUN_ID\\n  thot [-h servidor] [-p puerto] run delete RUN_ID\\n  thot [-h servidor] [-p puerto] run expedient EXPEDIENT_ID\\n  thot [-h servidor] [-p puerto] run cancel RUN_ID\\n  thot [-h servidor] [-p puerto] run cleanup EXPEDIENT_ID\\n\\nOpciones:\\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\\n      --help             Muestra esta ayuda\\n\\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml\"\n    );\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use axum::{\n        body::{Body, to_bytes},\n        http::{Request, StatusCode},\n    };\n    use thot_engine::{SqliteStudentRepository, StudentService};\n    use tower::ServiceExt;\n\n    #[test]\n    fn recognizes_header_variants_and_aliases() {\n        assert_eq!(field_kind(\"Adreça electrònica\"), Some(\"email\"));\n        assert_eq!(field_kind(\"e-mail\"), Some(\"email\"));\n        assert_eq!(field_kind(\"Email address\"), Some(\"email\"));\n        assert_eq!(field_kind(\"Nombre\"), Some(\"name\"));\n        assert_eq!(field_kind(\"Birth date\"), Some(\"birth_date\"));\n    }\n\n    #[test]\n    fn local_config_precedes_home_and_cli_options_override_config() {\n        let root = std::env::temp_dir().join(format!(\n            \"thot-cli-config-test-{}-{}\",\n            std::process::id(),\n            std::time::SystemTime::now()\n                .duration_since(std::time::UNIX_EPOCH)\n                .unwrap()\n                .as_nanos(),\n        ));\n        let cwd = root.join(\"work\");\n        let home = root.join(\"home\");\n        fs::create_dir_all(&cwd).unwrap();\n        fs::create_dir_all(home.join(\".config/thot\")).unwrap();\n        fs::write(\n            cwd.join(\".thot-config.yaml\"),\n            \"host: local-server\\nport: 8000\\n\",\n        )\n        .unwrap();\n        fs::write(\n            home.join(\".config/thot/thot-config.yaml\"),\n            \"host: home-server\\nport: 9000\\n\",\n        )\n        .unwrap();\n        fs::write(\n            cwd.join(\"thot-config.yaml\"),\n            \"host: primary-local\\nport: 8100\\n\",\n        )\n        .unwrap();\n\n        let no_overrides = CliOptions::default();\n        assert_eq!(\n            resolve_settings(&no_overrides, &cwd, Some(&home)).unwrap(),\n            Settings {\n                host: \"primary-local\".into(),\n                port: 8100,\n            }\n        );\n        fs::remove_file(cwd.join(\"thot-config.yaml\")).unwrap();\n        fs::remove_file(cwd.join(\".thot-config.yaml\")).unwrap();\n        assert_eq!(\n            resolve_settings(&no_overrides, &cwd, Some(&home)).unwrap(),\n            Settings {\n                host: \"home-server\".into(),\n                port: 9000,\n            }\n        );\n        let overrides = CliOptions {\n            host: Some(\"cli-server\".into()),\n            port: Some(8765),\n            ..CliOptions::default()\n        };\n        assert_eq!(\n            resolve_settings(&overrides, &cwd, Some(&home)).unwrap(),\n            Settings {\n                host: \"cli-server\".into(),\n                port: 8765,\n            }\n        );\n        fs::remove_dir_all(root).unwrap();\n    }\n\n    #[test]\n    fn parses_quoted_csv_fields_and_skips_malformed_records() {\n        let records = parse_csv(\"Nom,Email\\n\\\"Anna, Maria\\\",a@example.org\\nBad\\n\");\n        assert_eq!(records[1].as_ref().unwrap()[0], \"Anna, Maria\");\n        assert_eq!(records[2].as_ref().unwrap().len(), 1);\n    }\n\n    #[test]\n    fn parses_plain_and_chunked_http_responses() {\n        let plain = parse_http_response(\n            b\"HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\nConnection: close\\r\\n\\r\\n{}\",\n        )\n        .unwrap();\n        assert_eq!(plain, b\"{}\");\n\n        let chunked = parse_http_response(\n            b\"HTTP/1.1 200 OK\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n2\\r\\n{}\\r\\n0\\r\\n\\r\\n\",\n        )\n        .unwrap();\n        assert_eq!(chunked, b\"{}\");\n    }\n\n    #[tokio::test]\n    async fn imports_two_generated_csv_files_and_continues_after_a_malformed_row() {\n        let root = std::env::temp_dir().join(format!(\n            \"thot-cli-csv-test-{}-{}\",\n            std::process::id(),\n            std::time::SystemTime::now()\n                .duration_since(std::time::UNIX_EPOCH)\n                .unwrap()\n                .as_nanos(),\n        ));\n        fs::create_dir_all(&root).unwrap();\n        let database_url = format!(\"sqlite:{}\", root.join(\"thot.sqlite3\").display());\n        let repository = SqliteStudentRepository::connect(&database_url)\n            .await\n            .unwrap();\n        let app = thot_api::router(StudentService::new(repository));\n\n        let valid_path = root.join(\"students.csv\");\n        fs::write(\n            &valid_path,\n            \"Nom,Adreça electrònica,Apellidos,id,grupo,centro,fecha nacimiento,otra\\n\\\n             Anna Garcia,anna@example.org,Garcia,A001,ASIX2,Institut,2004-01-02,ignorada\\n\",\n        )\n        .unwrap();\n        let (valid_students, valid_malformed) = read_students_csv(&valid_path).unwrap();\n        assert!(valid_malformed.is_empty());\n        assert_eq!(valid_students.len(), 1);\n        assert_eq!(valid_students[0].name, \"Anna Garcia\");\n        assert_eq!(valid_students[0].email, \"anna@example.org\");\n        assert_eq!(valid_students[0].group_name.as_deref(), Some(\"ASIX2\"));\n        let valid_response = import_through_router(&app, valid_students).await;\n        assert_eq!(valid_response[\"imported\"], 1);\n        assert_eq!(valid_response[\"discarded\"], 0);\n\n        let malformed_path = root.join(\"students-malformed.csv\");\n        fs::write(\n            &malformed_path,\n            \"Nom,Adreça electrònica,Apellidos,id,grupo,centro,fecha nacimiento,otra\\n\\\n             Marc,marc@example.org,Serra,A002,ASIX2,Institut,2004-02-03,ignorada\\n\\\n             Sense correu,,Garcia,A003,ASIX2,Institut,2004-03-04,ignorada\\n\\\n             Fila incompleta,broken@example.org,Garcia,A004\\n\\\n             Nuria,nuria@example.org,Puig,A005,ASIX2,Institut,2004-05-06,ignorada\\n\",\n        )\n        .unwrap();\n        let (malformed_students, malformed_rows) = read_students_csv(&malformed_path).unwrap();\n        assert_eq!(malformed_rows.len(), 1);\n        assert_eq!(malformed_rows[0].0, 4);\n        assert_eq!(malformed_students.len(), 3);\n        let malformed_response = import_through_router(&app, malformed_students).await;\n        assert_eq!(malformed_response[\"imported\"], 2);\n        assert_eq!(malformed_response[\"discarded\"], 1);\n        assert_eq!(malformed_response[\"rejected\"][0][\"row\"], 3);\n\n        let list_request = Request::builder()\n            .method(\"GET\")\n            .uri(\"/get/students\")\n            .body(Body::empty())\n            .unwrap();\n        let list_response = app.clone().oneshot(list_request).await.unwrap();\n        assert_eq!(list_response.status(), StatusCode::OK);\n        let list_body = to_bytes(list_response.into_body(), usize::MAX)\n            .await\n            .unwrap();\n        let list_json: serde_json::Value = serde_json::from_slice(&list_body).unwrap();\n        assert_eq!(list_json[\"total\"], 3);\n        let listed: GetStudentsResponse = serde_json::from_value(list_json).unwrap();\n        let table = format_student_table(&listed.students);\n        assert!(table.contains(\"Anna Garcia\"));\n        assert!(table.contains(\"Nuria\"));\n        let exported_csv = format_students_csv(&listed.students).unwrap();\n        assert!(exported_csv.starts_with(\"id,nom,apellidos,email\"));\n        assert!(exported_csv.contains(\"anna@example.org\"));\n        assert!(exported_csv.contains(\"marc@example.org\"));\n        assert!(exported_csv.contains(\"nuria@example.org\"));\n\n        drop(app);\n        fs::remove_dir_all(root).unwrap();\n    }\n\n    async fn import_through_router(\n        app: &axum::Router,\n        students: Vec<StudentInput>,\n    ) -> serde_json::Value {\n        let request = Request::builder()\n            .method(\"POST\")\n            .uri(\"/import/students\")\n            .header(\"content-type\", \"application/json\")\n            .body(Body::from(\n                serde_json::to_vec(&serde_json::json!({ \"students\": students })).unwrap(),\n            ))\n            .unwrap();\n        let response = app.clone().oneshot(request).await.unwrap();\n        assert_eq!(response.status(), StatusCode::OK);\n        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();\n        serde_json::from_slice(&body).unwrap()\n    }\n}\n\n----- END CURRENT FILE -----\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-27 19:53:38+0100 ERROR ========== TASK FAILURE: ReadTimeout: HTTPConnectionPool(host='192.168.1.106', port=11434): Read timed out. (read timeout=1200) ==========
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 516, in getresponse
+    httplib_response = super().getresponse()
+  File "/usr/lib/python3.13/http/client.py", line 1459, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 297, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/socket.py", line 719, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+TimeoutError: timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/retry.py", line 474, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+        self, url, f"Read timed out. (read timeout={timeout_value})"
+    ) from err
+urllib3.exceptions.ReadTimeoutError: HTTPConnectionPool(host='192.168.1.106', port=11434): Read timed out. (read timeout=1200)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 393, in process_one
+    apply_task(
+    ~~~~~~~~~~^
+        task,
+        ^^^^^
+    ...<4 lines>...
+        logger=logger,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 315, in apply_task
+    output = call_ollama(
+        prompt,
+    ...<3 lines>...
+        logger=logger,
+    )
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 186, in call_ollama
+    response = requests.post(url, json=payload, timeout=timeout)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 713, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPConnectionPool(host='192.168.1.106', port=11434): Read timed out. (read timeout=1200)
+2026-10-27 19:53:38+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/failure/082-cli-student-yaml-output.yaml

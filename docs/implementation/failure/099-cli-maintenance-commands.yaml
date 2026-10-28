@@ -1,0 +1,7 @@
+id: "099-cli-maintenance-commands"
+title: "Implement CLI cleanup, prune, and reset commands"
+depends_on: ["081-cli-yaml-renderer", "098-register-maintenance-routes"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/maintenance_commands.rs"
+action: create
+prompt: |-
+  Create `apps/thot-cli/src/maintenance_commands.rs` with a file-purpose header and `pub async fn handle(command: &str, settings: &Settings) -> Result<(), Box<dyn std::error::Error>>`. Import `Settings`, `api_client::ApiClient`, `reqwest::Method`, `serde_json::Value`, `uuid::Uuid`, and `std::io::IsTerminal` as needed. Use `ApiClient::new(settings)` and its `request(method: Method, path: &str, body: Option<Value>) -> Result<Value, Box<dyn Error>>`; call `POST` with no body at `/api/v1/maintenance/clean`, `/prune`, or `/reset`. Run clean immediately. Before prune, print a permanent-data-loss warning and require `y` on an interactive stdin. Before reset, warn that all Thot records and runtime data will be erased, generate and display a six-digit decimal challenge from `Uuid::new_v4()`, and require an exact match. On non-terminal input, mismatch, or unknown command, return without sending the destructive request. Print successful JSON responses with `crate::output::print_yaml`. Edit only this file.

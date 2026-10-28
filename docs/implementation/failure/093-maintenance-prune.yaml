@@ -1,0 +1,7 @@
+id: "093-maintenance-prune"
+title: "Prune runs while retaining the newest run per project"
+depends_on: ["092-maintenance-clean"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/maintenance.rs"
+action: modify
+prompt: |-
+  In `crates/thot-engine/src/maintenance.rs`, add async `prune_runs(pool: &SqlitePool, artifact_root: &Path, storage_root: &Path, runtime: &VmActivityRuntime) -> Result<MaintenanceReport, String>`. Before mutation, query `vm_activity_runs` and return an error if any status is `queued`, `running`, or `cancelling`. For each `project_id`, retain exactly the newest row by `created_at DESC, run_id DESC`. In one SQLite transaction delete obsolete rows in foreign-key-safe order: matching `vm_activity_expedients`, obsolete `vm_activity_runs`, then `vm_activity_deliveries` no longer referenced by any expedient. Commit before filesystem cleanup, call `clean_orphans(pool, artifact_root, storage_root, runtime)`, and return a report with operation `prune`, retained and deleted run IDs, removals, preserved paths, and failures. Never delete original project archives or source delivery files. If cleanup fails after database commit, report the failure and leave retryable filesystem/VM data. Edit only this file.

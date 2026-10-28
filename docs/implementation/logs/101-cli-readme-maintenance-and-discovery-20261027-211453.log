@@ -1,0 +1,241 @@
+2026-10-27 21:14:53+0100 INFO ========== TASK START ==========
+2026-10-27 21:14:53+0100 INFO Source YAML: /home/carlos/worktrees/thot/docs/implementation/todo/101-cli-readme-maintenance-and-discovery.yaml
+2026-10-27 21:14:53+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/in-progress/101-cli-readme-maintenance-and-discovery.yaml
+2026-10-27 21:14:53+0100 INFO Reading YAML task
+2026-10-27 21:14:53+0100 INFO Parsed YAML:
+id: 101-cli-readme-maintenance-and-discovery
+title: Document maintenance and project discovery commands
+depends_on:
+- 100-cli-maintenance-dispatch
+file: /home/carlos/worktrees/thot/apps/thot-cli/README.md
+action: modify
+prompt: Update `apps/thot-cli/README.md` with concise user-facing examples and behavior
+  for `thot clean`, `thot prune`, `thot reset`, bare `thot run`, `thot run list`,
+  and `thot run status [RUN_ID]`. State that bare run auto-selects exactly one `.thot.gz`,
+  `.thot.tgz`, `.thot.zip`, or root `configuration.yaml` from the current directory
+  and errors on ambiguity. State that status without an ID requires exactly one queued/running/cancelling
+  run. Explain that clean removes only proven orphaned Thot data, prune retains the
+  latest run per project and requires confirmation, and reset requires typing a generated
+  six-digit code and clears Thot database/runtime state while preserving installation
+  configuration, project archives, and original delivery files. Do not claim unknown
+  external files are deleted. Edit only this file.
+
+2026-10-27 21:14:53+0100 INFO Task ID: 101-cli-readme-maintenance-and-discovery
+2026-10-27 21:14:53+0100 INFO Task title: Document maintenance and project discovery commands
+2026-10-27 21:14:53+0100 INFO Action: modify
+2026-10-27 21:14:53+0100 INFO Target: /home/carlos/worktrees/thot/apps/thot-cli/README.md
+2026-10-27 21:14:53+0100 INFO Read current file: 1612 characters
+2026-10-27 21:14:53+0100 DEBUG Current file content:
+# `thot` command-line client
+
+The CLI talks to `thotd`; it never invokes `VBoxManage` or sends guest
+credentials. Its default API endpoint is `http://127.0.0.1:8081`.
+
+```text
+thot [-h HOST] [-p PORT] import students <file.csv>
+thot [-h HOST] [-p PORT] get students [csv]
+thot [-h HOST] [-p PORT] run create <PROJECT.thot.tgz|PROJECT.thot.zip> [--deliveries DIR]
+thot [-h HOST] [-p PORT] run status RUN_ID
+thot [-h HOST] [-p PORT] run expedient EXPEDIENT_ID
+thot [-h HOST] [-p PORT] run cancel RUN_ID
+thot [-h HOST] [-p PORT] run cleanup EXPEDIENT_ID
+```
+
+The run command takes a project archive path directly. The CLI resolves it to
+an absolute path before sending the request. Without `--deliveries`, the engine
+uses `delivery_folder` from the archive's root `configuration.yaml`; relative
+paths resolve from the archive's containing directory and absolute paths are
+accepted. Delivery overrides can also point anywhere the daemon can read. The
+engine processes direct `.ova` children and does not map results to students.
+Status and expedient commands return JSON. Cleanup uses the persisted manifest
+and checks recorded VM identity and storage ownership.
+
+API settings resolve from command-line options, then the first available file
+among `./thot-config.yaml`, `./.thot-config.yaml`, and
+`~/.config/thot/thot-config.yaml`. Files accept scalar `host`/`server` and
+`port` keys. Command-line options override the file.
+
+CSV import recognizes common Catalan, Spanish, and English headers. Unknown
+columns are ignored, malformed rows are reported on stderr, and validation of
+student data remains in the server.
+
+2026-10-27 21:14:53+0100 INFO Complete model prompt:
+You are a code-generation component in an automated task runner.
+Implement the task described below.
+
+TASK METADATA
+ID: 101-cli-readme-maintenance-and-discovery
+Title: Document maintenance and project discovery commands
+Action: modify
+Target file: /home/carlos/worktrees/thot/apps/thot-cli/README.md
+
+TASK INSTRUCTIONS
+Update `apps/thot-cli/README.md` with concise user-facing examples and behavior for `thot clean`, `thot prune`, `thot reset`, bare `thot run`, `thot run list`, and `thot run status [RUN_ID]`. State that bare run auto-selects exactly one `.thot.gz`, `.thot.tgz`, `.thot.zip`, or root `configuration.yaml` from the current directory and errors on ambiguity. State that status without an ID requires exactly one queued/running/cancelling run. Explain that clean removes only proven orphaned Thot data, prune retains the latest run per project and requires confirmation, and reset requires typing a generated six-digit code and clears Thot database/runtime state while preserving installation configuration, project archives, and original delivery files. Do not claim unknown external files are deleted. Edit only this file.
+
+CURRENT CONTENT OF THE TARGET FILE
+The following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.
+----- BEGIN CURRENT FILE -----
+# `thot` command-line client
+
+The CLI talks to `thotd`; it never invokes `VBoxManage` or sends guest
+credentials. Its default API endpoint is `http://127.0.0.1:8081`.
+
+```text
+thot [-h HOST] [-p PORT] import students <file.csv>
+thot [-h HOST] [-p PORT] get students [csv]
+thot [-h HOST] [-p PORT] run create <PROJECT.thot.tgz|PROJECT.thot.zip> [--deliveries DIR]
+thot [-h HOST] [-p PORT] run status RUN_ID
+thot [-h HOST] [-p PORT] run expedient EXPEDIENT_ID
+thot [-h HOST] [-p PORT] run cancel RUN_ID
+thot [-h HOST] [-p PORT] run cleanup EXPEDIENT_ID
+```
+
+The run command takes a project archive path directly. The CLI resolves it to
+an absolute path before sending the request. Without `--deliveries`, the engine
+uses `delivery_folder` from the archive's root `configuration.yaml`; relative
+paths resolve from the archive's containing directory and absolute paths are
+accepted. Delivery overrides can also point anywhere the daemon can read. The
+engine processes direct `.ova` children and does not map results to students.
+Status and expedient commands return JSON. Cleanup uses the persisted manifest
+and checks recorded VM identity and storage ownership.
+
+API settings resolve from command-line options, then the first available file
+among `./thot-config.yaml`, `./.thot-config.yaml`, and
+`~/.config/thot/thot-config.yaml`. Files accept scalar `host`/`server` and
+`port` keys. Command-line options override the file.
+
+CSV import recognizes common Catalan, Spanish, and English headers. Unknown
+columns are ignored, malformed rows are reported on stderr, and validation of
+student data remains in the server.
+
+----- END CURRENT FILE -----
+
+OUTPUT REQUIREMENTS — MUST BE FOLLOWED
+- Respond with the complete contents of the target file only.
+- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.
+- Do not output a diff or partial snippet.
+- Do not include the target file path in the response.
+- If the task cannot be implemented, do not fabricate a success response; return an empty response.
+2026-10-27 21:14:53+0100 INFO Calling Ollama URL: http://192.168.1.106:11434/api/chat
+2026-10-27 21:14:53+0100 INFO Ollama model: qwen2.5-coder.16K:7B
+2026-10-27 21:14:53+0100 DEBUG Request payload:
+{
+  "model": "qwen2.5-coder.16K:7B",
+  "messages": [
+    {
+      "role": "user",
+      "content": "You are a code-generation component in an automated task runner.\nImplement the task described below.\n\nTASK METADATA\nID: 101-cli-readme-maintenance-and-discovery\nTitle: Document maintenance and project discovery commands\nAction: modify\nTarget file: /home/carlos/worktrees/thot/apps/thot-cli/README.md\n\nTASK INSTRUCTIONS\nUpdate `apps/thot-cli/README.md` with concise user-facing examples and behavior for `thot clean`, `thot prune`, `thot reset`, bare `thot run`, `thot run list`, and `thot run status [RUN_ID]`. State that bare run auto-selects exactly one `.thot.gz`, `.thot.tgz`, `.thot.zip`, or root `configuration.yaml` from the current directory and errors on ambiguity. State that status without an ID requires exactly one queued/running/cancelling run. Explain that clean removes only proven orphaned Thot data, prune retains the latest run per project and requires confirmation, and reset requires typing a generated six-digit code and clears Thot database/runtime state while preserving installation configuration, project archives, and original delivery files. Do not claim unknown external files are deleted. Edit only this file.\n\nCURRENT CONTENT OF THE TARGET FILE\nThe following is the complete current file. Preserve unrelated behavior and make only the changes required by the task.\n----- BEGIN CURRENT FILE -----\n# `thot` command-line client\n\nThe CLI talks to `thotd`; it never invokes `VBoxManage` or sends guest\ncredentials. Its default API endpoint is `http://127.0.0.1:8081`.\n\n```text\nthot [-h HOST] [-p PORT] import students <file.csv>\nthot [-h HOST] [-p PORT] get students [csv]\nthot [-h HOST] [-p PORT] run create <PROJECT.thot.tgz|PROJECT.thot.zip> [--deliveries DIR]\nthot [-h HOST] [-p PORT] run status RUN_ID\nthot [-h HOST] [-p PORT] run expedient EXPEDIENT_ID\nthot [-h HOST] [-p PORT] run cancel RUN_ID\nthot [-h HOST] [-p PORT] run cleanup EXPEDIENT_ID\n```\n\nThe run command takes a project archive path directly. The CLI resolves it to\nan absolute path before sending the request. Without `--deliveries`, the engine\nuses `delivery_folder` from the archive's root `configuration.yaml`; relative\npaths resolve from the archive's containing directory and absolute paths are\naccepted. Delivery overrides can also point anywhere the daemon can read. The\nengine processes direct `.ova` children and does not map results to students.\nStatus and expedient commands return JSON. Cleanup uses the persisted manifest\nand checks recorded VM identity and storage ownership.\n\nAPI settings resolve from command-line options, then the first available file\namong `./thot-config.yaml`, `./.thot-config.yaml`, and\n`~/.config/thot/thot-config.yaml`. Files accept scalar `host`/`server` and\n`port` keys. Command-line options override the file.\n\nCSV import recognizes common Catalan, Spanish, and English headers. Unknown\ncolumns are ignored, malformed rows are reported on stderr, and validation of\nstudent data remains in the server.\n\n----- END CURRENT FILE -----\n\nOUTPUT REQUIREMENTS — MUST BE FOLLOWED\n- Respond with the complete contents of the target file only.\n- Output code only. Do not include Markdown fences, explanations, comments outside the code, greetings, summaries, or any other prose.\n- Do not output a diff or partial snippet.\n- Do not include the target file path in the response.\n- If the task cannot be implemented, do not fabricate a success response; return an empty response."
+    }
+  ],
+  "stream": false,
+  "options": {
+    "temperature": 0
+  }
+}
+2026-10-27 21:14:53+0100 ERROR ========== TASK FAILURE: ConnectionError: HTTPConnectionPool(host='192.168.1.106', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7e7591469e10>: Failed to establish a new connection: [Errno 111] Connection refused')) ==========
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+        (self._dns_host, self.port),
+    ...<2 lines>...
+        socket_options=self.socket_options,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/usr/lib/python3/dist-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+ConnectionRefusedError: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 493, in _make_request
+    conn.request(
+    ~~~~~~~~~~~~^
+        method,
+        ^^^^^^^
+    ...<6 lines>...
+        enforce_content_length=enforce_content_length,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 445, in request
+    self.endheaders()
+    ~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/client.py", line 1362, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/http/client.py", line 1122, in _send_output
+    self.send(msg)
+    ~~~~~~~~~^^^^^
+  File "/usr/lib/python3.13/http/client.py", line 1066, in send
+    self.connect()
+    ~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 276, in connect
+    self.sock = self._new_conn()
+                ~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/urllib3/connection.py", line 213, in _new_conn
+    raise NewConnectionError(
+        self, f"Failed to establish a new connection: {e}"
+    ) from e
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPConnection object at 0x7e7591469e10>: Failed to establish a new connection: [Errno 111] Connection refused
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/usr/lib/python3/dist-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPConnectionPool(host='192.168.1.106', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7e7591469e10>: Failed to establish a new connection: [Errno 111] Connection refused'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 393, in process_one
+    apply_task(
+    ~~~~~~~~~~^
+        task,
+        ^^^^^
+    ...<4 lines>...
+        logger=logger,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 315, in apply_task
+    output = call_ollama(
+        prompt,
+    ...<3 lines>...
+        logger=logger,
+    )
+  File "/home/carlos/worktrees/thot/docs/implementation/ollama-task-runner.py", line 186, in call_ollama
+    response = requests.post(url, json=payload, timeout=timeout)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/usr/lib/python3/dist-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/usr/lib/python3/dist-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='192.168.1.106', port=11434): Max retries exceeded with url: /api/chat (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7e7591469e10>: Failed to establish a new connection: [Errno 111] Connection refused'))
+2026-10-27 21:14:53+0100 INFO Moved task YAML to: /home/carlos/worktrees/thot/docs/implementation/failure/101-cli-readme-maintenance-and-discovery.yaml

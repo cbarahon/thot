@@ -1,0 +1,7 @@
+id: "083-cli-run-yaml-output"
+title: "Render run and expedient responses as YAML"
+depends_on: ["081-cli-yaml-renderer"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/delivery_commands.rs"
+action: modify
+prompt: |-
+  In `apps/thot-cli/src/delivery_commands.rs`, replace `serde_json::to_string_pretty` output for every successful response from `/api/v1/runs`, `/api/v1/runs/{id}`, and `/api/v1/expedients/{id}` with `crate::output::print_yaml(&value)`. The API client returns each response as `serde_json::Value`. Keep HTTP requests, command parsing, and errors unchanged. This ensures report fields including stdout and stderr are readable YAML strings with embedded newlines. Edit only this file.

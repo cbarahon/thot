@@ -1,0 +1,7 @@
+id: "096-run-service-maintenance-facade"
+title: "Expose maintenance operations through DeliveryRunService"
+depends_on: ["087-run-id-thot-gz-name", "095-export-maintenance-modules"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/delivery_run_service.rs"
+action: modify
+prompt: |-
+  In `crates/thot-engine/src/delivery_run_service.rs`, add public async `clean`, `prune`, and `reset` methods to `DeliveryRunService`; each returns `Result<MaintenanceReport, ServiceError>` and calls the matching function in `crate::maintenance`. Pass `&self.pool`, `&self.artifact_root`, `&self.runtime.storage_root`, and `&self.runtime`. Acquire `self.create_gate` for the whole operation and, while holding it, query for any `queued`, `running`, or `cancelling` run; return `ServiceError::Conflict` before mutation if one exists. This also prevents clean from racing with incomplete VM registration. Convert maintenance errors to `ServiceError::Internal`. Preserve `delete_run` behavior and all existing routes' service methods. Edit only this file.

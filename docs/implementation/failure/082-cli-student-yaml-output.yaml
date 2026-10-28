@@ -1,0 +1,7 @@
+id: "082-cli-student-yaml-output"
+title: "Use YAML for structured student command output"
+depends_on: ["081-cli-yaml-renderer"]
+file: "/home/carlos/worktrees/thot/apps/thot-cli/src/main.rs"
+action: modify
+prompt: |-
+  In `apps/thot-cli/src/main.rs`, declare `mod output;`. For `import students FILE`, convert the existing typed `ImportStudentsResponse` to `serde_json::Value` with `serde_json::to_value` and pass it to `output::print_yaml`. For default `get students`, render the full `GetStudentsResponse` as YAML instead of the current table. Keep the explicit `get students csv` output as CSV, and preserve request handling, malformed-row diagnostics, and errors. Remove private table-formatting helpers that become unused. Do not implement another serializer. Edit only this file.

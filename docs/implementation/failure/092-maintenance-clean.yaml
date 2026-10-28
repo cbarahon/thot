@@ -1,0 +1,7 @@
+id: "092-maintenance-clean"
+title: "Apply the orphan cleanup plan and report its results"
+depends_on: ["090-maintenance-plan", "091-maintenance-vm-reconciler"]
+file: "/home/carlos/worktrees/thot/crates/thot-engine/src/maintenance.rs"
+action: create
+prompt: |-
+  In `crates/thot-engine/src/maintenance.rs`, define serializable `MaintenanceReport` with fields `operation`, `removed_paths`, `unregistered_vms`, `retained_run_ids`, `deleted_run_ids`, `preserved_paths`, and `failures`; use strings for path and ID list entries. Implement async `clean_orphans(pool: &SqlitePool, artifact_root: &Path, storage_root: &Path, runtime: &VmActivityRuntime) -> Result<MaintenanceReport, String>`. The `CleanPlan` returned by `maintenance_plan::build_clean_plan` contains `orphan_paths`, `orphan_manifests`, and saved IDs; `maintenance_vms::clean_unassigned_vms` returns `VmCleanupReport` with unregistered UUIDs, removed storage paths, preserved paths, failed manifest directories, and failures. Call the planner, reconcile VMs, then remove orphan report, snapshot, retained-source, and managed storage paths only after revalidating canonical containment and ensuring any related manifest cleanup succeeded. Remove now-empty Thot-generated parent directories without removing artifact_root or external project directories. Populate every report field; never discard an error or remove data whose ownership is uncertain. Add a file-purpose header comment. Edit only this file.
