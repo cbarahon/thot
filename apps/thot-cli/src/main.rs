@@ -1,6 +1,7 @@
 //! Purpose: CLI entry point for student import/export and delivery-run commands.
 mod api_client;
 mod delivery_commands;
+mod maintenance_commands;
 mod output;
 
 use std::{
@@ -54,6 +55,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     let settings = resolve_settings(&options, &cwd, home_dir().as_deref())?;
     match options.command.as_slice() {
+        [command] if matches!(command.as_str(), "clean" | "prune" | "reset") => {
+            maintenance_commands::handle(command, &settings).await?;
+        }
         [run, ..] if run == "run" => {
             delivery_commands::handle(&options.command[1..], &settings).await?;
         }
@@ -62,7 +66,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             let payload = serde_json::to_vec(&serde_json::json!({ "students": records }))?;
             let body = http_request(&settings, "POST", "/import/students", Some(&payload)).await?;
             let response: ImportStudentsResponse = serde_json::from_slice(&body)?;
-            println!("{}", serde_json::to_string_pretty(&response)?);
+            output::print_yaml(&serde_json::to_value(response)?)?;
             if !malformed.is_empty() {
                 eprintln!(
                     "Se omitieron {} filas CSV malformadas antes de enviar los datos:",
@@ -76,7 +80,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         [get, students] if get == "get" && students == "students" => {
             let body = http_request(&settings, "GET", "/get/students", None).await?;
             let response: GetStudentsResponse = serde_json::from_slice(&body)?;
-            print_student_table(&response.students)?;
+            output::print_yaml(&serde_json::to_value(response)?)?;
         }
         [get, students, format] if get == "get" && students == "students" && format == "csv" => {
             let body = http_request(&settings, "GET", "/get/students", None).await?;
@@ -511,73 +515,6 @@ fn decode_chunked(mut body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(decoded)
 }
 
-fn print_student_table(students: &[Student]) -> Result<(), Box<dyn Error>> {
-    print!("{}", format_student_table(students));
-    io::stdout().flush()?;
-    Ok(())
-}
-
-fn format_student_table(students: &[Student]) -> String {
-    let headers = [
-        "ID",
-        "Nom",
-        "Apellidos",
-        "Email",
-        "ID externo",
-        "Grupo",
-        "Centro",
-        "Fecha nacimiento",
-    ];
-    let rows = students
-        .iter()
-        .map(|student| {
-            vec![
-                student.id.to_string(),
-                clean_display(&student.name),
-                optional_display(&student.surname),
-                clean_display(&student.email),
-                optional_display(&student.external_id),
-                optional_display(&student.group_name),
-                optional_display(&student.center),
-                optional_display(&student.birth_date),
-            ]
-        })
-        .collect::<Vec<_>>();
-    let widths = (0..headers.len())
-        .map(|column| {
-            rows.iter()
-                .map(|row| row[column].chars().count())
-                .fold(headers[column].chars().count(), usize::max)
-        })
-        .collect::<Vec<_>>();
-    let mut output = String::new();
-    format_table_row(&mut output, &headers.map(str::to_owned), &widths);
-    output.push_str(&format!(
-        "+{}+",
-        widths
-            .iter()
-            .map(|width| "-".repeat(width + 2))
-            .collect::<Vec<_>>()
-            .join("+")
-    ));
-    output.push('\n');
-    for row in rows {
-        format_table_row(&mut output, &row, &widths);
-    }
-    output
-}
-
-fn format_table_row(output: &mut String, row: &[String], widths: &[usize]) {
-    output.push('|');
-    for (value, width) in row.iter().zip(widths) {
-        output.push(' ');
-        output.push_str(value);
-        output.push_str(&" ".repeat(width.saturating_sub(value.chars().count())));
-        output.push_str(" |");
-    }
-    output.push('\n');
-}
-
 fn format_students_csv(students: &[Student]) -> Result<String, Box<dyn Error>> {
     let mut output = Vec::new();
     write_csv_record(
@@ -627,17 +564,9 @@ fn write_csv_record(output: &mut impl Write, fields: &[&str]) -> io::Result<()> 
     output.write_all(b"\r\n")
 }
 
-fn clean_display(value: &str) -> String {
-    value.replace(['\n', '\r'], " ")
-}
-
-fn optional_display(value: &Option<String>) -> String {
-    value.as_deref().map(clean_display).unwrap_or_default()
-}
-
 fn print_usage() {
     println!(
-        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot [-h servidor] [-p puerto] run [list]\n  thot [-h servidor] [-p puerto] run create <ruta-archivo-proyecto> [--deliveries DIR]\n  thot [-h servidor] [-p puerto] run status RUN_ID\n  thot [-h servidor] [-p puerto] run delete RUN_ID\n  thot [-h servidor] [-p puerto] run expedient EXPEDIENT_ID\n  thot [-h servidor] [-p puerto] run cancel RUN_ID\n  thot [-h servidor] [-p puerto] run cleanup EXPEDIENT_ID\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
+        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot clean\n  thot prune\n  thot reset\n  thot run [list]\n  thot run create <ruta-proyecto> [--deliveries DIR]\n  thot run create --project <ruta-proyecto> [--deliveries DIR]\n  thot run status [RUN_ID]\n  thot run delete RUN_ID\n  thot run expedient EXPEDIENT_ID\n  thot run cancel RUN_ID\n  thot run cleanup EXPEDIENT_ID\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
     );
 }
 
@@ -810,9 +739,9 @@ mod tests {
         let list_json: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
         assert_eq!(list_json["total"], 3);
         let listed: GetStudentsResponse = serde_json::from_value(list_json).unwrap();
-        let table = format_student_table(&listed.students);
-        assert!(table.contains("Anna Garcia"));
-        assert!(table.contains("Nuria"));
+        let yaml = serde_yaml::to_string(&listed).unwrap();
+        assert!(yaml.contains("Anna Garcia"));
+        assert!(yaml.contains("Nuria"));
         let exported_csv = format_students_csv(&listed.students).unwrap();
         assert!(exported_csv.starts_with("id,nom,apellidos,email"));
         assert!(exported_csv.contains("anna@example.org"));

@@ -36,7 +36,7 @@ The web UI and CLI are clients, not separate implementations of assessment logic
 
 ### 3.1 Configure
 
-The teacher loads an **Assessment Project** and imports a student roster and submissions. Optional run settings include the maximum number of students processed concurrently.
+The teacher loads an **Assessment Project** and imports a student roster and submissions. Optional run settings include the maximum number of students processed concurrently. In the current VM activity POC, a project is a `.thot.zip`, `.thot.tgz`, `.thot.gz`, or project directory containing a root `configuration.yaml`. The configuration is an ordered list of atomic tests, each identified by a platform and test name (for example, `VirtualBox/import_ova`) or by an `extern/<path>` script reference. Test entries can supply parameters, prerequisites, repeat counts, and timeouts; a test timeout overrides the project-wide timeout.
 
 The engine validates YAML schemas, identifiers, paths, test references, prerequisites, rubric aggregations, and learning-outcome formulas before execution.
 
@@ -57,13 +57,13 @@ Preparation tasks have explicit statuses, timeouts, and diagnostics. Tests must 
 
 ### 3.3 Execute tests
 
-A **Test** is either a **Built-in Test**, implemented in Rust and registered with the engine, or an **External Test**, launched as a process such as Bash or Python, optionally inside a container.
+A **Test** is either a **Built-in Test**, implemented in Rust and registered with the engine, or an **External Test**, launched as a process such as Bash or Python, optionally inside a container. Built-in tests are organized in platform modules. External scripts supplied by a project run as child processes with an argument array and no implicit shell interpolation.
 
 For a given student, tests execute sequentially in their declared order. The scheduler may process several students in parallel, up to the configured limit. Tests can declare prerequisites on earlier test outcomes or supported scoring results.
 
 If a prerequisite is not satisfied, the dependent test is marked `skipped` with a reason, not reported as an ordinary failure.
 
-A normalized **Test Result** records the run, student and test identifiers; start/end time and duration; exit code where applicable; stdout and stderr within configured limits; status; failure, skip, timeout or cancellation reason; and metadata/artifact references.
+A normalized **Test Result** records the run, student and test identifiers; start/end time and duration; process exit code; captured stdout and stderr within configured limits; status; failure, skip, timeout or cancellation reason; and metadata/artifact references. Per-test artifacts are stored under the delivery's `test_records/<delivery filename>/<test name>/artifacts` directory. The executor reports whether the process ran successfully; evaluation criteria interpret its output and observations separately.
 
 The exit code is only one part of the result: a process may exit with code zero while a later criterion fails because expected output is missing.
 
@@ -90,6 +90,10 @@ Use a constrained expression language with documented operators and functions. D
 The teacher can inspect run progress, student status, test output, exit codes, timings, basic scores, rubric aggregates, learning-outcome scores, and errors or skips. CSV is a useful first export format.
 
 Scoring and LO evaluation should be repeatable from stored test results without re-running tests, unless a new execution is explicitly requested.
+
+### 3.8 Current VM activity implementation
+
+The implemented POC executes project-defined tests for OVA deliveries. Deliveries are tested sequentially within each delivery. Multiple deliveries may run concurrently up to the project's `concurrency` limit when their test references do not use VirtualBox or SSH shared host resources; projects using those adapters are restricted to concurrency one because the current guest forwarding ports are shared. The engine records an expedient and captured process result for each delivery and test. It does not yet calculate scores or learning outcomes.
 
 ## 4. Logical architecture
 
@@ -337,7 +341,7 @@ SSE is the recommended default for one-way progress. Include event IDs or sequen
 
 ## 9. Project-defined test bundles
 
-The VM activity run loader accepts a `.thot.zip` or `.thot.tgz` archive with `configuration.yaml` at its root. The archive can also contain teacher-supplied programs, for example:
+The VM activity run loader accepts `.thot.zip`, `.thot.tgz`, and `.thot.gz` archives with `configuration.yaml` at the root, as well as unpacked project directories with that file. A project can also contain teacher-supplied programs, for example:
 
 ```text
 linux_competition.thot.tgz
@@ -347,15 +351,15 @@ linux_competition.thot.tgz
         └── vm_start_time.py
 ```
 
-`configuration.yaml` defines the activity name, a delivery folder (relative to the archive's containing directory or an absolute path), maximum concurrency, global test timeout, and an ordered list of tests. A test has a unique name and a `test` reference. Built-in references use `Platform/test_name`, such as `VirtualBox/import_ova` or `ssh/get_host_info`. External references use `extern/<archive-relative-path>`. Optional fields provide scalar parameters, test timeout, earlier-test requirements, and repeat count. The engine expands repeats to names such as `start_time_01` and only runs a dependent test if all repetitions of each requirement pass. The CLI supplies the project archive path directly; neither project archives nor delivery folders are restricted to a daemon-configured root.
+`configuration.yaml` defines the activity name, a delivery folder (relative to the archive's containing directory or project directory, or an absolute path), maximum concurrency, global test timeout, and an ordered list of tests. A test has a unique name and a `test` reference. Built-in references use `Platform/test_name`, such as `VirtualBox/import_ova` or `ssh/get_host_info`. External references use `extern/<project-relative-path>`. Optional fields provide scalar parameters, test timeout, earlier-test requirements, and repeat count. The engine expands repeats to names such as `start_time_01` and only runs a dependent test if all repetitions of each requirement pass. The CLI accepts project paths anywhere readable by the daemon and can discover one source when `thot run` is invoked without a subcommand.
 
 Tests are atomic reusable functions grouped by platform under `crates/thot-engine/src/tests/`. A common invocation carries test parameters, timeout, project and delivery context, and artifact paths. A common outcome carries status, stdout, stderr, exit code, diagnostics, observations, and evidence. Built-in and external tests therefore persist through the same result model. External scripts receive parameters as `key=value` arguments and run as child processes with bounded time and output; they are trusted teacher code, not sandboxed code.
 
 For the current POC, archive extraction rejects path traversal and links, limits archive size and entry count, and requires a regular root `configuration.yaml`. Importing a project does not run its scripts; an external program runs only when its configured test is reached. The current built-in registry provides VirtualBox import/start/stop/destroy and SSH host information checks. Additional platform adapters can be added without changing the project format.
 
-The archive extraction helper recognizes `.thot.gz`, but the run loader currently accepts only `.thot.tgz` and `.thot.zip`. A safe directory snapshot helper also exists; passing a project directory to the run service is not yet supported. The CLI currently lists runs for both `thot run` and `thot run list`, and `thot run status` requires an explicit run ID. Successful run and expedient responses are rendered as YAML for terminal readability; the REST API continues to exchange JSON. These are implementation details and do not change the target architecture above.
+The archive reader rejects path traversal and links, applies compressed/expanded size and entry limits, and requires a regular root `configuration.yaml`. Directory sources are snapshotted with symlink rejection. The CLI offers `thot run list`; bare `thot run` discovers exactly one supported archive or root configuration file, and bare `thot run status` resolves only when exactly one run is active. Run and expedient details, plus structured student command results, are rendered as YAML for terminal readability; the REST API continues to exchange JSON. Maintenance commands `thot clean`, `thot prune`, and `thot reset` reconcile orphan runtime data, prune old runs, or clear Thot database/runtime records with explicit confirmations for destructive operations.
 
-Per-delivery expedients and artifacts are stored outside the reusable archive. Each test result records process output and exit code. Artifacts are scoped under `test_records/<delivery filename>/<test name>/artifacts` within that delivery's artifact directory. The VM activity implementation currently accepts the concurrency field but executes one run and its deliveries sequentially; parallel student execution is a later scheduling capability.
+Per-delivery expedients and artifacts are stored outside the reusable project. Each test result records process output and exit code. Artifacts are scoped under `test_records/<delivery filename>/<test name>/artifacts` within that delivery's artifact directory. Tests run in order within a delivery. Delivery concurrency follows the project setting for projects without shared resources; VirtualBox and SSH projects are restricted to one because their current adapters share loopback ports.
 
 ## 10. State model and failure semantics
 

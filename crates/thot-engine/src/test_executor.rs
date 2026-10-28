@@ -7,7 +7,7 @@ use thot_core::{VMActivityProject, test_results::TestStatus};
 use crate::{
     test_execution::{TestInvocation, TestOutcome},
     test_result_store, tests,
-    vm_activity::{DeliveryInput, ProjectSnapshot, VmActivityRuntime},
+    vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime},
 };
 
 pub async fn execute_project_tests(
@@ -23,6 +23,7 @@ pub async fn execute_project_tests(
 ) -> Result<(), String> {
     let mut prior: HashMap<String, Vec<bool>> = HashMap::new();
     let mut vm_context = HashMap::<String, String>::new();
+    let mut vm_isolation_error: Option<String> = None;
 
     for definition in &project.tests {
         let base_parameters = definition.parameters.into_strings()?;
@@ -58,6 +59,10 @@ pub async fn execute_project_tests(
                 TestOutcome::skipped(format!(
                     "delivery was rejected before test execution: {reason}"
                 ))
+            } else if let Some(reason) = vm_isolation_error.as_deref() {
+                TestOutcome::skipped(format!(
+                    "VM tests were stopped because host-isolation setup failed: {reason}"
+                ))
             } else {
                 let invocation = TestInvocation {
                     test_name: test_name.clone(),
@@ -79,6 +84,19 @@ pub async fn execute_project_tests(
             };
             if let Some(name) = outcome.observation.get("vm_name").and_then(Value::as_str) {
                 vm_context.insert("vm_name".into(), name.to_owned());
+            }
+            if definition.test_ref == "VirtualBox/import_ova"
+                && outcome.status == TestStatus::Passed
+            {
+                if let Some(uuid) = outcome.observation.get("vm_uuid").and_then(Value::as_str) {
+                    if let Err(error) = vm_activity::disable_guest_features(runtime, uuid).await {
+                        vm_isolation_error = Some(error);
+                        report["orchestration_error"] = json!(format!(
+                            "imported VM host-isolation setup failed: {}",
+                            vm_isolation_error.as_deref().unwrap_or_default()
+                        ));
+                    }
+                }
             }
             let passed = outcome.status == TestStatus::Passed;
             all_passed &= passed;

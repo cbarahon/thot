@@ -31,6 +31,11 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
         Ok(path) => path,
         Err(error) => return TestOutcome::error(error),
     };
+    let project_vm_path = invocation
+        .parameters
+        .get("vm_path")
+        .cloned()
+        .unwrap_or_else(|| "./thot_vms".to_owned());
     if let Err(error) = tokio::fs::create_dir_all(&storage).await {
         return TestOutcome::error(format!("cannot create VM storage directory: {error}"));
     }
@@ -49,6 +54,7 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
         "vm_group": group,
         "storage_path": storage,
         "archive_parent": invocation.project_archive_parent,
+        "project_vm_path": project_vm_path,
         "may_be_registered": true,
         "disk_paths": []
     });
@@ -150,6 +156,7 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
         "vm_group": group,
         "storage_path": storage,
         "archive_parent": invocation.project_archive_parent,
+        "project_vm_path": project_vm_path,
         "may_be_registered": true,
         "disk_paths": disks
     });
@@ -180,63 +187,6 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
                 "vm_name": vm_name,
                 "vm_uuid": uuid,
                 "vm_config_path": initial_info.get("CfgFile"),
-                "storage_path": storage
-            }),
-            evidence: vec!["cleanup-manifest.json".into()],
-        };
-    }
-    if let Err(reason) =
-        crate::vm_activity::disable_guest_features(&invocation.runtime, &uuid).await
-    {
-        return TestOutcome {
-            status: thot_core::test_results::TestStatus::Failed,
-            stdout: output.stdout,
-            stderr: format!("{}{}", output.stderr, reason),
-            exit_code: Some(1),
-            diagnostics:
-                "VM imported but isolation settings could not be verified; cleanup remains pending"
-                    .into(),
-            observation: serde_json::json!({"vm_name": vm_name, "vm_uuid": uuid, "storage_path": storage}),
-            evidence: vec!["cleanup-manifest.json".into()],
-        };
-    }
-    let info = runner(invocation)
-        .run(&[
-            "showvminfo".into(),
-            uuid.clone(),
-            "--machinereadable".into(),
-        ])
-        .await;
-    let info = match info {
-        Ok(info) if info.exit_code == Some(0) => {
-            output.stdout.push_str(&info.stdout);
-            output.stderr.push_str(&info.stderr);
-            crate::vm_activity::parse_machine_info(&info.stdout)
-        }
-        _ => {
-            return TestOutcome {
-                status: thot_core::test_results::TestStatus::Failed,
-                stdout: output.stdout,
-                stderr: output.stderr,
-                exit_code: Some(1),
-                diagnostics: "VM was hardened but its final configuration could not be inspected"
-                    .into(),
-                observation: serde_json::json!({"vm_name": vm_name, "vm_uuid": uuid, "storage_path": storage}),
-                evidence: vec!["cleanup-manifest.json".into()],
-            };
-        }
-    };
-    if !crate::vm_activity::is_owned_vm(&info, &vm_name, &uuid, &storage) {
-        return TestOutcome {
-            status: thot_core::test_results::TestStatus::Failed,
-            stdout: output.stdout,
-            stderr: output.stderr,
-            exit_code: Some(1),
-            diagnostics: "VM settings path changed outside the imported run storage".into(),
-            observation: serde_json::json!({
-                "vm_name": vm_name,
-                "vm_uuid": uuid,
-                "vm_config_path": info.get("CfgFile"),
                 "storage_path": storage
             }),
             evidence: vec!["cleanup-manifest.json".into()],

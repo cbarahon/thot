@@ -8,6 +8,7 @@ license.workspace = true
 thot-core = { path = "../thot-core" }
 sqlx.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 thot-runner = { path = "../thot-runner" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }

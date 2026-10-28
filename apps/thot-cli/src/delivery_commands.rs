@@ -9,18 +9,69 @@ pub async fn handle(
     settings: &Settings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = ApiClient::new(settings)?;
+    if matches!(args, [action] if action == "status") {
+        let runs: Value = client.request(Method::GET, "/api/v1/runs", None).await?;
+        let active = runs
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|run| {
+                matches!(
+                    run.get("status").and_then(Value::as_str),
+                    Some("queued" | "running" | "cancelling")
+                )
+            })
+            .filter_map(|run| run.get("run_id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        if active.len() != 1 {
+            return Err(format!(
+                "found {} active runs; specify a RUN_ID with `thot run status RUN_ID`",
+                active.len()
+            )
+            .into());
+        }
+        let value: Value = client
+            .request(Method::GET, &format!("/api/v1/runs/{}", active[0]), None)
+            .await?;
+        print_yaml(&value)?;
+        return Ok(());
+    }
     let (method, path, body) = match args {
-        [] => (Method::GET, "/api/v1/runs".to_owned(), None),
         [command] if command == "list" => {
             (Method::GET, "/api/v1/runs".to_owned(), None)
         }
+        [] => (
+            Method::POST,
+            "/api/v1/runs".to_owned(),
+            Some(json!({"project_path":discover_project()?})),
+        ),
         [action, project_file] if action == "create" => (
             Method::POST,
             "/api/v1/runs".to_owned(),
             Some(json!({"project_path":absolute_path(project_file)?})),
         ),
+        [action, flag_project, project_file]
+            if action == "create" && flag_project == "--project" =>
+        {
+            (
+                Method::POST,
+                "/api/v1/runs".to_owned(),
+                Some(json!({"project_path":absolute_path(project_file)?})),
+            )
+        }
         [action, project_file, flag_deliveries, directory]
             if action == "create" && flag_deliveries == "--deliveries" =>
+        {
+            let body = json!({
+                "project_path": absolute_path(project_file)?,
+                "delivery_directory": absolute_path(directory)?
+            });
+            (Method::POST, "/api/v1/runs".to_owned(), Some(body))
+        }
+        [action, flag_project, project_file, flag_deliveries, directory]
+            if action == "create"
+                && flag_project == "--project"
+                && flag_deliveries == "--deliveries" =>
         {
             let body = json!({
                 "project_path": absolute_path(project_file)?,
@@ -59,36 +110,30 @@ fn discover_project() -> Result<String, Box<dyn std::error::Error>> {
     for entry in std::fs::read_dir(&current_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() {
-            if path.extension().and_then(|ext| ext.to_str()) == Some("thot.gz")
-                || path.extension().and_then(|ext| ext.to_str()) == Some("thot.tgz")
-                || path.extension().and_then(|ext| ext.to_str()) == Some("thot.zip")
-            {
-                sources.push(path);
-            }
-        } else if path.is_file()
-            && path.file_name().and_then(|name| name.to_str()) == Some("configuration.yaml")
+        if path.is_file()
+            && [".thot.gz", ".thot.tgz", ".thot.zip"].iter().any(|suffix| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(suffix))
+            })
         {
             sources.push(path);
         }
     }
-
-    if sources.len() == 1 {
-        if let Some(source) = sources.pop() {
-            if source.extension().and_then(|ext| ext.to_str()) == Some("yaml") {
-                return Ok(current_dir.to_string_lossy().into_owned());
-            } else {
-                return Ok(source.to_string_lossy().into_owned());
-            }
-        }
-    } else if sources.len() > 1 {
-        return Err(
-            "Error: Multiple project sources found. Please specify a single source.".into(),
-        );
+    let configuration = current_dir.join("configuration.yaml");
+    if configuration.is_file() {
+        sources.push(configuration);
     }
 
-    Err(
-        "Error: No project source found. Please create a project using 'thot run create PATH'."
-            .into(),
-    )
+    if sources.len() == 1 {
+        let source = sources.pop().expect("one source was found");
+        if source.file_name().and_then(|name| name.to_str()) == Some("configuration.yaml") {
+            return Ok(current_dir.to_string_lossy().into_owned());
+        }
+        return Ok(source.to_string_lossy().into_owned());
+    } else if sources.len() > 1 {
+        return Err("multiple project sources found; use `thot run create PATH`".into());
+    }
+
+    Err("no project source found; use `thot run create PATH`".into())
 }

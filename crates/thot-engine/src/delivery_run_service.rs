@@ -1,7 +1,9 @@
 //! Purpose: Coordinates delivery runs, database state, delivery discovery, and expedient cleanup.
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
+    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -110,6 +112,11 @@ impl DeliveryRunService {
         let uses_vm_ports = snapshot.configuration.tests.iter().any(|test| {
             test.test_ref.starts_with("VirtualBox/") || test.test_ref == "ssh/get_host_info"
         });
+        if uses_vm_ports && snapshot.configuration.concurrency > 1 {
+            return Err(ServiceError::Invalid(
+                "concurrency greater than one is not supported for projects using shared VirtualBox or SSH forwarding ports".into(),
+            ));
+        }
         let vbox_version = if uses_vm_ports {
             vm_activity::preflight(&self.runtime)
                 .await
@@ -161,41 +168,36 @@ impl DeliveryRunService {
         .bind(&run_id)
         .execute(&self.pool)
         .await;
-        let mut expedients = Vec::new();
-        let mut had_errors = false;
-        if inputs.is_empty() {
-            had_errors = true;
+        struct DeliveryWork {
+            expedient_id: String,
+            input: DeliveryInput,
+            report_dir: PathBuf,
+            report_path: PathBuf,
         }
-        for input in inputs {
-            if !self
-                .get_run(&run_id)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|run| !matches!(run.status.as_str(), "cancelled" | "cancelling"))
-            {
+        let mut expedients = Vec::new();
+        let mut work_items = Vec::new();
+        let mut had_errors = inputs.is_empty();
+        for mut input in inputs {
+            if !self.run_accepts_work(&run_id).await {
                 break;
             }
-            let mut input = input;
             if input.validation_error.is_none() {
                 match vm_activity::retain_source(&self.runtime, &input).await {
                     Ok(source) => input.source = source,
-                    Err(e) => input.validation_error = Some(e),
+                    Err(error) => input.validation_error = Some(error),
                 }
             }
-            if !self
-                .get_run(&run_id)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|run| !matches!(run.status.as_str(), "cancelled" | "cancelling"))
-            {
+            if !self.run_accepts_work(&run_id).await {
                 break;
             }
-            let delivery_id = self
-                .register_delivery(&input)
-                .await
-                .unwrap_or_else(|_| input.delivery_id.clone());
+            let delivery_id = match self.register_delivery(&input).await {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::error!(%error, delivery = %input.filename, "could not register delivery");
+                    had_errors = true;
+                    continue;
+                }
+            };
             let filename = Path::new(&input.filename)
                 .file_name()
                 .unwrap_or_default()
@@ -216,7 +218,9 @@ impl DeliveryRunService {
                         expedient_id = format!("{expedient_base}-{collision:02}");
                         collision += 1;
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        tracing::error!(%error, "could not check expedient ID collision");
+                        had_errors = true;
                         expedient_id = format!(
                             "{expedient_base}-{}",
                             &uuid::Uuid::new_v4().simple().to_string()[..8]
@@ -231,34 +235,70 @@ impl DeliveryRunService {
                 .join(&run_id)
                 .join(&delivery_id);
             let report_path = report_dir.join("delivery.json");
-            let _ = sqlx::query("INSERT INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES(?,?,?,?,?)")
-                .bind(&expedient_id).bind(&run_id).bind(&delivery_id).bind(report_path.display().to_string()).bind("running").execute(&self.pool).await;
-            expedients.push(expedient_id.clone());
-            let _ = self.save_run_expedients(&run_id, &expedients).await;
-            input.delivery_id = delivery_id;
-            let report = delivery_executor::execute_delivery(
-                &self.runtime,
-                &project,
-                &vbox_version,
-                &run_id,
-                &expedient_id,
-                &input,
-                &report_dir,
-                &report_path,
-            )
-            .await;
-            let status = report["overall_status"]
-                .as_str()
-                .unwrap_or("completed_with_errors");
-            if status != "completed" {
+            if let Err(error) = sqlx::query("INSERT INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES(?,?,?,?,?)")
+                .bind(&expedient_id).bind(&run_id).bind(&delivery_id).bind(report_path.display().to_string()).bind("queued").execute(&self.pool).await
+            {
+                tracing::error!(%error, expedient_id, "could not record delivery expedient");
                 had_errors = true;
+                continue;
             }
-            let _ = sqlx::query("UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?")
-                .bind(status)
-                .bind(&expedient_id)
-                .execute(&self.pool)
-                .await;
+            expedients.push(expedient_id.clone());
+            input.delivery_id = delivery_id;
+            work_items.push(DeliveryWork {
+                expedient_id,
+                input,
+                report_dir,
+                report_path,
+            });
         }
+        if let Err(error) = self.save_run_expedients(&run_id, &expedients).await {
+            tracing::error!(%error, run_id, "could not persist run expedient list");
+            had_errors = true;
+        }
+
+        let concurrency = project.configuration.concurrency.max(1) as usize;
+        let outcomes = stream::iter(work_items)
+            .map(|work| {
+                let service = self;
+                let run_id = run_id.clone();
+                let project = project.clone();
+                let vbox_version = vbox_version.clone();
+                async move {
+                if !service.run_accepts_work(&run_id).await {
+                    let _ = sqlx::query("UPDATE vm_activity_expedients SET status='cancelled' WHERE expedient_id=?")
+                        .bind(&work.expedient_id).execute(&service.pool).await;
+                    return false;
+                }
+                if let Err(error) = sqlx::query("UPDATE vm_activity_expedients SET status='running' WHERE expedient_id=?")
+                    .bind(&work.expedient_id).execute(&service.pool).await
+                {
+                    tracing::error!(%error, expedient_id = %work.expedient_id, "could not mark expedient running");
+                    return true;
+                }
+                let report = delivery_executor::execute_delivery(
+                    &service.runtime,
+                    &project,
+                    &vbox_version,
+                    &run_id,
+                    &work.expedient_id,
+                    &work.input,
+                    &work.report_dir,
+                    &work.report_path,
+                ).await;
+                let status = report["overall_status"].as_str().unwrap_or("completed_with_errors");
+                if let Err(error) = sqlx::query("UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?")
+                    .bind(status).bind(&work.expedient_id).execute(&service.pool).await
+                {
+                    tracing::error!(%error, expedient_id = %work.expedient_id, "could not save expedient status");
+                    return true;
+                }
+                status != "completed"
+                }
+            })
+            .buffer_unordered(concurrency)
+            .collect::<Vec<_>>()
+            .await;
+        had_errors |= outcomes.into_iter().any(|failed| failed);
         let final_status = if self
             .get_run(&run_id)
             .await
@@ -279,6 +319,14 @@ impl DeliveryRunService {
         .bind(run_id)
         .execute(&self.pool)
         .await;
+    }
+
+    async fn run_accepts_work(&self, run_id: &str) -> bool {
+        self.get_run(run_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|run| !matches!(run.status.as_str(), "cancelled" | "cancelling"))
     }
 
     async fn register_delivery(&self, input: &DeliveryInput) -> Result<String, sqlx::Error> {
@@ -421,6 +469,59 @@ impl DeliveryRunService {
                 .await?;
         }
         Ok(Some(run))
+    }
+
+    pub async fn clean(&self) -> Result<crate::maintenance::MaintenanceReport, ServiceError> {
+        let _guard = self.create_gate.lock().await;
+        self.ensure_no_active_runs().await?;
+        crate::maintenance::clean_orphans(
+            &self.pool,
+            &self.artifact_root,
+            &self.runtime.storage_root,
+            &self.runtime,
+        )
+        .await
+        .map_err(ServiceError::Internal)
+    }
+
+    pub async fn prune(&self) -> Result<crate::maintenance::MaintenanceReport, ServiceError> {
+        let _guard = self.create_gate.lock().await;
+        self.ensure_no_active_runs().await?;
+        crate::maintenance::prune_runs(
+            &self.pool,
+            &self.artifact_root,
+            &self.runtime.storage_root,
+            &self.runtime,
+        )
+        .await
+        .map_err(ServiceError::Internal)
+    }
+
+    pub async fn reset(&self) -> Result<crate::maintenance::MaintenanceReport, ServiceError> {
+        let _guard = self.create_gate.lock().await;
+        self.ensure_no_active_runs().await?;
+        crate::maintenance::reset_data(
+            &self.pool,
+            &self.artifact_root,
+            &self.runtime.storage_root,
+            &self.runtime,
+        )
+        .await
+        .map_err(ServiceError::Internal)
+    }
+
+    async fn ensure_no_active_runs(&self) -> Result<(), ServiceError> {
+        let active = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM vm_activity_runs WHERE status IN ('queued','running','cancelling')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if active > 0 {
+            return Err(ServiceError::Conflict(
+                "maintenance is unavailable while a run is queued, running, or cancelling".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub async fn cleanup_expedient(
@@ -626,6 +727,23 @@ fn resolve_directory(path: &Path, relative_to: Option<&Path>) -> Result<PathBuf,
             .map_err(|e| format!("cannot resolve current directory: {e}"))?
             .join(path)
     };
+    let absolute = if requested.is_absolute() {
+        requested.clone()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("cannot resolve current directory: {e}"))?
+            .join(&requested)
+    };
+    let mut current = PathBuf::new();
+    for component in absolute.components() {
+        current.push(component);
+        if fs::symlink_metadata(&current).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(format!(
+                "delivery directory must not traverse a symlink: {}",
+                current.display()
+            ));
+        }
+    }
     let selected = requested.canonicalize().map_err(|e| {
         format!(
             "delivery directory {} is unavailable: {e}",

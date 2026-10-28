@@ -12,6 +12,7 @@ use thot_core::ImportStudentsRequest;
 use thot_engine::{DeliveryRunService, StudentService};
 
 mod delivery_runs;
+mod maintenance;
 
 #[derive(Clone)]
 struct StudentState {
@@ -27,7 +28,9 @@ pub fn router(students: StudentService) -> Router {
 }
 
 pub fn router_with_runs(students: StudentService, runs: DeliveryRunService) -> Router {
-    router(students).merge(delivery_runs::router(runs))
+    router(students)
+        .merge(delivery_runs::router(runs.clone()))
+        .merge(maintenance::router(runs))
 }
 
 async fn health() -> Json<serde_json::Value> {

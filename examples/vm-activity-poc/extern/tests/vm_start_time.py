@@ -55,11 +55,11 @@ def main():
     body = b""
     error = None
     elapsed_ms = None
-    start_result = command(["VBoxManage", "startvm", vm_name, "--type", "headless"], timeout=30)
-    if start_result.returncode != 0:
-        raise RuntimeError("VBoxManage startvm failed: " + start_result.stderr.strip())
-
     try:
+        start_result = command(["VBoxManage", "startvm", vm_name, "--type", "headless"], timeout=30)
+        if start_result.returncode != 0:
+            raise RuntimeError("VBoxManage startvm failed: " + start_result.stderr.strip())
+
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             try:

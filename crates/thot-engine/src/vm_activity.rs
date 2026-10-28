@@ -46,41 +46,76 @@ pub async fn load_project(
     project_file: &Path,
     snapshot_dir: &Path,
 ) -> Result<ProjectSnapshot, String> {
-    let path = project_file.canonicalize().map_err(|e| {
-        format!(
-            "project file {} is unavailable: {e}",
-            project_file.display()
+    let metadata = fs::symlink_metadata(project_file)
+        .map_err(|e| format!("project {} is unavailable: {e}", project_file.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err("project source must not be a symlink".into());
+    }
+    let path = project_file
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve project source: {e}"))?;
+    let extracted_root = snapshot_dir.join("project");
+    let (archive_path, archive_parent, bytes, configuration_bytes, sha256) = if metadata.is_dir() {
+        let config_path = path.join("configuration.yaml");
+        let config_metadata = fs::symlink_metadata(&config_path)
+            .map_err(|e| format!("project directory must contain configuration.yaml: {e}"))?;
+        if config_metadata.file_type().is_symlink() || !config_metadata.is_file() {
+            return Err("project configuration.yaml must be a regular file".into());
+        }
+        let configuration_bytes = fs::read(&config_path)
+            .map_err(|e| format!("cannot read project configuration.yaml: {e}"))?;
+        let configuration = crate::project_config::parse_configuration(&configuration_bytes)?;
+        let delivery_path = resolve_project_delivery(&path, &configuration.delivery_folder)?;
+        crate::project_archive::snapshot_project_directory(
+            &path,
+            &extracted_root,
+            &[delivery_path],
+        )?;
+        let sha256 = hash_project_directory(&extracted_root)?;
+        (
+            path.clone(),
+            path.clone(),
+            configuration_bytes.clone(),
+            configuration_bytes,
+            sha256,
         )
-    })?;
-    let metadata = fs::metadata(&path)
-        .map_err(|e| format!("cannot inspect project {}: {e}", path.display()))?;
-    if !metadata.is_file() {
-        return Err("project archive must be a regular file".into());
-    }
-    if !path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".thot.tgz") || name.ends_with(".thot.zip"))
-    {
-        return Err("project file extension must be .thot.tgz or .thot.zip".into());
-    }
-    let bytes = fs::read(&path)
-        .map_err(|e| format!("cannot read project archive {}: {e}", path.display()))?;
-    let snapshot_archive = {
+    } else if metadata.is_file() {
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if ![".thot.gz", ".thot.tgz", ".thot.zip"]
+            .iter()
+            .any(|suffix| filename.ends_with(suffix))
+        {
+            return Err("project file extension must be .thot.gz, .thot.tgz, or .thot.zip".into());
+        }
+        let bytes = fs::read(&path)
+            .map_err(|e| format!("cannot read project archive {}: {e}", path.display()))?;
         fs::create_dir_all(snapshot_dir).map_err(|e| e.to_string())?;
         let retained = snapshot_dir.join(path.file_name().unwrap());
         atomic_write(&retained, &bytes)
             .map_err(|e| format!("cannot retain project snapshot: {e}"))?;
-        retained
-    };
-    let configuration_bytes = {
-        let extracted = snapshot_dir.join("project");
-        crate::project_archive::extract_project_archive(&snapshot_archive, &extracted)?;
-        fs::read(extracted.join("configuration.yaml")).map_err(|e| e.to_string())?
+        crate::project_archive::extract_project_archive(&retained, &extracted_root)?;
+        let configuration_bytes = fs::read(extracted_root.join("configuration.yaml"))
+            .map_err(|e| format!("cannot read project configuration.yaml: {e}"))?;
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let archive_parent = path
+            .parent()
+            .ok_or("project archive has no containing directory")?
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve project archive directory: {e}"))?;
+        (
+            path.clone(),
+            archive_parent,
+            bytes.clone(),
+            configuration_bytes,
+            sha256,
+        )
+    } else {
+        return Err("project source must be an archive file or directory".into());
     };
     let configuration = crate::project_config::parse_configuration(&configuration_bytes)?;
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
-    let extracted_root = snapshot_dir.join("project");
     let ssh_username = configuration
         .tests
         .iter()
@@ -88,33 +123,34 @@ pub async fn load_project(
         .and_then(|test| test.parameters.into_strings().ok())
         .and_then(|params| params.get("user").cloned())
         .unwrap_or_else(|| "tvadmin".to_owned());
-    let archive_parent = path
-        .parent()
-        .ok_or("project archive has no containing directory")?
-        .canonicalize()
-        .map_err(|e| format!("cannot resolve project archive directory: {e}"))?;
-    let project_id = project_identifier(&path);
+    let project_id = project_identifier(&archive_path, metadata.is_dir());
     Ok(ProjectSnapshot {
         project_id,
         bytes,
         sha256,
         ssh_username,
         archive_parent,
-        archive_path: path,
+        archive_path,
         extracted_root,
         configuration,
     })
 }
 
-fn project_identifier(path: &Path) -> String {
+fn project_identifier(path: &Path, is_directory: bool) -> String {
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("project");
-    let stem = filename
-        .strip_suffix(".thot.tgz")
-        .or_else(|| filename.strip_suffix(".thot.zip"))
-        .unwrap_or("project");
+    let stem = if is_directory {
+        filename
+    } else {
+        filename
+            .strip_suffix(".thot.tar.gz")
+            .or_else(|| filename.strip_suffix(".thot.tgz"))
+            .or_else(|| filename.strip_suffix(".thot.zip"))
+            .or_else(|| filename.strip_suffix(".thot.gz"))
+            .unwrap_or("project")
+    };
     let slug = stem
         .chars()
         .map(|character| {
@@ -135,6 +171,80 @@ fn project_identifier(path: &Path) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     format!("{slug}-{suffix}")
+}
+
+fn resolve_project_delivery(project_root: &Path, configured_path: &str) -> Result<PathBuf, String> {
+    let requested = Path::new(configured_path);
+    let path = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        project_root.join(requested)
+    };
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("cannot resolve current directory: {e}"))?
+            .join(path)
+    };
+    let mut current = PathBuf::new();
+    for component in absolute.components() {
+        current.push(component);
+        if fs::symlink_metadata(&current).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(format!(
+                "delivery folder must not traverse a symlink: {}",
+                current.display()
+            ));
+        }
+    }
+    let resolved = absolute
+        .canonicalize()
+        .map_err(|e| format!("delivery folder is unavailable: {e}"))?;
+    if !resolved.is_dir() {
+        return Err("delivery_folder must resolve to a directory".into());
+    }
+    Ok(resolved)
+}
+
+fn hash_project_directory(root: &Path) -> Result<String, String> {
+    fn collect(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+        let mut entries = fs::read_dir(current)
+            .map_err(|e| format!("cannot read project snapshot: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("cannot read project snapshot entry: {e}"))?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|e| format!("cannot inspect project snapshot entry: {e}"))?;
+            if metadata.file_type().is_symlink() {
+                return Err("project snapshot unexpectedly contains a symlink".into());
+            }
+            if metadata.is_dir() {
+                collect(root, &path, files)?;
+            } else if metadata.is_file() {
+                files.push(path.strip_prefix(root).unwrap().to_path_buf());
+            } else {
+                return Err("project snapshot contains a special file".into());
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    collect(root, root, &mut files)?;
+    files.sort();
+    let mut hasher = Sha256::new();
+    for relative in files {
+        let name = relative.to_string_lossy();
+        hasher.update((name.len() as u64).to_be_bytes());
+        hasher.update(name.as_bytes());
+        let contents = fs::read(root.join(&relative))
+            .map_err(|e| format!("cannot hash project file {}: {e}", relative.display()))?;
+        hasher.update((contents.len() as u64).to_be_bytes());
+        hasher.update(contents);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 pub async fn preflight(runtime: &VmActivityRuntime) -> Result<String, String> {
@@ -934,8 +1044,44 @@ pub async fn cleanup_from_manifest(
         return json!({"status":"failed","vm_unregistered":false,"run_storage_removed":false,"details":["manifest VM name is missing or invalid"]});
     };
     let expected_suffix = Path::new(run_id).join(delivery_id);
-    if !storage.starts_with(&archive_parent) || !storage.ends_with(&expected_suffix) {
+    if !storage.ends_with(&expected_suffix) {
         return json!({"status":"failed","vm_unregistered":false,"run_storage_removed":false,"details":["manifest storage path is not inside the project archive directory or does not match run ownership"]});
+    }
+    if let Some(configured_vm_path) = manifest.get("project_vm_path").and_then(Value::as_str) {
+        let relative = Path::new(configured_vm_path);
+        if relative.is_absolute()
+            || relative.components().any(|part| {
+                !matches!(
+                    part,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            })
+        {
+            return json!({"status":"failed","vm_unregistered":false,"run_storage_removed":false,"details":["manifest project vm_path is not a safe relative path"]});
+        }
+        let expected_storage = archive_parent.join(relative).join(run_id).join(delivery_id);
+        if storage != expected_storage {
+            return json!({"status":"failed","vm_unregistered":false,"run_storage_removed":false,"details":["manifest storage path does not match the project-configured vm_path and delivery ownership"]});
+        }
+        let mut current = archive_parent.clone();
+        for component in relative.components() {
+            if let std::path::Component::Normal(part) = component {
+                current.push(part);
+                if fs::symlink_metadata(&current).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                    return json!({"status":"failed","vm_unregistered":false,"run_storage_removed":false,"details":["manifest storage path traverses a symlink"]});
+                }
+            }
+        }
+        for part in [run_id, delivery_id] {
+            current.push(part);
+            if fs::symlink_metadata(&current).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                return json!({"status":"failed","vm_unregistered":false,"run_storage_removed":false,"details":["manifest storage path traverses a symlink"]});
+            }
+        }
+    } else if !storage.starts_with(&archive_parent) {
+        // Older manifests did not record vm_path. Keep operator cleanup compatible
+        // while retaining their stored archive-parent and run/delivery checks.
+        return json!({"status":"failed","vm_unregistered":false,"run_storage_removed":false,"details":["legacy manifest storage path is outside its project directory"]});
     }
     if storage.exists()
         && !storage
@@ -995,7 +1141,7 @@ pub async fn cleanup_from_manifest(
             }
         }
     }
-    let recovered_manifest = json!({"schema_version":2,"run_id":run_id,"delivery_id":delivery_id,"vm_name":expected_name,"vm_uuid":uuid,"disk_paths":disk_paths,"may_be_registered":false,"storage_path":storage.display().to_string(),"archive_parent":archive_parent.display().to_string()});
+    let recovered_manifest = json!({"schema_version":2,"run_id":run_id,"delivery_id":delivery_id,"vm_name":expected_name,"vm_uuid":uuid,"disk_paths":disk_paths,"may_be_registered":false,"storage_path":storage.display().to_string(),"archive_parent":archive_parent.display().to_string(),"project_vm_path":manifest["project_vm_path"]});
     let _ = atomic_write(
         &path,
         &serde_json::to_vec_pretty(&recovered_manifest).unwrap_or_default(),
@@ -1075,7 +1221,7 @@ pub async fn cleanup_from_manifest(
         let _ = storage.parent().and_then(|p| fs::remove_dir(p).ok());
     }
     let removed = !storage.exists();
-    let final_manifest = json!({"schema_version":2,"run_id":run_id,"delivery_id":delivery_id,"vm_name":expected_name,"vm_uuid":uuid,"disk_paths":disk_paths,"may_be_registered":false,"storage_path":storage.display().to_string(),"archive_parent":archive_parent.display().to_string()});
+    let final_manifest = json!({"schema_version":2,"run_id":run_id,"delivery_id":delivery_id,"vm_name":expected_name,"vm_uuid":uuid,"disk_paths":disk_paths,"may_be_registered":false,"storage_path":storage.display().to_string(),"archive_parent":archive_parent.display().to_string(),"project_vm_path":manifest["project_vm_path"]});
     let _ = atomic_write(
         &path,
         &serde_json::to_vec_pretty(&final_manifest).unwrap_or_default(),

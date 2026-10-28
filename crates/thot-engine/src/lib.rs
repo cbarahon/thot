@@ -2,6 +2,9 @@
 
 pub mod delivery_executor;
 pub mod delivery_run_service;
+pub mod maintenance;
+pub mod maintenance_plan;
+pub mod maintenance_vms;
 pub mod project_archive;
 pub mod project_config;
 pub mod storage;
