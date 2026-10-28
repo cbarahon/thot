@@ -3,7 +3,8 @@ mod vm_activity_config;
 
 use std::{env, net::SocketAddr};
 use thot_engine::{
-    DeliveryRunService, SqliteStudentRepository, StudentService, vm_activity::VmActivityRuntime,
+    AssignmentService, DeliveryRunService, SqliteStudentRepository, StudentService,
+    vm_activity::VmActivityRuntime,
 };
 use tracing_subscriber::EnvFilter;
 use vm_activity_config::VmActivityConfig;
@@ -44,8 +45,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let run_service =
         DeliveryRunService::connect(&database, config.artifact_root.clone(), runtime).await?;
+    let assignment_service = AssignmentService::connect(&database).await?;
 
-    let app = thot_api::router_with_runs(StudentService::new(student_repository), run_service);
+    let app = thot_api::router_with_runs(
+        StudentService::new(student_repository),
+        run_service,
+        assignment_service,
+    );
     let bind_ip = config.bind_host.parse()?;
     let address = SocketAddr::new(bind_ip, config.bind_port);
     let listener = tokio::net::TcpListener::bind(address).await?;

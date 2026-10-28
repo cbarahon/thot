@@ -6,6 +6,9 @@ credentials. Its default API endpoint is `http://127.0.0.1:8081`.
 ```text
 thot [-h HOST] [-p PORT] import students <file.csv>
 thot [-h HOST] [-p PORT] get students [csv]
+thot [-h HOST] [-p PORT] assignments guess [--json]
+thot [-h HOST] [-p PORT] assignments get [--json]
+thot [-h HOST] [-p PORT] assignments import <FILE.yaml|json> [--json]
 thot [-h HOST] [-p PORT] run [list]
 thot [-h HOST] [-p PORT] run create <PROJECT_PATH> [--deliveries DIR]
 thot [-h HOST] [-p PORT] run create --project <PROJECT_PATH> [--deliveries DIR]
@@ -55,3 +58,30 @@ among `./thot-config.yaml`, `./.thot-config.yaml`, and
 CSV import recognizes common Catalan, Spanish, and English headers. Unknown
 columns are ignored, malformed rows are reported on stderr, and validation of
 student data remains in the server.
+
+`thot assignments guess` compares student names, surnames, email usernames,
+external IDs, and student IDs with delivery filenames. It replaces current
+assignments with its best non-ambiguous matches; one delivery may be matched to
+several students. Inspect or edit the suggested mapping with
+`thot assignments get`. Its response contains a row for each student, the
+assigned delivery ID and filename, the number of students sharing that delivery,
+and a list of unassigned deliveries.
+
+`thot assignments import FILE` replaces all current assignments. The file may
+be JSON or YAML and can be edited from `assignments get` output. Include exactly
+one row for every student. Each entry uses `student_id` and `delivery_id`; set
+`delivery_id: null` to leave that student unassigned. For example:
+
+```yaml
+assignments:
+  - student_id: 1
+    delivery_id: delivery-a1b2
+  - student_id: 2
+    delivery_id: delivery-a1b2
+  - student_id: 3
+    delivery_id: null
+```
+
+Guess, get, and import print YAML by default. Add `--json` to print their
+responses as formatted JSON. The API endpoints are `POST /api/v1/assignments/guess`,
+`GET /api/v1/assignments/get`, and `POST /api/v1/assignments/import`.

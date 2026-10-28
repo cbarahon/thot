@@ -95,6 +95,8 @@ Scoring and LO evaluation should be repeatable from stored test results without 
 
 The implemented POC executes project-defined tests for OVA deliveries. Deliveries are tested sequentially within each delivery. Multiple deliveries may run concurrently up to the project's `concurrency` limit when their test references do not use VirtualBox or SSH shared host resources; projects using those adapters are restricted to concurrency one because the current guest forwarding ports are shared. The engine records an expedient and captured process result for each delivery and test. It does not yet calculate scores or learning outcomes.
 
+The assignment service compares student names, surnames, email usernames, external IDs, and IDs against delivery filenames. Professors can inspect and replace these suggestions before evaluation. Each student has at most one assigned delivery, while one delivery can be assigned to multiple students for group work. Unassigned deliveries remain listed for review.
+
 ## 4. Logical architecture
 
 ```mermaid

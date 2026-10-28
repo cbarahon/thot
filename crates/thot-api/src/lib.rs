@@ -9,8 +9,9 @@ use axum::{
 };
 use serde_json::json;
 use thot_core::ImportStudentsRequest;
-use thot_engine::{DeliveryRunService, StudentService};
+use thot_engine::{AssignmentService, DeliveryRunService, StudentService};
 
+mod assignments;
 mod delivery_runs;
 mod maintenance;
 
@@ -27,10 +28,15 @@ pub fn router(students: StudentService) -> Router {
         .with_state(StudentState { students })
 }
 
-pub fn router_with_runs(students: StudentService, runs: DeliveryRunService) -> Router {
+pub fn router_with_runs(
+    students: StudentService,
+    runs: DeliveryRunService,
+    assignments_service: AssignmentService,
+) -> Router {
     router(students)
         .merge(delivery_runs::router(runs.clone()))
         .merge(maintenance::router(runs))
+        .merge(assignments::router(assignments_service))
 }
 
 async fn health() -> Json<serde_json::Value> {

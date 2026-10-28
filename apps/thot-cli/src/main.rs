@@ -1,5 +1,6 @@
 //! Purpose: CLI entry point for student import/export and delivery-run commands.
 mod api_client;
+mod assignment_commands;
 mod delivery_commands;
 mod maintenance_commands;
 mod output;
@@ -57,6 +58,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     match options.command.as_slice() {
         [command] if matches!(command.as_str(), "clean" | "prune" | "reset") => {
             maintenance_commands::handle(command, &settings).await?;
+        }
+        [command, ..] if command == "assignments" => {
+            assignment_commands::handle(&options.command[1..], &settings).await?;
         }
         [run, ..] if run == "run" => {
             delivery_commands::handle(&options.command[1..], &settings).await?;
@@ -566,7 +570,7 @@ fn write_csv_record(output: &mut impl Write, fields: &[&str]) -> io::Result<()> 
 
 fn print_usage() {
     println!(
-        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot clean\n  thot prune\n  thot reset\n  thot run [list]\n  thot run create <ruta-proyecto> [--deliveries DIR]\n  thot run create --project <ruta-proyecto> [--deliveries DIR]\n  thot run status [RUN_ID]\n  thot run delete RUN_ID\n  thot run expedient EXPEDIENT_ID\n  thot run cancel RUN_ID\n  thot run cleanup EXPEDIENT_ID\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
+        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot assignments guess [--json]\n  thot assignments get [--json]\n  thot assignments import <fichero.yaml|json> [--json]\n  thot clean\n  thot prune\n  thot reset\n  thot run [list]\n  thot run create <ruta-proyecto> [--deliveries DIR]\n  thot run create --project <ruta-proyecto> [--deliveries DIR]\n  thot run status [RUN_ID]\n  thot run delete RUN_ID\n  thot run expedient EXPEDIENT_ID\n  thot run cancel RUN_ID\n  thot run cleanup EXPEDIENT_ID\n\nLas asignaciones se muestran como YAML por defecto; use --json para salida JSON.\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
     );
 }
 
