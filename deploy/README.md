@@ -101,7 +101,7 @@ The installed systemd unit runs as `thotd`, keeps a private `/tmp`, and protects
 
 Project archives and delivery directories can be anywhere accessible to `thotd`. The default writable project VM paths are `/srv` and `/etc/thot/projects/vms`; if a project's `vm_path` is elsewhere in a protected system directory, add it to the service's `ReadWritePaths` with `sudo systemctl edit thotd`. The installer includes the service definition at `deploy/thotd.service`.
 
-The installer is the recommended path because it creates the environment file and service-owned directories consistently. After installing, place a teacher-created `.thot.zip` or `.thot.tgz` project archive and its delivery directory on the host. The archive must contain `configuration.yaml` at its root; external checks such as `extern/tests/vm_start_time.py` are packaged beside it. The repository example is in `examples/vm-activity-poc/`.
+The installer is the recommended path because it creates the environment file and service-owned directories consistently. After installing, place a teacher-created `.thot.zip` or `.thot.tgz` project archive and its delivery directory on the host. The archive must contain `configuration.yaml` at its root; external checks such as `extern/tests/vm_start_time.py` are packaged beside it. The repository example is in `examples/vm-activity-poc/`. Although the archive reader has a `.thot.gz` path, the run loader does not currently accept that suffix; use `.thot.tgz` or `.thot.zip`.
 
 ## Manual build
 
@@ -131,5 +131,7 @@ thot run delete <run-id>
 ```
 
 Run IDs use the project archive name and its UTC creation time, for example `linux_competition-20261026_154512`. Expedient IDs use the delivery filename and the same run timestamp. Listing returns run status, creation time, project and delivery paths, and expedient IDs. Deleting a run removes its run, expedient, and unreferenced delivery records from the database; it leaves report files, VM files, and other artifacts untouched. A queued, running, or cancelling run cannot be deleted.
+
+Successful run and expedient responses are printed as YAML by the CLI; the daemon API remains JSON. `thot run` is currently an alias for listing runs. Create commands require an explicit archive path, and `thot run status` requires a run ID.
 
 The current POC accepts one active run and processes deliveries sequentially. Check each expedient and cleanup result. A host without VirtualBox can build and run the basic Rust tests, but cannot validate OVA import, guest boot, forwarding, screenshots, SSH, or VM cleanup.

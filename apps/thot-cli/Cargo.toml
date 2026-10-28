@@ -13,6 +13,8 @@ serde_json.workspace = true
 thot-core = { path = "../../crates/thot-core" }
 tokio.workspace = true
 reqwest.workspace = true
+serde_yaml.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 axum.workspace = true

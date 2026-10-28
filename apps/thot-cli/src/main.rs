@@ -1,6 +1,7 @@
 //! Purpose: CLI entry point for student import/export and delivery-run commands.
 mod api_client;
 mod delivery_commands;
+mod output;
 
 use std::{
     collections::HashMap,

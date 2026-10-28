@@ -555,6 +555,7 @@ fn project_file_component(path: &Path) -> String {
     let stem = [
         ".thot.tar.gz",
         ".thot.tgz",
+        ".thot.gz",
         ".thot.zip",
         ".tar.gz",
         ".tgz",

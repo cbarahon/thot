@@ -1,4 +1,4 @@
-//! Purpose: Safely extracts ZIP and TGZ project archives into a staging directory.
+//! Purpose: Safely extracts project archives and snapshots project directories into staging.
 use flate2::read::GzDecoder;
 use std::{
     collections::HashSet,
@@ -10,6 +10,149 @@ use std::{
 const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 500 * 1024 * 1024;
 const MAX_ENTRIES: usize = 2_000;
+
+pub fn snapshot_project_directory(
+    source: &Path,
+    destination: &Path,
+    excluded_paths: &[PathBuf],
+) -> Result<PathBuf, String> {
+    let source_metadata = fs::symlink_metadata(source)
+        .map_err(|e| format!("cannot inspect project directory: {e}"))?;
+    if source_metadata.file_type().is_symlink() || !source_metadata.is_dir() {
+        return Err("project source must be a real directory".into());
+    }
+    let source = source
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve project directory: {e}"))?;
+    if destination.exists() {
+        return Err("project snapshot destination already exists".into());
+    }
+    let destination_name = destination
+        .file_name()
+        .ok_or("project snapshot destination must have a final path component")?;
+    let destination_parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(destination_parent)
+        .map_err(|e| format!("cannot create project snapshot parent: {e}"))?;
+    let destination_parent = destination_parent
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve project snapshot parent: {e}"))?;
+    if destination_parent == source || destination_parent.starts_with(&source) {
+        return Err("project snapshot destination must be outside the source directory".into());
+    }
+    let destination = destination_parent.join(destination_name);
+    if destination.starts_with(&source) {
+        return Err("project snapshot destination must be outside the source directory".into());
+    }
+    fs::create_dir(&destination)
+        .map_err(|e| format!("cannot create project snapshot directory: {e}"))?;
+
+    let mut entry_count = 0;
+    let mut expanded_bytes = 0;
+    let result = copy_project_tree(
+        &source,
+        &destination,
+        Path::new(""),
+        excluded_paths,
+        &mut entry_count,
+        &mut expanded_bytes,
+    );
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(&destination);
+        return Err(error);
+    }
+    Ok(destination)
+}
+
+fn copy_project_tree(
+    source_root: &Path,
+    destination_root: &Path,
+    relative_directory: &Path,
+    excluded_paths: &[PathBuf],
+    entry_count: &mut usize,
+    expanded_bytes: &mut u64,
+) -> Result<(), String> {
+    let source_directory = source_root.join(relative_directory);
+    for entry in fs::read_dir(&source_directory).map_err(|e| {
+        format!(
+            "cannot read project directory {}: {e}",
+            source_directory.display()
+        )
+    })? {
+        let entry = entry.map_err(|e| format!("cannot read project entry: {e}"))?;
+        let source_path = entry.path();
+        let relative_path = source_path
+            .strip_prefix(source_root)
+            .map_err(|_| "project entry is outside the source directory")?;
+        if excluded_paths.iter().any(|excluded| {
+            source_path.as_path() == excluded.as_path() || source_path.starts_with(excluded)
+        }) {
+            continue;
+        }
+        if relative_directory.as_os_str().is_empty()
+            && (relative_path == Path::new("vms")
+                || relative_path == Path::new("test_records")
+                || is_project_archive_name(&entry.file_name()))
+        {
+            continue;
+        }
+
+        *entry_count += 1;
+        if *entry_count > MAX_ENTRIES {
+            return Err("project directory contains more than 2,000 entries".into());
+        }
+        let metadata = fs::symlink_metadata(&source_path)
+            .map_err(|e| format!("cannot inspect project entry: {e}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "project symlinks are not allowed: {}",
+                relative_path.display()
+            ));
+        }
+        let destination_path = destination_root.join(relative_path);
+        if !destination_path.starts_with(destination_root) {
+            return Err("project entry escapes snapshot directory".into());
+        }
+        if metadata.is_dir() {
+            fs::create_dir(&destination_path)
+                .map_err(|e| format!("cannot create snapshot directory: {e}"))?;
+            copy_project_tree(
+                source_root,
+                destination_root,
+                relative_path,
+                excluded_paths,
+                entry_count,
+                expanded_bytes,
+            )?;
+            fs::set_permissions(&destination_path, metadata.permissions())
+                .map_err(|e| format!("cannot preserve directory permissions: {e}"))?;
+        } else if metadata.is_file() {
+            *expanded_bytes = (*expanded_bytes).saturating_add(metadata.len());
+            if *expanded_bytes > MAX_EXPANDED_BYTES {
+                return Err("expanded project directory exceeds 500 MiB".into());
+            }
+            fs::copy(&source_path, &destination_path)
+                .map_err(|e| format!("cannot copy project file: {e}"))?;
+            fs::set_permissions(&destination_path, metadata.permissions())
+                .map_err(|e| format!("cannot preserve file permissions: {e}"))?;
+        } else {
+            return Err(format!(
+                "project special files are not allowed: {}",
+                relative_path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_project_archive_name(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    [".thot.gz", ".thot.tgz", ".thot.zip"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+}
 
 pub fn extract_project_archive(archive: &Path, destination: &Path) -> Result<PathBuf, String> {
     let metadata = fs::symlink_metadata(archive)
@@ -27,18 +170,18 @@ pub fn extract_project_archive(archive: &Path, destination: &Path) -> Result<Pat
         .map_err(|e| format!("cannot create project staging directory: {e}"))?;
     let result = if archive
         .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.ends_with(".zip"))
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".zip"))
     {
         extract_zip(archive, destination)
     } else if archive
         .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.ends_with(".tgz"))
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".tgz") || name.ends_with(".thot.gz"))
     {
         extract_tgz(archive, destination)
     } else {
-        Err("project archive extension must be .thot.zip or .thot.tgz".into())
+        Err("project archive extension must be .thot.zip, .thot.tgz, or .thot.gz".into())
     };
     if let Err(error) = result {
         let _ = fs::remove_dir_all(destination);
@@ -219,7 +362,7 @@ mod tests {
             .unwrap();
         writer.write_all(b"activity_name: Demo\n").unwrap();
         writer.finish().unwrap();
-        let extracted = extract_project_archive(&archive, &destination).unwrap();
+        let extracted = snapshot_project_directory(&root, &destination, &[]).unwrap();
         assert_eq!(
             fs::read(extracted.join("configuration.yaml")).unwrap(),
             b"activity_name: Demo\n"
@@ -240,7 +383,7 @@ mod tests {
             .unwrap();
         writer.write_all(b"bad").unwrap();
         writer.finish().unwrap();
-        assert!(extract_project_archive(&archive, &destination).is_err());
+        assert!(snapshot_project_directory(&root, &destination, &[]).is_err());
         assert!(!destination.exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -266,7 +409,36 @@ mod tests {
             .unwrap();
         let encoder = builder.into_inner().unwrap();
         encoder.finish().unwrap();
-        extract_project_archive(&archive, &destination).unwrap();
+        snapshot_project_directory(&root, &destination, &[]).unwrap();
+        assert_eq!(
+            fs::read(destination.join("configuration.yaml")).unwrap(),
+            b"activity_name: Demo\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extracts_root_configuration_from_thot_gz() {
+        let root = temp_path("thot_gz");
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("project.thot.gz");
+        let destination = root.join("staging");
+        let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());
+        let mut builder = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_size(20);
+        header.set_mode(0o640);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "configuration.yaml",
+                Cursor::new(b"activity_name: Demo\n"),
+            )
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        snapshot_project_directory(&root, &destination, &[]).unwrap();
         assert_eq!(
             fs::read(destination.join("configuration.yaml")).unwrap(),
             b"activity_name: Demo\n"

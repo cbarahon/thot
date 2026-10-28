@@ -1,6 +1,6 @@
 # Thot — Software Architecture
 
-**Status:** Proposed architecture  
+**Status:** Target architecture; only a subset is implemented. See [the VM activity POC status](THOT_VM_ACTIVITY_POC.md) for current behavior.
 **Implementation:** Rust engine and CLI  
 **Web server:** lighttpd  
 **Configuration:** YAML  
@@ -337,7 +337,7 @@ SSE is the recommended default for one-way progress. Include event IDs or sequen
 
 ## 9. Project-defined test bundles
 
-The VM activity POC accepts a `.thot.zip` or `.thot.tgz` archive with `configuration.yaml` at its root. The archive can also contain teacher-supplied programs, for example:
+The VM activity run loader accepts a `.thot.zip` or `.thot.tgz` archive with `configuration.yaml` at its root. The archive can also contain teacher-supplied programs, for example:
 
 ```text
 linux_competition.thot.tgz
@@ -352,6 +352,8 @@ linux_competition.thot.tgz
 Tests are atomic reusable functions grouped by platform under `crates/thot-engine/src/tests/`. A common invocation carries test parameters, timeout, project and delivery context, and artifact paths. A common outcome carries status, stdout, stderr, exit code, diagnostics, observations, and evidence. Built-in and external tests therefore persist through the same result model. External scripts receive parameters as `key=value` arguments and run as child processes with bounded time and output; they are trusted teacher code, not sandboxed code.
 
 For the current POC, archive extraction rejects path traversal and links, limits archive size and entry count, and requires a regular root `configuration.yaml`. Importing a project does not run its scripts; an external program runs only when its configured test is reached. The current built-in registry provides VirtualBox import/start/stop/destroy and SSH host information checks. Additional platform adapters can be added without changing the project format.
+
+The archive extraction helper recognizes `.thot.gz`, but the run loader currently accepts only `.thot.tgz` and `.thot.zip`. A safe directory snapshot helper also exists; passing a project directory to the run service is not yet supported. The CLI currently lists runs for both `thot run` and `thot run list`, and `thot run status` requires an explicit run ID. Successful run and expedient responses are rendered as YAML for terminal readability; the REST API continues to exchange JSON. These are implementation details and do not change the target architecture above.
 
 Per-delivery expedients and artifacts are stored outside the reusable archive. Each test result records process output and exit code. Artifacts are scoped under `test_records/<delivery filename>/<test name>/artifacts` within that delivery's artifact directory. The VM activity implementation currently accepts the concurrency field but executes one run and its deliveries sequentially; parallel student execution is a later scheduling capability.
 

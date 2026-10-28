@@ -1,12 +1,12 @@
 # Thot VM activity POC
 
-**Status:** Project-defined test model implemented; basic Rust tests pass. VirtualBox execution has not been exercised in this environment because VirtualBox is unavailable.
+**Status:** Project-defined test model implemented. The latest workspace changes compile; VirtualBox execution has not been exercised in this environment because VirtualBox is unavailable.
 
 This POC runs teacher-defined checks against OVA deliveries on one Linux host with VirtualBox. It records technical test results and evidence; it does not assign students, calculate marks, or grade submissions. The roster API is separate from this workflow.
 
 ## Project bundle
 
-A project is a `.thot.zip` or `.thot.tgz` file with `configuration.yaml` at its archive root. External teacher scripts are stored in the same archive. For example:
+A project accepted by the run loader is a `.thot.zip` or `.thot.tgz` file with `configuration.yaml` at its archive root. External teacher scripts are stored in the same archive. For example:
 
 ```text
 linux_competition.thot.tgz
@@ -20,11 +20,13 @@ The configuration defines an ordered test list. A test reference has the form `P
 
 The example project is [configuration.yaml](../examples/vm-activity-poc/configuration.yaml). Its tests import an OVA, run the external HTTP startup and screenshot check three times, start the VM, collect host information over SSH, stop it, and destroy it. The external script receives parameters as `key=value` arguments and gets `THOT_ARTIFACT_DIR`, `VBOX_USER_HOME`, and `VBOX_MANAGE_PATH` environment variables. Its stdout, stderr, and process exit code are recorded. Internal tests return the same three values through the engine result contract.
 
+The archive reader also recognizes `.thot.gz` as a gzip-compressed tar archive, but the run loader currently rejects that suffix. A safe project-directory snapshot helper is available, but directory projects are not yet loaded by the run service. Use `.thot.tgz` or `.thot.zip` archives for runs until those paths are connected end to end.
+
 Current built-in references are `VirtualBox/import_ova`, `VirtualBox/start_vm`, `VirtualBox/stop_vm`, `VirtualBox/destroy_vm`, and `ssh/get_host_info`. The code is divided by platform under `crates/thot-engine/src/tests/`; adding a platform requires a dispatcher and its own module. Unknown platform/test references fail as test errors.
 
 ## Run behavior and limits
 
-The CLI accepts a project archive path directly, for example `thot run create /srv/course/linux_competition.thot.tgz`. Project archives may be anywhere readable by `thotd`; there is no project-root setting. A relative `delivery_folder` resolves from the archive's containing directory, and an absolute value may point anywhere the daemon can read. An optional `--deliveries` override can also point to any readable directory. `thot run` and `thot run list` list runs; `thot run delete <run-id>` removes an inactive run and its related database records. Queued, running, or cancelling runs cannot be deleted. Run IDs use the project archive stem plus its UTC creation time, such as `linux_competition-20261026_154512`; each expedient ID uses its delivery filename plus the same timestamp. Deletion leaves report and VM artifacts on disk.
+The CLI accepts a project archive path directly, for example `thot run create /srv/course/linux_competition.thot.tgz`. Project archives may be anywhere readable by `thotd`; there is no project-root setting. A relative `delivery_folder` resolves from the archive's containing directory, and an absolute value may point anywhere the daemon can read. An optional `--deliveries` override can also point to any readable directory. `thot run` and `thot run list` list runs; `thot run status` requires a run ID; `thot run delete <run-id>` removes an inactive run and its related database records. Queued, running, or cancelling runs cannot be deleted. Run IDs use the project archive stem plus its UTC creation time, such as `linux_competition-20261026_154512`; each expedient ID uses its delivery filename plus the same timestamp. Successful run and expedient CLI responses are displayed as YAML while the HTTP API remains JSON. Deletion leaves report and VM artifacts on disk.
 
 The configured `vm_path` is relative to the archive's containing directory and defaults to `./thot_vms`. The service creates per-run and per-delivery storage beneath it. The service account therefore needs write access to that VM storage directory. Keep the archive and its scripts protected from modification, and give write access only to the dedicated VM storage location. Do not use a path that overlaps the VirtualBox profile or artifact root.
 
@@ -58,4 +60,4 @@ The cleanup manifest records the run, delivery, VM name and UUID, storage path, 
 
 ## Verification status
 
-The workspace has been checked with `cargo check --workspace --locked` and `cargo test --workspace --locked`. Unit tests cover project YAML parsing and validation, ZIP/TGZ extraction including traversal rejection, artifact path creation, and external-process output, timeout, and exit-code handling. Python syntax can be checked without a VM. No VirtualBox import, guest boot, NAT forwarding, screenshot, SSH connection, or VM cleanup integration test was run because VirtualBox is not installed in this environment.
+The latest code changes were checked with `cargo check --workspace --all-targets` and `cargo build --workspace --all-targets`; tests were not run as part of that compile check. These commands do not exercise VirtualBox. No VirtualBox import, guest boot, NAT forwarding, screenshot, SSH connection, or VM cleanup integration test was run because VirtualBox is not available in this environment.

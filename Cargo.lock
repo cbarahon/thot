@@ -2080,11 +2080,13 @@ dependencies = [
  "axum",
  "reqwest",
  "serde_json",
+ "serde_yaml",
  "thot-api",
  "thot-core",
  "thot-engine",
  "tokio",
  "tower",
+ "uuid",
 ]
 
 [[package]]
