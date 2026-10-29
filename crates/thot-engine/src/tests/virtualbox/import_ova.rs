@@ -37,7 +37,19 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
         .cloned()
         .unwrap_or_else(|| "./thot_vms".to_owned());
     if let Err(error) = tokio::fs::create_dir_all(&storage).await {
-        return TestOutcome::error(format!("cannot create VM storage directory: {error}"));
+        let configured_vm_root = invocation
+            .project_archive_parent
+            .join(std::path::Path::new(&project_vm_path));
+        let nearest_existing_parent = configured_vm_root
+            .ancestors()
+            .find(|path| path.is_dir())
+            .unwrap_or(invocation.project_archive_parent.as_path());
+        return TestOutcome::error(format!(
+            "cannot create VM storage directory {}: {error}; the thotd service account needs write and execute permissions on configured vm_path {}. If that directory does not exist, it needs write and execute permissions on its nearest existing parent {} (or pre-create vm_path and grant access there)",
+            storage.display(),
+            configured_vm_root.display(),
+            nearest_existing_parent.display()
+        ));
     }
     let storage = match storage.canonicalize() {
         Ok(path) => path,
