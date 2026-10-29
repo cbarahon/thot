@@ -40,6 +40,11 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS project_deliveries (project_id TEXT NOT NULL, delivery_id TEXT NOT NULL, PRIMARY KEY(project_id, delivery_id), FOREIGN KEY(project_id) REFERENCES thot_projects(project_id) ON DELETE CASCADE, FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id) ON DELETE CASCADE)",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

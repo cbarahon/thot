@@ -31,9 +31,9 @@ runs. The `create` forms accept an archive path or project directory;
 `--deliveries`, the engine uses `delivery_folder` from `configuration.yaml`;
 relative paths resolve from the archive's containing directory or the project
 directory, and absolute paths are accepted. A delivery override can point
-anywhere the daemon can read. The engine processes direct `.ova` children;
-afterward, the project-scoped assignment commands can associate those
-deliveries with students.
+anywhere the daemon can read. Assignment commands index the project's direct
+`.ova` children before a run begins. Assign deliveries to students first; run
+creation requires every student and every delivery to have an assignment.
 
 Successful run and expedient responses are printed as human-readable YAML,
 including multiline `stdout` and `stderr` fields. The HTTP API continues to use
@@ -41,8 +41,10 @@ JSON. Student commands also print structured output as YAML. The explicit
 `get students csv` form remains CSV.
 
 `thot run status` without an ID requires exactly one queued, running, or
-cancelling run; otherwise specify `RUN_ID`. Cleanup uses the persisted manifest
-and checks recorded VM identity and storage ownership.
+cancelling run; otherwise specify `RUN_ID`. Status output includes one
+expedient per student, its assigned delivery, and lifecycle state (`pending`,
+`running`, or `finished`). Cleanup uses the persisted manifest and checks
+recorded VM identity and storage ownership.
 
 `thot clean` removes orphaned Thot artifacts and VMs only when ownership can be
 verified. `thot prune` keeps the newest run per project and requires an
@@ -70,7 +72,8 @@ recognized external-ID column or a row has a blank external ID, each student's
 email is used as `external_id`. The `get students csv` command writes project
 details to stderr and CSV rows to stdout.
 
-`thot assignments guess` compares student names, surnames, email usernames,
+`thot assignments guess` indexes the current project's delivery folder and
+compares student names, surnames, email usernames,
 external IDs, and student IDs with delivery filenames. It replaces current
 assignments with its best non-ambiguous matches; one delivery may be matched to
 several students. Inspect or edit the suggested mapping with
@@ -81,7 +84,8 @@ and a list of unassigned deliveries.
 `thot assignments import FILE` replaces all current assignments. The file may
 be JSON or YAML and can be edited from `assignments get` output. Include exactly
 one row for every student. Each entry uses `student_id` and `delivery_id`; set
-`delivery_id: null` to leave that student unassigned. For example:
+`delivery_id: null` to leave that student unassigned while reviewing mappings.
+Before running, assign every student and every deliverable. For example:
 
 ```yaml
 assignments:
@@ -97,4 +101,7 @@ Guess, get, and import print YAML by default. Add `--json` to print their
 responses as formatted JSON. The API endpoints are `POST /api/v1/assignments/guess`,
 `GET /api/v1/assignments/get`, and `POST /api/v1/assignments/import`.
 Assignment operations are scoped to the current project, and deliverable
-candidates come only from that project's runs.
+candidates come from that project's configured delivery folder. A run executes
+tests once for each distinct assigned delivery; when multiple students share a
+delivery, the engine copies the same test results into each student's
+expedient.

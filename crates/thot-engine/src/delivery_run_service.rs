@@ -1,8 +1,9 @@
 //! Purpose: Coordinates delivery runs, database state, delivery discovery, and expedient cleanup.
 use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
-use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -23,7 +24,33 @@ pub struct RunRecord {
     pub delivery_directory: String,
     pub status: String,
     pub expedient_ids: Vec<String>,
+    pub expedients: Vec<RunExpedientSummary>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunExpedientSummary {
+    pub expedient_id: String,
+    pub student_id: Option<i64>,
+    pub student_name: Option<String>,
+    pub student_email: Option<String>,
+    pub delivery_id: String,
+    pub delivery_filename: String,
+    /// Lifecycle state shown to users: pending, running, or finished.
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+struct StudentExpedientWork {
+    expedient_id: String,
+    student_id: i64,
+    student_name: String,
+    student_surname: Option<String>,
+    student_email: String,
+    student_external_id: String,
+    delivery_id: String,
+    delivery_filename: String,
+    report_path: PathBuf,
 }
 
 #[derive(Clone)]
@@ -48,8 +75,19 @@ impl DeliveryRunService {
             .execute(&pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_deliveries (delivery_id TEXT PRIMARY KEY, collection_ref TEXT NOT NULL, source_ref TEXT NOT NULL, content_sha256 TEXT NOT NULL, original_filename TEXT NOT NULL, byte_size INTEGER NOT NULL, UNIQUE(collection_ref, source_ref, content_sha256))")
             .execute(&pool).await?;
-        sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_expedients (expedient_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, delivery_id TEXT NOT NULL, report_path TEXT NOT NULL, status TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES vm_activity_runs(run_id), FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id))")
+        sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_expedients (expedient_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, delivery_id TEXT NOT NULL, student_id INTEGER, report_path TEXT NOT NULL, status TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES vm_activity_runs(run_id), FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id))")
             .execute(&pool).await?;
+        let columns = sqlx::query("PRAGMA table_info(vm_activity_expedients)")
+            .fetch_all(&pool)
+            .await?;
+        if !columns
+            .iter()
+            .any(|column| column.try_get::<String, _>("name").ok().as_deref() == Some("student_id"))
+        {
+            sqlx::query("ALTER TABLE vm_activity_expedients ADD COLUMN student_id INTEGER")
+                .execute(&pool)
+                .await?;
+        }
         crate::project_context::ensure_schema(&pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS student_assignments (student_id INTEGER PRIMARY KEY, delivery_id TEXT NOT NULL, match_score REAL, FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE, FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id) ON DELETE CASCADE)")
             .execute(&pool).await?;
@@ -173,30 +211,169 @@ impl DeliveryRunService {
         } else {
             "not used".to_owned()
         };
-        let inputs = vm_activity::discover_deliveries(&selected, self.runtime.max_ova_bytes)
+        let mut inputs = vm_activity::discover_deliveries(&selected, self.runtime.max_ova_bytes)
             .map_err(ServiceError::Invalid)?;
+        if inputs.is_empty() {
+            return Err(ServiceError::Invalid(
+                "the project delivery folder contains no OVA files to assign".into(),
+            ));
+        }
+        let mut inventory = Vec::with_capacity(inputs.len());
+        for input in &mut inputs {
+            let delivery_id = register_delivery(&self.pool, input).await?;
+            input.delivery_id = delivery_id.clone();
+            inventory.push((delivery_id, input.filename.clone()));
+        }
+        crate::assignments::replace_project_deliveries(
+            &self.pool,
+            &snapshot.project_id,
+            &inventory,
+        )
+        .await?;
+
+        let student_ids = sqlx::query_scalar::<_, i64>(
+            "SELECT student_id FROM project_students WHERE project_id=? ORDER BY student_id",
+        )
+        .bind(&snapshot.project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if student_ids.is_empty() {
+            return Err(ServiceError::Invalid(
+                "the project has no students; import a roster before assigning deliveries and creating a run".into(),
+            ));
+        }
+        let assignments = sqlx::query_as::<_, (i64, String, Option<String>, String, String, String, String)>(
+            "SELECT ps.student_id, ps.name, ps.surname, ps.email, ps.external_id, pa.delivery_id, d.original_filename FROM project_assignments pa JOIN project_students ps ON ps.project_id=pa.project_id AND ps.student_id=pa.student_id JOIN vm_activity_deliveries d ON d.delivery_id=pa.delivery_id WHERE pa.project_id=? ORDER BY ps.student_id",
+        )
+        .bind(&snapshot.project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let assigned_students = assignments.iter().map(|row| row.0).collect::<HashSet<_>>();
+        if assigned_students.len() != student_ids.len() {
+            let missing = student_ids
+                .iter()
+                .filter(|student_id| !assigned_students.contains(student_id))
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            return Err(ServiceError::Invalid(format!(
+                "assign a delivery to every project student before creating a run; unassigned student IDs: {}",
+                missing.join(", ")
+            )));
+        }
+        let assigned_deliveries = assignments
+            .iter()
+            .map(|row| row.5.as_str())
+            .collect::<HashSet<_>>();
+        let unassigned = inventory
+            .iter()
+            .filter(|(delivery_id, _)| !assigned_deliveries.contains(delivery_id.as_str()))
+            .map(|(_, filename)| filename.clone())
+            .collect::<Vec<_>>();
+        if !unassigned.is_empty() {
+            return Err(ServiceError::Invalid(format!(
+                "assign every project deliverable to at least one student before creating a run; unassigned files: {}",
+                unassigned.join(", ")
+            )));
+        }
+
+        let mut student_work = Vec::with_capacity(assignments.len());
+        for (
+            student_id,
+            student_name,
+            student_surname,
+            student_email,
+            student_external_id,
+            delivery_id,
+            delivery_filename,
+        ) in assignments
+        {
+            let base = format!(
+                "{}-{timestamp}-student-{student_id}",
+                expedient_file_component(&delivery_filename)
+            );
+            let mut expedient_id = base.clone();
+            let mut collision = 1_u32;
+            while sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM vm_activity_expedients WHERE expedient_id=?",
+            )
+            .bind(&expedient_id)
+            .fetch_one(&self.pool)
+            .await?
+                > 0
+            {
+                expedient_id = format!("{base}-{collision:02}");
+                collision += 1;
+            }
+            let report_dir = self
+                .artifact_root
+                .join(&snapshot.project_id)
+                .join(&run_id)
+                .join(&delivery_id);
+            let report_path = report_dir.join(format!("{expedient_id}.json"));
+            student_work.push(StudentExpedientWork {
+                expedient_id,
+                student_id,
+                student_name,
+                student_surname,
+                student_email,
+                student_external_id,
+                delivery_id,
+                delivery_filename,
+                report_path,
+            });
+        }
+        let expedient_ids = student_work
+            .iter()
+            .map(|work| work.expedient_id.clone())
+            .collect::<Vec<_>>();
+        let exp_data = serde_json::to_string(&expedient_ids).unwrap_or_else(|_| "[]".into());
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids,created_at) VALUES(?,?,?,?,?,?)")
+            .bind(&run_id).bind(&snapshot.project_id).bind(selected.display().to_string()).bind("queued").bind(exp_data).bind(&created_at).execute(&mut *transaction).await?;
+        for work in &student_work {
+            sqlx::query("INSERT INTO vm_activity_expedients(expedient_id,run_id,delivery_id,student_id,report_path,status) VALUES(?,?,?,?,?,?)")
+                .bind(&work.expedient_id)
+                .bind(&run_id)
+                .bind(&work.delivery_id)
+                .bind(work.student_id)
+                .bind(work.report_path.display().to_string())
+                .bind("pending")
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await?;
+        let expedients = student_work
+            .iter()
+            .map(|work| RunExpedientSummary {
+                expedient_id: work.expedient_id.clone(),
+                student_id: Some(work.student_id),
+                student_name: Some(work.student_name.clone()),
+                student_email: Some(work.student_email.clone()),
+                delivery_id: work.delivery_id.clone(),
+                delivery_filename: work.delivery_filename.clone(),
+                status: "pending".into(),
+            })
+            .collect();
         let record = RunRecord {
             run_id: run_id.clone(),
             project_id: snapshot.project_id.clone(),
             created_at: created_at.clone(),
             delivery_directory: selected.display().to_string(),
             status: "queued".into(),
-            expedient_ids: Vec::new(),
+            expedient_ids,
+            expedients,
             error: None,
         };
-        sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids,created_at) VALUES(?,?,?,?,?,?)")
-            .bind(&record.run_id).bind(&record.project_id).bind(&record.delivery_directory).bind(&record.status).bind("[]").bind(&record.created_at).execute(&self.pool).await?;
         let service = self.clone();
         let background_run_id = record.run_id.clone();
-        let background_timestamp = timestamp;
         tokio::spawn(async move {
             service
                 .execute_run(
                     background_run_id,
-                    background_timestamp,
                     snapshot,
                     vbox_version,
                     inputs,
+                    student_work,
                 )
                 .await;
         });
@@ -206,10 +383,10 @@ impl DeliveryRunService {
     async fn execute_run(
         &self,
         run_id: String,
-        run_timestamp: String,
         project: ProjectSnapshot,
         vbox_version: String,
         inputs: Vec<DeliveryInput>,
+        students: Vec<StudentExpedientWork>,
     ) {
         let _ = sqlx::query(
             "UPDATE vm_activity_runs SET status='running' WHERE run_id=? AND status='queued'",
@@ -218,130 +395,110 @@ impl DeliveryRunService {
         .execute(&self.pool)
         .await;
         struct DeliveryWork {
-            expedient_id: String,
             input: DeliveryInput,
+            students: Vec<StudentExpedientWork>,
             report_dir: PathBuf,
-            report_path: PathBuf,
         }
-        let mut expedients = Vec::new();
-        let mut work_items = Vec::new();
-        let mut had_errors = inputs.is_empty();
-        for mut input in inputs {
-            if !self.run_accepts_work(&run_id).await {
-                break;
-            }
-            if input.validation_error.is_none() {
-                match vm_activity::retain_source(&self.runtime, &input).await {
-                    Ok(source) => input.source = source,
-                    Err(error) => input.validation_error = Some(error),
-                }
-            }
-            if !self.run_accepts_work(&run_id).await {
-                break;
-            }
-            let delivery_id = match self.register_delivery(&input).await {
-                Ok(id) => id,
-                Err(error) => {
-                    tracing::error!(%error, delivery = %input.filename, "could not register delivery");
-                    had_errors = true;
-                    continue;
-                }
-            };
-            let filename = Path::new(&input.filename)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
-            let expedient_base = format!("{}-{run_timestamp}", expedient_file_component(&filename));
-            let mut expedient_id = expedient_base.clone();
-            let mut collision = 1_u32;
-            loop {
-                match sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM vm_activity_expedients WHERE expedient_id=?",
-                )
-                .bind(&expedient_id)
-                .fetch_one(&self.pool)
-                .await
-                {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        expedient_id = format!("{expedient_base}-{collision:02}");
-                        collision += 1;
-                    }
-                    Err(error) => {
-                        tracing::error!(%error, "could not check expedient ID collision");
-                        had_errors = true;
-                        expedient_id = format!(
-                            "{expedient_base}-{}",
-                            &uuid::Uuid::new_v4().simple().to_string()[..8]
-                        );
-                        break;
-                    }
-                }
-            }
-            let report_dir = self
-                .artifact_root
-                .join(&project.project_id)
-                .join(&run_id)
-                .join(&delivery_id);
-            let report_path = report_dir.join("delivery.json");
-            if let Err(error) = sqlx::query("INSERT INTO vm_activity_expedients(expedient_id,run_id,delivery_id,report_path,status) VALUES(?,?,?,?,?)")
-                .bind(&expedient_id).bind(&run_id).bind(&delivery_id).bind(report_path.display().to_string()).bind("queued").execute(&self.pool).await
-            {
-                tracing::error!(%error, expedient_id, "could not record delivery expedient");
-                had_errors = true;
+        let mut inputs_by_id = inputs
+            .into_iter()
+            .map(|input| (input.delivery_id.clone(), input))
+            .collect::<HashMap<_, _>>();
+        let mut students_by_delivery = BTreeMap::<String, Vec<StudentExpedientWork>>::new();
+        for student in students {
+            students_by_delivery
+                .entry(student.delivery_id.clone())
+                .or_default()
+                .push(student);
+        }
+        let expected_delivery_count = students_by_delivery.len();
+        let mut work_items = Vec::with_capacity(expected_delivery_count);
+        for (delivery_id, mut assigned_students) in students_by_delivery {
+            assigned_students.sort_by_key(|student| student.student_id);
+            let Some(input) = inputs_by_id.remove(&delivery_id) else {
+                tracing::error!(%delivery_id, "assigned delivery disappeared before execution");
                 continue;
-            }
-            expedients.push(expedient_id.clone());
-            input.delivery_id = delivery_id;
+            };
+            let report_dir = assigned_students[0]
+                .report_path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_path_buf();
             work_items.push(DeliveryWork {
-                expedient_id,
                 input,
+                students: assigned_students,
                 report_dir,
-                report_path,
             });
         }
-        if let Err(error) = self.save_run_expedients(&run_id, &expedients).await {
-            tracing::error!(%error, run_id, "could not persist run expedient list");
-            had_errors = true;
-        }
-
+        let mut had_errors = work_items.len() != expected_delivery_count;
         let concurrency = project.configuration.concurrency.max(1) as usize;
         let outcomes = stream::iter(work_items)
-            .map(|work| {
+            .map(|mut work| {
                 let service = self;
                 let run_id = run_id.clone();
                 let project = project.clone();
                 let vbox_version = vbox_version.clone();
                 async move {
                 if !service.run_accepts_work(&run_id).await {
-                    let _ = sqlx::query("UPDATE vm_activity_expedients SET status='cancelled' WHERE expedient_id=?")
-                        .bind(&work.expedient_id).execute(&service.pool).await;
                     return false;
                 }
-                if let Err(error) = sqlx::query("UPDATE vm_activity_expedients SET status='running' WHERE expedient_id=?")
-                    .bind(&work.expedient_id).execute(&service.pool).await
+                if let Err(error) = sqlx::query("UPDATE vm_activity_expedients SET status='running' WHERE run_id=? AND delivery_id=? AND status='pending'")
+                    .bind(&run_id).bind(&work.input.delivery_id).execute(&service.pool).await
                 {
-                    tracing::error!(%error, expedient_id = %work.expedient_id, "could not mark expedient running");
+                    tracing::error!(%error, delivery_id = %work.input.delivery_id, "could not mark student expedients running");
                     return true;
                 }
+                if work.input.validation_error.is_none() {
+                    match vm_activity::retain_source(&service.runtime, &work.input).await {
+                        Ok(source) => work.input.source = source,
+                        Err(error) => work.input.validation_error = Some(error),
+                    }
+                }
+                let execution_expedient_id = work.students[0].expedient_id.clone();
+                let execution_report_path = work.students[0].report_path.clone();
                 let report = delivery_executor::execute_delivery(
                     &service.runtime,
                     &project,
                     &vbox_version,
                     &run_id,
-                    &work.expedient_id,
+                    &execution_expedient_id,
                     &work.input,
                     &work.report_dir,
-                    &work.report_path,
+                    &execution_report_path,
                 ).await;
-                let status = report["overall_status"].as_str().unwrap_or("completed_with_errors");
-                if let Err(error) = sqlx::query("UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?")
-                    .bind(status).bind(&work.expedient_id).execute(&service.pool).await
-                {
-                    tracing::error!(%error, expedient_id = %work.expedient_id, "could not save expedient status");
-                    return true;
+                let result_status = report["overall_status"].as_str().unwrap_or("completed_with_errors");
+                let mut copy_failed = false;
+                for student in &work.students {
+                    let mut student_report = report.clone();
+                    student_report["schema_version"] = serde_json::json!(3);
+                    student_report["expedient_id"] = serde_json::json!(student.expedient_id);
+                    student_report["student"] = serde_json::json!({
+                        "student_id": student.student_id,
+                        "name": student.student_name,
+                        "surname": student.student_surname,
+                        "email": student.student_email,
+                        "external_id": student.student_external_id
+                    });
+                    student_report["delivery_filename"] = serde_json::json!(student.delivery_filename);
+                    student_report["shared_delivery_execution"] = serde_json::json!(work.students.len() > 1);
+                    student_report["evaluation"] = serde_json::json!({
+                        "status": "not_evaluated",
+                        "results": []
+                    });
+                    if let Err(error) = crate::test_result_store::persist_report(&student.report_path, &student_report) {
+                        tracing::error!(%error, expedient_id = %student.expedient_id, "could not persist student expedient report");
+                        copy_failed = true;
+                    }
+                    if let Err(error) = sqlx::query("UPDATE vm_activity_expedients SET status='finished', report_path=? WHERE expedient_id=?")
+                        .bind(student.report_path.display().to_string())
+                        .bind(&student.expedient_id)
+                        .execute(&service.pool)
+                        .await
+                    {
+                        tracing::error!(%error, expedient_id = %student.expedient_id, "could not save student expedient status");
+                        copy_failed = true;
+                    }
                 }
-                status != "completed"
+                result_status != "completed" || copy_failed
                 }
             })
             .buffer_unordered(concurrency)
@@ -371,52 +528,34 @@ impl DeliveryRunService {
     }
 
     async fn run_accepts_work(&self, run_id: &str) -> bool {
-        self.get_run(run_id)
+        sqlx::query_scalar::<_, String>("SELECT status FROM vm_activity_runs WHERE run_id=?")
+            .bind(run_id)
+            .fetch_optional(&self.pool)
             .await
             .ok()
             .flatten()
-            .is_some_and(|run| !matches!(run.status.as_str(), "cancelled" | "cancelling"))
-    }
-
-    async fn register_delivery(&self, input: &DeliveryInput) -> Result<String, sqlx::Error> {
-        let collection_ref = input
-            .original_source
-            .parent()
-            .unwrap_or(Path::new(""))
-            .display()
-            .to_string();
-        let source_ref = input.original_source.display().to_string();
-        let content_sha256 = input.sha256.clone().unwrap_or_default();
-        sqlx::query("INSERT OR IGNORE INTO vm_activity_deliveries(delivery_id,collection_ref,source_ref,content_sha256,original_filename,byte_size) VALUES(?,?,?,?,?,?)")
-            .bind(&input.delivery_id).bind(&collection_ref).bind(&source_ref).bind(&content_sha256).bind(&input.filename).bind(input.size as i64).execute(&self.pool).await?;
-        sqlx::query_scalar("SELECT delivery_id FROM vm_activity_deliveries WHERE collection_ref=? AND source_ref=? AND content_sha256=?")
-            .bind(collection_ref).bind(source_ref).bind(content_sha256).fetch_one(&self.pool).await
-    }
-
-    async fn save_run_expedients(&self, run_id: &str, ids: &[String]) -> Result<(), sqlx::Error> {
-        let data = serde_json::to_string(ids).unwrap_or_else(|_| "[]".into());
-        sqlx::query("UPDATE vm_activity_runs SET expedient_ids=? WHERE run_id=?")
-            .bind(data)
-            .bind(run_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+            .is_some_and(|status| !matches!(status.as_str(), "cancelled" | "cancelling"))
     }
 
     pub async fn get_run(&self, run_id: &str) -> Result<Option<RunRecord>, ServiceError> {
         let row = sqlx::query_as::<_, (String,String,String,String,String,String,Option<String>)>("SELECT run_id, project_id, created_at, delivery_directory, status, expedient_ids, error FROM vm_activity_runs WHERE run_id = ?")
             .bind(run_id).fetch_optional(&self.pool).await?;
-        Ok(row.map(
-            |(run_id, project_id, created_at, delivery_directory, status, ids, error)| RunRecord {
-                run_id,
-                project_id,
-                created_at,
-                delivery_directory,
-                status,
-                expedient_ids: serde_json::from_str(&ids).unwrap_or_default(),
-                error,
-            },
-        ))
+        let Some((run_id, project_id, created_at, delivery_directory, status, ids, error)) = row
+        else {
+            return Ok(None);
+        };
+        let expedient_ids = serde_json::from_str(&ids).unwrap_or_default();
+        let expedients = self.list_run_expedients(&run_id).await?;
+        Ok(Some(RunRecord {
+            run_id,
+            project_id,
+            created_at,
+            delivery_directory,
+            status,
+            expedient_ids,
+            expedients,
+            error,
+        }))
     }
 
     pub async fn list_runs(&self) -> Result<Vec<RunRecord>, ServiceError> {
@@ -425,18 +564,57 @@ impl DeliveryRunService {
         )
         .fetch_all(&self.pool)
         .await?;
+        let mut runs = Vec::with_capacity(rows.len());
+        for (run_id, project_id, created_at, delivery_directory, status, ids, error) in rows {
+            runs.push(RunRecord {
+                expedients: self.list_run_expedients(&run_id).await?,
+                run_id,
+                project_id,
+                created_at,
+                delivery_directory,
+                status,
+                expedient_ids: serde_json::from_str(&ids).unwrap_or_default(),
+                error,
+            });
+        }
+        Ok(runs)
+    }
+
+    async fn list_run_expedients(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<RunExpedientSummary>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, Option<i64>, Option<String>, Option<String>, String, String, String)>(
+            "SELECT e.expedient_id, e.student_id, ps.name, ps.email, e.delivery_id, d.original_filename, e.status FROM vm_activity_expedients e JOIN vm_activity_runs run ON run.run_id=e.run_id LEFT JOIN project_students ps ON ps.project_id=run.project_id AND ps.student_id=e.student_id LEFT JOIN vm_activity_deliveries d ON d.delivery_id=e.delivery_id WHERE e.run_id=? ORDER BY ps.student_id, e.expedient_id",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows
             .into_iter()
             .map(
-                |(run_id, project_id, created_at, delivery_directory, status, ids, error)| {
-                    RunRecord {
-                        run_id,
-                        project_id,
-                        created_at,
-                        delivery_directory,
-                        status,
-                        expedient_ids: serde_json::from_str(&ids).unwrap_or_default(),
-                        error,
+                |(
+                    expedient_id,
+                    student_id,
+                    student_name,
+                    student_email,
+                    delivery_id,
+                    delivery_filename,
+                    status,
+                )| {
+                    let status = match status.as_str() {
+                        "pending" | "queued" => "pending",
+                        "running" => "running",
+                        _ => "finished",
+                    };
+                    RunExpedientSummary {
+                        expedient_id,
+                        student_id,
+                        student_name,
+                        student_email,
+                        delivery_id,
+                        delivery_filename,
+                        status: status.into(),
                     }
                 },
             )
@@ -445,13 +623,12 @@ impl DeliveryRunService {
 
     pub async fn delete_run(&self, run_id: &str) -> Result<bool, ServiceError> {
         let mut transaction = self.pool.begin().await?;
-        let run = sqlx::query_as::<_, (String, String)>(
-            "SELECT status, project_id FROM vm_activity_runs WHERE run_id=?",
-        )
-        .bind(run_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        let Some((status, project_id)) = run else {
+        let run =
+            sqlx::query_scalar::<_, String>("SELECT status FROM vm_activity_runs WHERE run_id=?")
+                .bind(run_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let Some(status) = run else {
             transaction.rollback().await?;
             return Ok(false);
         };
@@ -476,19 +653,13 @@ impl DeliveryRunService {
             .execute(&mut *transaction)
             .await?;
         for delivery_id in delivery_ids {
-            sqlx::query("DELETE FROM project_assignments WHERE delivery_id=? AND project_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients e JOIN vm_activity_runs r ON r.run_id=e.run_id WHERE e.delivery_id=? AND r.project_id=?)")
-                .bind(&delivery_id)
-                .bind(&project_id)
-                .bind(&delivery_id)
-                .bind(&project_id)
-                .execute(&mut *transaction)
-                .await?;
             sqlx::query("DELETE FROM student_assignments WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients WHERE delivery_id=?)")
                 .bind(&delivery_id)
                 .bind(&delivery_id)
                 .execute(&mut *transaction)
                 .await?;
-            sqlx::query("DELETE FROM vm_activity_deliveries WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients WHERE delivery_id=?)")
+            sqlx::query("DELETE FROM vm_activity_deliveries WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients WHERE delivery_id=?) AND NOT EXISTS (SELECT 1 FROM project_deliveries WHERE delivery_id=?)")
+                .bind(&delivery_id)
                 .bind(&delivery_id)
                 .bind(&delivery_id)
                 .execute(&mut *transaction)
@@ -590,13 +761,13 @@ impl DeliveryRunService {
         &self,
         expedient_id: &str,
     ) -> Result<Option<serde_json::Value>, ServiceError> {
-        let row = sqlx::query_as::<_, (String, String)>(
-            "SELECT report_path,delivery_id FROM vm_activity_expedients WHERE expedient_id=?",
+        let row = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT report_path,delivery_id,run_id FROM vm_activity_expedients WHERE expedient_id=?",
         )
         .bind(expedient_id)
         .fetch_optional(&self.pool)
         .await?;
-        let Some((path, delivery_id)) = row else {
+        let Some((path, delivery_id, run_id)) = row else {
             return Ok(None);
         };
         let mut report: serde_json::Value = match tokio::fs::read(&path).await {
@@ -684,22 +855,53 @@ impl DeliveryRunService {
         tokio::fs::write(&path, bytes)
             .await
             .map_err(|e| ServiceError::Internal(e.to_string()))?;
-        let status = report["overall_status"]
-            .as_str()
-            .unwrap_or("completed_with_errors")
-            .to_owned();
-        sqlx::query("UPDATE vm_activity_expedients SET status=? WHERE expedient_id=?")
-            .bind(&status)
-            .bind(expedient_id)
-            .execute(&self.pool)
-            .await?;
+        let sibling_paths = sqlx::query_scalar::<_, String>(
+            "SELECT report_path FROM vm_activity_expedients WHERE run_id=? AND delivery_id=?",
+        )
+        .bind(&run_id)
+        .bind(&delivery_id)
+        .fetch_all(&self.pool)
+        .await?;
+        for sibling_path in sibling_paths {
+            if sibling_path == path {
+                continue;
+            }
+            let Ok(bytes) = tokio::fs::read(&sibling_path).await else {
+                continue;
+            };
+            let Ok(mut sibling) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            sibling["cleanup"] = report["cleanup"].clone();
+            sibling["finished_at"] = report["finished_at"].clone();
+            sibling["overall_status"] = report["overall_status"].clone();
+            if let (Some(source_results), Some(target_results)) = (
+                report["test_results"].as_array(),
+                sibling["test_results"].as_array_mut(),
+            ) {
+                if let Some(cleanup) = source_results
+                    .iter()
+                    .find(|result| result["test_reference"] == "VirtualBox/destroy_vm")
+                {
+                    if let Some(target) = target_results
+                        .iter_mut()
+                        .find(|result| result["test_reference"] == "VirtualBox/destroy_vm")
+                    {
+                        *target = cleanup.clone();
+                    }
+                }
+            }
+            crate::test_result_store::persist_report(Path::new(&sibling_path), &sibling)
+                .map_err(|error| ServiceError::Internal(error.to_string()))?;
+        }
+        sqlx::query(
+            "UPDATE vm_activity_expedients SET status='finished' WHERE run_id=? AND delivery_id=?",
+        )
+        .bind(&run_id)
+        .bind(&delivery_id)
+        .execute(&self.pool)
+        .await?;
         if report["cleanup"]["status"] == "passed" {
-            let run_id = sqlx::query_scalar::<_, String>(
-                "SELECT run_id FROM vm_activity_expedients WHERE expedient_id=?",
-            )
-            .bind(expedient_id)
-            .fetch_one(&self.pool)
-            .await?;
             let pending:i64=sqlx::query_scalar("SELECT COUNT(*) FROM vm_activity_expedients WHERE run_id=? AND status='interrupted_cleanup_pending'").bind(&run_id).fetch_one(&self.pool).await?;
             if pending == 0 {
                 sqlx::query("UPDATE vm_activity_runs SET status='completed_with_errors' WHERE run_id=? AND status='interrupted_cleanup_pending'").bind(run_id).execute(&self.pool).await?;
@@ -779,7 +981,10 @@ fn expedient_file_component(value: &str) -> String {
     }
 }
 
-fn resolve_directory(path: &Path, relative_to: Option<&Path>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_directory(
+    path: &Path,
+    relative_to: Option<&Path>,
+) -> Result<PathBuf, String> {
     let requested = if path.is_absolute() {
         path.to_path_buf()
     } else if let Some(base) = relative_to {
@@ -819,6 +1024,24 @@ fn resolve_directory(path: &Path, relative_to: Option<&Path>) -> Result<PathBuf,
         ));
     }
     Ok(selected)
+}
+
+pub(crate) async fn register_delivery(
+    pool: &SqlitePool,
+    input: &DeliveryInput,
+) -> Result<String, sqlx::Error> {
+    let collection_ref = input
+        .original_source
+        .parent()
+        .unwrap_or(Path::new(""))
+        .display()
+        .to_string();
+    let source_ref = input.original_source.display().to_string();
+    let content_sha256 = input.sha256.clone().unwrap_or_default();
+    sqlx::query("INSERT OR IGNORE INTO vm_activity_deliveries(delivery_id,collection_ref,source_ref,content_sha256,original_filename,byte_size) VALUES(?,?,?,?,?,?)")
+        .bind(&input.delivery_id).bind(&collection_ref).bind(&source_ref).bind(&content_sha256).bind(&input.filename).bind(input.size as i64).execute(pool).await?;
+    sqlx::query_scalar("SELECT delivery_id FROM vm_activity_deliveries WHERE collection_ref=? AND source_ref=? AND content_sha256=?")
+        .bind(collection_ref).bind(source_ref).bind(content_sha256).fetch_one(pool).await
 }
 
 #[cfg(test)]

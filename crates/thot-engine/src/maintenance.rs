@@ -243,8 +243,8 @@ pub async fn prune_runs(
         .begin()
         .await
         .map_err(|e| format!("cannot begin prune transaction: {e}"))?;
-    let mut removed_project_deliveries = HashSet::new();
-    for (run_id, project_id) in &deleted {
+    let mut orphan_delivery_ids = HashSet::new();
+    for (run_id, _) in &deleted {
         let ids = sqlx::query_scalar::<_, String>(
             "SELECT delivery_id FROM vm_activity_expedients WHERE run_id=?",
         )
@@ -252,10 +252,7 @@ pub async fn prune_runs(
         .fetch_all(&mut *tx)
         .await
         .map_err(|e| format!("cannot read deliveries for run {run_id}: {e}"))?;
-        removed_project_deliveries.extend(
-            ids.into_iter()
-                .map(|delivery_id| (project_id.clone(), delivery_id)),
-        );
+        orphan_delivery_ids.extend(ids);
         sqlx::query("DELETE FROM vm_activity_expedients WHERE run_id=?")
             .bind(run_id)
             .execute(&mut *tx)
@@ -267,20 +264,12 @@ pub async fn prune_runs(
             .await
             .map_err(|e| format!("cannot delete run {run_id}: {e}"))?;
     }
-    let mut orphan_delivery_ids = HashSet::new();
-    for (project_id, delivery_id) in removed_project_deliveries {
-        sqlx::query("DELETE FROM project_assignments WHERE project_id=? AND delivery_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients e JOIN vm_activity_runs r ON r.run_id=e.run_id WHERE e.delivery_id=? AND r.project_id=?)")
-            .bind(&project_id).bind(&delivery_id).bind(&delivery_id).bind(&project_id)
-            .execute(&mut *tx).await
-            .map_err(|e| format!("cannot remove project assignments for delivery {delivery_id}: {e}"))?;
-        orphan_delivery_ids.insert(delivery_id);
-    }
     for delivery_id in orphan_delivery_ids {
         sqlx::query("DELETE FROM student_assignments WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients WHERE delivery_id=?)")
             .bind(&delivery_id).bind(&delivery_id).execute(&mut *tx).await
             .map_err(|e| format!("cannot remove assignments for delivery {delivery_id}: {e}"))?;
-        sqlx::query("DELETE FROM vm_activity_deliveries WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients WHERE delivery_id=?)")
-            .bind(&delivery_id).bind(&delivery_id).execute(&mut *tx).await
+        sqlx::query("DELETE FROM vm_activity_deliveries WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients WHERE delivery_id=?) AND NOT EXISTS (SELECT 1 FROM project_deliveries WHERE delivery_id=?)")
+            .bind(&delivery_id).bind(&delivery_id).bind(&delivery_id).execute(&mut *tx).await
             .map_err(|e| format!("cannot remove unreferenced delivery {delivery_id}: {e}"))?;
     }
     tx.commit()
@@ -337,6 +326,10 @@ pub async fn reset_data(
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("cannot delete project assignments: {e}"))?;
+    sqlx::query("DELETE FROM project_deliveries")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("cannot delete project delivery links: {e}"))?;
     sqlx::query("DELETE FROM project_students")
         .execute(&mut *tx)
         .await

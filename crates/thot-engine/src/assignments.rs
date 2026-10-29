@@ -7,7 +7,12 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr};
 use thiserror::Error;
 
-use crate::project_context::{self, ProjectContextError};
+use crate::{
+    delivery_run_service::{self, register_delivery},
+    project_context::{self, ProjectContext, ProjectContextError},
+    students::import_project_students,
+    vm_activity,
+};
 
 const MINIMUM_MATCH_SCORE: f64 = 0.56;
 const AMBIGUOUS_MATCH_MARGIN: f64 = 0.04;
@@ -106,6 +111,7 @@ impl AssignmentService {
         requested_project_path: Option<&str>,
     ) -> Result<AssignmentsResponse, AssignmentError> {
         let project = project_context::resolve(&self.pool, requested_project_path).await?;
+        self.refresh_project_inventory(&project).await?;
         let students = sqlx::query_as::<_, StudentMatchRow>(
             "SELECT s.id, ps.name, ps.surname, ps.email, ps.external_id FROM students s JOIN project_students ps ON ps.student_id=s.id WHERE ps.project_id=? ORDER BY s.id",
         )
@@ -113,7 +119,7 @@ impl AssignmentService {
         .fetch_all(&self.pool)
         .await?;
         let deliveries = sqlx::query_as::<_, DeliveryRow>(
-            "SELECT DISTINCT d.delivery_id, d.original_filename FROM vm_activity_deliveries d JOIN vm_activity_expedients e ON e.delivery_id=d.delivery_id JOIN vm_activity_runs r ON r.run_id=e.run_id WHERE r.project_id=? ORDER BY d.original_filename, d.delivery_id",
+            "SELECT d.delivery_id, d.original_filename FROM project_deliveries pd JOIN vm_activity_deliveries d ON d.delivery_id=pd.delivery_id WHERE pd.project_id=? ORDER BY d.original_filename, d.delivery_id",
         )
         .bind(&project.project_id)
         .fetch_all(&self.pool)
@@ -175,6 +181,7 @@ impl AssignmentService {
         requested_project_path: Option<&str>,
     ) -> Result<AssignmentsResponse, AssignmentError> {
         let project = project_context::resolve(&self.pool, requested_project_path).await?;
+        self.refresh_project_inventory(&project).await?;
         let rows = sqlx::query_as::<_, AssignmentViewRow>(
             r#"SELECT s.id, ps.name, ps.surname, ps.email, ps.external_id,
                       a.delivery_id, d.original_filename,
@@ -186,9 +193,8 @@ impl AssignmentService {
                JOIN project_students ps ON ps.student_id = s.id
                LEFT JOIN project_assignments a ON a.student_id = s.id AND a.project_id=ps.project_id
                     AND EXISTS (
-                        SELECT 1 FROM vm_activity_expedients e
-                        JOIN vm_activity_runs r ON r.run_id=e.run_id
-                        WHERE e.delivery_id=a.delivery_id AND r.project_id=ps.project_id
+                        SELECT 1 FROM project_deliveries pd
+                        WHERE pd.delivery_id=a.delivery_id AND pd.project_id=ps.project_id
                     )
                LEFT JOIN vm_activity_deliveries d ON d.delivery_id = a.delivery_id
                WHERE ps.project_id=?
@@ -215,10 +221,9 @@ impl AssignmentService {
             r#"SELECT d.delivery_id, d.original_filename,
                       (SELECT COUNT(*) FROM project_assignments a
                        WHERE a.project_id=? AND a.delivery_id = d.delivery_id) AS assignment_count
-               FROM vm_activity_deliveries d
-               JOIN vm_activity_expedients e ON e.delivery_id=d.delivery_id
-               JOIN vm_activity_runs r ON r.run_id=e.run_id
-               WHERE r.project_id=?
+               FROM project_deliveries pd
+               JOIN vm_activity_deliveries d ON d.delivery_id=pd.delivery_id
+               WHERE pd.project_id=?
                AND NOT EXISTS (
                    SELECT 1 FROM project_assignments a WHERE a.project_id=? AND a.delivery_id = d.delivery_id
                )
@@ -252,6 +257,7 @@ impl AssignmentService {
         request: ImportAssignmentsRequest,
     ) -> Result<AssignmentsResponse, AssignmentError> {
         let project = project_context::resolve(&self.pool, request.project_path.as_deref()).await?;
+        self.refresh_project_inventory(&project).await?;
         let students = sqlx::query_scalar::<_, i64>(
             "SELECT student_id FROM project_students WHERE project_id=?",
         )
@@ -261,13 +267,13 @@ impl AssignmentService {
         .into_iter()
         .collect::<HashSet<_>>();
         let deliveries = sqlx::query_scalar::<_, String>(
-            "SELECT DISTINCT d.delivery_id FROM vm_activity_deliveries d JOIN vm_activity_expedients e ON e.delivery_id=d.delivery_id JOIN vm_activity_runs r ON r.run_id=e.run_id WHERE r.project_id=?",
+            "SELECT delivery_id FROM project_deliveries WHERE project_id=?",
         )
-                .bind(&project.project_id)
-                .fetch_all(&self.pool)
-                .await?
-                .into_iter()
-                .collect::<HashSet<_>>();
+        .bind(&project.project_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
         let mut seen_students = HashSet::new();
         for assignment in &request.assignments {
             if !students.contains(&assignment.student_id) {
@@ -325,6 +331,117 @@ impl AssignmentService {
         transaction.commit().await?;
         self.get(None).await
     }
+
+    async fn refresh_project_inventory(
+        &self,
+        project: &ProjectContext,
+    ) -> Result<(), AssignmentError> {
+        let staging = std::env::temp_dir().join(format!(
+            "thot-assignment-index-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let result = self.refresh_project_inventory_at(project, &staging).await;
+        let _ = std::fs::remove_dir_all(&staging);
+        result
+    }
+
+    async fn refresh_project_inventory_at(
+        &self,
+        project: &ProjectContext,
+        staging: &Path,
+    ) -> Result<(), AssignmentError> {
+        let snapshot = vm_activity::load_project(Path::new(&project.project_path), staging)
+            .await
+            .map_err(AssignmentError::Invalid)?;
+        let students_csv = snapshot.extracted_root.join("students.csv");
+        match std::fs::symlink_metadata(&students_csv) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(AssignmentError::Invalid(
+                    "project students.csv must be a regular non-symlink file".into(),
+                ));
+            }
+            Ok(_) => {
+                let contents = std::fs::read_to_string(&students_csv).map_err(|error| {
+                    AssignmentError::Invalid(format!("cannot read project students.csv: {error}"))
+                })?;
+                let (students, malformed) = crate::student_csv::parse_students_csv(&contents)
+                    .map_err(AssignmentError::Invalid)?;
+                let (_, _, rejected) =
+                    import_project_students(&self.pool, &project.project_id, students).await?;
+                if !malformed.is_empty() || !rejected.is_empty() {
+                    tracing::warn!(
+                        project_id = %project.project_id,
+                        malformed_rows = malformed.len(),
+                        rejected_rows = rejected.len(),
+                        "some project students.csv rows were not imported"
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(AssignmentError::Invalid(format!(
+                    "cannot inspect project students.csv: {error}"
+                )));
+            }
+        }
+        let delivery_directory = delivery_run_service::resolve_directory(
+            Path::new(&snapshot.configuration.delivery_folder),
+            Some(&snapshot.archive_parent),
+        )
+        .map_err(AssignmentError::Invalid)?;
+        let deliveries = vm_activity::discover_deliveries(&delivery_directory, u64::MAX)
+            .map_err(AssignmentError::Invalid)?;
+        let mut inventory = Vec::with_capacity(deliveries.len());
+        for delivery in &deliveries {
+            let delivery_id = register_delivery(&self.pool, delivery).await?;
+            inventory.push((delivery_id, delivery.filename.clone()));
+        }
+        replace_project_deliveries(&self.pool, &project.project_id, &inventory).await?;
+        Ok(())
+    }
+}
+
+pub(crate) async fn replace_project_deliveries(
+    pool: &SqlitePool,
+    project_id: &str,
+    deliveries: &[(String, String)],
+) -> Result<(), sqlx::Error> {
+    let current = deliveries
+        .iter()
+        .map(|(delivery_id, _)| delivery_id.clone())
+        .collect::<HashSet<_>>();
+    let previous = sqlx::query_scalar::<_, String>(
+        "SELECT delivery_id FROM project_deliveries WHERE project_id=?",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+    let mut transaction = pool.begin().await?;
+    for delivery_id in previous {
+        if !current.contains(&delivery_id) {
+            sqlx::query("DELETE FROM project_assignments WHERE project_id=? AND delivery_id=?")
+                .bind(project_id)
+                .bind(&delivery_id)
+                .execute(&mut *transaction)
+                .await?;
+            sqlx::query("DELETE FROM project_deliveries WHERE project_id=? AND delivery_id=?")
+                .bind(project_id)
+                .bind(delivery_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
+    }
+    for (delivery_id, _) in deliveries {
+        sqlx::query(
+            "INSERT OR IGNORE INTO project_deliveries(project_id, delivery_id) VALUES(?, ?)",
+        )
+        .bind(project_id)
+        .bind(delivery_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(())
 }
 
 #[derive(Debug, sqlx::FromRow)]
