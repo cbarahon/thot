@@ -67,7 +67,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         }
         [import, students, path] if import == "import" && students == "students" => {
             let (records, malformed) = read_students_csv(Path::new(path))?;
-            let payload = serde_json::to_vec(&serde_json::json!({ "students": records }))?;
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "project_path": current_project_path()?,
+                "students": records
+            }))?;
             let body = http_request(&settings, "POST", "/import/students", Some(&payload)).await?;
             let response: ImportStudentsResponse = serde_json::from_slice(&body)?;
             output::print_yaml(&serde_json::to_value(response)?)?;
@@ -82,13 +85,19 @@ async fn run() -> Result<(), Box<dyn Error>> {
             }
         }
         [get, students] if get == "get" && students == "students" => {
-            let body = http_request(&settings, "GET", "/get/students", None).await?;
+            let endpoint = with_project_query("/get/students", current_project_path()?.as_deref());
+            let body = http_request(&settings, "GET", &endpoint, None).await?;
             let response: GetStudentsResponse = serde_json::from_slice(&body)?;
             output::print_yaml(&serde_json::to_value(response)?)?;
         }
         [get, students, format] if get == "get" && students == "students" && format == "csv" => {
-            let body = http_request(&settings, "GET", "/get/students", None).await?;
+            let endpoint = with_project_query("/get/students", current_project_path()?.as_deref());
+            let body = http_request(&settings, "GET", &endpoint, None).await?;
             let response: GetStudentsResponse = serde_json::from_slice(&body)?;
+            eprintln!(
+                "Project: {} ({}) [{}]",
+                response.project_name, response.project_id, response.project_path
+            );
             print!("{}", format_students_csv(&response.students)?);
         }
         _ => {
@@ -98,6 +107,45 @@ async fn run() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+pub(crate) fn current_project_path() -> Result<Option<String>, Box<dyn Error>> {
+    let current = std::env::current_dir()?;
+    let configuration = current.join("configuration.yaml");
+    match fs::symlink_metadata(&configuration) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("current project configuration.yaml must not be a symlink".into())
+        }
+        Ok(metadata) if metadata.is_file() => {
+            Ok(Some(current.canonicalize()?.to_string_lossy().into_owned()))
+        }
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) fn with_project_query(endpoint: &str, project_path: Option<&str>) -> String {
+    let Some(project_path) = project_path else {
+        return endpoint.to_owned();
+    };
+    format!(
+        "{endpoint}?project_path={}",
+        encode_query_component(project_path)
+    )
+}
+
+fn encode_query_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<CliOptions, Box<dyn Error>> {
@@ -254,7 +302,8 @@ fn field_kind(header: &str) -> Option<&'static str> {
         "cognom" | "cognoms" | "apellido" | "apellidos" | "surname" | "lastname" | "familyname" => {
             Some("surname")
         }
-        "id" | "identificador" | "studentid" | "idalumno" | "idestudiante" => Some("external_id"),
+        "id" | "identificador" | "studentid" | "idalumno" | "idestudiante" | "username"
+        | "userid" | "externalid" | "externalstudentid" | "studentnumber" => Some("external_id"),
         "grup" | "grupo" | "group" | "class" => Some("group"),
         "centre" | "centro" | "center" | "school" | "institute" => Some("center"),
         "datanaixement" | "fechanacimiento" | "birthdate" | "dateofbirth" | "dob" => {

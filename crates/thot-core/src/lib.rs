@@ -38,6 +38,8 @@ pub struct Student {
 
 #[derive(Debug, Deserialize)]
 pub struct ImportStudentsRequest {
+    #[serde(default)]
+    pub project_path: Option<String>,
     pub students: Vec<StudentInput>,
 }
 
@@ -50,6 +52,9 @@ pub struct RejectedStudent {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImportStudentsResponse {
+    pub project_id: String,
+    pub project_name: String,
+    pub project_path: String,
     pub imported: usize,
     pub discarded: usize,
     pub rejected: Vec<RejectedStudent>,
@@ -57,6 +62,9 @@ pub struct ImportStudentsResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetStudentsResponse {
+    pub project_id: String,
+    pub project_name: String,
+    pub project_path: String,
     pub students: Vec<Student>,
     pub total: usize,
 }

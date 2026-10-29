@@ -8,7 +8,9 @@ pub mod maintenance_plan;
 pub mod maintenance_vms;
 pub mod project_archive;
 pub mod project_config;
+pub mod project_context;
 pub mod storage;
+mod student_csv;
 mod students;
 pub mod test_execution;
 pub mod test_executor;
@@ -19,7 +21,7 @@ pub mod vm_activity;
 pub use assignments::AssignmentService;
 pub use delivery_run_service::{DeliveryRunService, RunRecord};
 pub use storage::SqliteStudentRepository;
-pub use students::StudentService;
+pub use students::{StudentService, StudentServiceError};
 
 use thiserror::Error;
 

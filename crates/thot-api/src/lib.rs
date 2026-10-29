@@ -2,14 +2,16 @@
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
 };
+use serde::Deserialize;
 use serde_json::json;
 use thot_core::ImportStudentsRequest;
-use thot_engine::{AssignmentService, DeliveryRunService, StudentService};
+use thot_engine::project_context::ProjectContextError;
+use thot_engine::{AssignmentService, DeliveryRunService, StudentService, StudentServiceError};
 
 mod assignments;
 mod delivery_runs;
@@ -18,6 +20,11 @@ mod maintenance;
 #[derive(Clone)]
 struct StudentState {
     students: StudentService,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ProjectPathQuery {
+    project_path: Option<String>,
 }
 
 pub fn router(students: StudentService) -> Router {
@@ -55,10 +62,13 @@ async fn import_students(
         .map_err(ApiError::from)
 }
 
-async fn get_students(State(state): State<StudentState>) -> Result<impl IntoResponse, ApiError> {
+async fn get_students(
+    State(state): State<StudentState>,
+    Query(query): Query<ProjectPathQuery>,
+) -> Result<impl IntoResponse, ApiError> {
     state
         .students
-        .list()
+        .list(query.project_path.as_deref())
         .await
         .map(Json)
         .map_err(ApiError::from)
@@ -72,6 +82,23 @@ impl From<sqlx::Error> for ApiError {
             "internal storage error".into(),
             StatusCode::INTERNAL_SERVER_ERROR,
         )
+    }
+}
+impl From<StudentServiceError> for ApiError {
+    fn from(error: StudentServiceError) -> Self {
+        match error {
+            StudentServiceError::Project(ProjectContextError::Invalid(message)) => {
+                Self(message, StatusCode::BAD_REQUEST)
+            }
+            StudentServiceError::Project(ProjectContextError::Storage(error))
+            | StudentServiceError::Storage(error) => {
+                tracing::error!(%error, "student service storage failed");
+                Self(
+                    "internal storage error".into(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        }
     }
 }
 impl IntoResponse for ApiError {

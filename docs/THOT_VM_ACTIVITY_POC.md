@@ -2,7 +2,7 @@
 
 **Status:** Project-defined test model implemented. The latest workspace changes compile; VirtualBox execution has not been exercised in this environment because VirtualBox is unavailable.
 
-This POC runs teacher-defined checks against OVA deliveries on one Linux host with VirtualBox. It records technical test results and evidence; it does not assign students, calculate marks, or grade submissions. The roster API is separate from this workflow.
+This POC runs teacher-defined checks against OVA deliveries on one Linux host with VirtualBox. It records technical test results and evidence. Project-scoped student rosters and manual or suggested delivery assignments are supported; scoring and learning-outcome evaluation are not yet implemented.
 
 ## Project bundle
 
@@ -18,6 +18,8 @@ linux_competition.thot.tgz
 
 The configuration defines an ordered test list. A test reference has the form `Platform/test_name`, such as `VirtualBox/import_ova` or `ssh/get_host_info`; a teacher-provided script uses `extern/<archive-relative-path>`. Tests may set scalar `parameters`, a per-test `timeout` in seconds, `requirements` naming earlier tests, and `repeat`. A repeated test produces names such as `start_time_01`, `start_time_02`, and `start_time_03`. Requirements run only when all repetitions of each required test pass.
 
+An optional root `students.csv` may define the project's roster. It is imported automatically when a run is created, and rows are stored under that project. The CSV must include name and email columns; common English, Spanish, and Catalan header aliases are accepted. A missing or blank external-ID value is replaced with the student's email, so every stored project student has an external ID. CLI student import and retrieval commands also require a current project and include its ID, name, and path in their responses.
+
 The example project is [configuration.yaml](../examples/vm-activity-poc/configuration.yaml). Its tests import an OVA, run the external HTTP startup and screenshot check three times, start the VM, collect host information over SSH, stop it, and destroy it. The external script receives parameters as `key=value` arguments and gets `THOT_ARTIFACT_DIR`, `VBOX_USER_HOME`, and `VBOX_MANAGE_PATH` environment variables. Its stdout, stderr, and process exit code are recorded. Internal tests return the same three values through the engine result contract.
 
 The loader snapshots project contents before execution. For directory projects, it excludes the configured delivery directory from the immutable project snapshot; relative project paths resolve from the project directory. For archives, relative paths resolve from the archive's containing directory. Absolute delivery paths are accepted when readable by the daemon. Project `vm_path` remains relative to the project location and must resolve safely beneath it.
@@ -27,6 +29,8 @@ Current built-in references are `VirtualBox/import_ova`, `VirtualBox/start_vm`, 
 ## Run behavior and limits
 
 The CLI accepts either a project path directly, for example `thot run create /srv/course/linux_competition.thot.tgz`, or discovers one when run with no subcommand. Bare `thot run` selects exactly one `.thot.gz`, `.thot.tgz`, `.thot.zip`, or root `configuration.yaml` from the current directory and reports ambiguity when more than one is present. `thot run list` lists saved runs. `thot run status` resolves the run only when exactly one run is queued, running, or cancelling. `thot run delete <run-id>` removes an inactive run and its related database records. Queued, running, or cancelling runs cannot be deleted. Run IDs use the project name plus its UTC creation time, such as `linux_competition-20261026_154512`; each expedient ID uses its delivery filename plus the same timestamp. Successful run and expedient CLI responses are displayed as YAML while the HTTP API remains JSON. Deletion leaves report and VM artifacts on disk until `thot clean` removes data proven to be orphaned.
+
+Run creation selects the current project. Student and assignment commands invoked from a directory containing root `configuration.yaml` select that project's directory; elsewhere they use the most recently selected project. Assignment guessing compares project students to deliveries from that project's runs using names, surnames, email usernames and addresses, external IDs, and student IDs, with a second pass that rewards agreement across identity fields. Review suggestions with `thot assignments get`, then replace them with `thot assignments import FILE`. Several students can share one delivery; each student has at most one delivery assignment. Guess, get, and import responses identify the project and list unassigned deliveries.
 
 The configured `vm_path` is relative to the archive's containing directory and defaults to `./thot_vms`. The service creates per-run and per-delivery storage beneath it. The service account therefore needs write access to that VM storage directory. Keep the archive and its scripts protected from modification, and give write access only to the dedicated VM storage location. Do not use a path that overlaps the VirtualBox profile or artifact root.
 

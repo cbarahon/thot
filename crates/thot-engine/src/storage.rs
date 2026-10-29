@@ -88,6 +88,27 @@ impl SqliteStudentRepository {
         })
     }
 
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    pub async fn list_for_project(&self, project_id: &str) -> Result<Vec<Student>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, StudentRow>(
+            r#"
+            SELECT s.id, ps.name, ps.surname, ps.email, ps.external_id,
+                   ps.group_name, ps.center, ps.birth_date
+            FROM students s
+            JOIN project_students ps ON ps.student_id=s.id
+            WHERE ps.project_id=?
+            ORDER BY s.id
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     pub async fn list(&self) -> Result<Vec<Student>, sqlx::Error> {
         let rows = sqlx::query_as::<_, StudentRow>(
             r#"

@@ -1,10 +1,23 @@
 //! Purpose: Validates, imports, and retrieves student records through the repository interface.
+use sqlx::SqlitePool;
+use thiserror::Error;
 use thot_core::{
     GetStudentsResponse, ImportStudentsRequest, ImportStudentsResponse, RejectedStudent,
     StudentInput,
 };
 
-use crate::SqliteStudentRepository;
+use crate::{
+    SqliteStudentRepository,
+    project_context::{self, ProjectContextError},
+};
+
+#[derive(Debug, Error)]
+pub enum StudentServiceError {
+    #[error(transparent)]
+    Project(#[from] ProjectContextError),
+    #[error("student storage error: {0}")]
+    Storage(#[from] sqlx::Error),
+}
 
 #[derive(Clone)]
 pub struct StudentService {
@@ -19,41 +32,114 @@ impl StudentService {
     pub async fn import(
         &self,
         request: ImportStudentsRequest,
-    ) -> Result<ImportStudentsResponse, sqlx::Error> {
-        let mut imported = 0;
-        let mut rejected = Vec::new();
-
-        for record in request.students {
-            if let Some(reason) = validate(&record) {
-                rejected.push(rejection(record, reason));
-                continue;
-            }
-
-            match self.repository.insert(&record).await {
-                Ok(_) => imported += 1,
-                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-                    rejected.push(rejection(
-                        record,
-                        "Ya existe un estudiante con este correo electrónico".into(),
-                    ));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-
-        let discarded = rejected.len();
+    ) -> Result<ImportStudentsResponse, StudentServiceError> {
+        let pool = self.repository.pool();
+        let project = project_context::resolve(pool, request.project_path.as_deref()).await?;
+        let (imported, discarded, rejected) =
+            import_project_students(pool, &project.project_id, request.students).await?;
         Ok(ImportStudentsResponse {
+            project_id: project.project_id,
+            project_name: project.project_name,
+            project_path: project.project_path,
             imported,
             discarded,
             rejected,
         })
     }
 
-    pub async fn list(&self) -> Result<GetStudentsResponse, sqlx::Error> {
-        let students = self.repository.list().await?;
+    pub async fn list(
+        &self,
+        requested_project_path: Option<&str>,
+    ) -> Result<GetStudentsResponse, StudentServiceError> {
+        let project =
+            project_context::resolve(self.repository.pool(), requested_project_path).await?;
+        let students = self
+            .repository
+            .list_for_project(&project.project_id)
+            .await?;
         let total = students.len();
-        Ok(GetStudentsResponse { students, total })
+        Ok(GetStudentsResponse {
+            project_id: project.project_id,
+            project_name: project.project_name,
+            project_path: project.project_path,
+            students,
+            total,
+        })
     }
+}
+
+pub(crate) async fn import_project_students(
+    pool: &SqlitePool,
+    project_id: &str,
+    records: Vec<StudentInput>,
+) -> Result<(usize, usize, Vec<RejectedStudent>), sqlx::Error> {
+    let mut imported = 0;
+    let mut rejected = Vec::new();
+    let mut seen_emails = std::collections::HashSet::new();
+
+    for mut record in records {
+        if record
+            .external_id
+            .as_deref()
+            .is_none_or(|external_id| external_id.trim().is_empty())
+        {
+            record.external_id = Some(record.email.trim().to_owned());
+        }
+        if let Some(reason) = validate(&record) {
+            rejected.push(rejection(record, reason));
+            continue;
+        }
+        let email_key = record.email.trim().to_lowercase();
+        if !seen_emails.insert(email_key) {
+            rejected.push(rejection(
+                record,
+                "El correo electrónico está duplicado en el fichero".into(),
+            ));
+            continue;
+        }
+
+        sqlx::query(
+            r#"INSERT INTO students
+                   (name, surname, email, external_id, group_name, center, birth_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(email) DO NOTHING"#,
+        )
+        .bind(record.name.trim())
+        .bind(clean_optional(record.surname.as_deref()))
+        .bind(record.email.trim())
+        .bind(clean_optional(record.external_id.as_deref()))
+        .bind(clean_optional(record.group_name.as_deref()))
+        .bind(clean_optional(record.center.as_deref()))
+        .bind(clean_optional(record.birth_date.as_deref()))
+        .execute(pool)
+        .await?;
+        let student_id = sqlx::query_scalar::<_, i64>("SELECT id FROM students WHERE email=?")
+            .bind(record.email.trim())
+            .fetch_one(pool)
+            .await?;
+        sqlx::query("INSERT INTO project_students(project_id, student_id, name, surname, email, external_id, group_name, center, birth_date) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, student_id) DO UPDATE SET name=excluded.name, surname=excluded.surname, email=excluded.email, external_id=excluded.external_id, group_name=excluded.group_name, center=excluded.center, birth_date=excluded.birth_date")
+            .bind(project_id)
+            .bind(student_id)
+            .bind(record.name.trim())
+            .bind(clean_optional(record.surname.as_deref()))
+            .bind(record.email.trim())
+            .bind(record.external_id.as_deref().unwrap_or(record.email.trim()))
+            .bind(clean_optional(record.group_name.as_deref()))
+            .bind(clean_optional(record.center.as_deref()))
+            .bind(clean_optional(record.birth_date.as_deref()))
+            .execute(pool)
+            .await?;
+        imported += 1;
+    }
+    let discarded = rejected.len();
+    Ok((imported, discarded, rejected))
+}
+
+fn clean_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn validate(record: &StudentInput) -> Option<String> {

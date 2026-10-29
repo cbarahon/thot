@@ -1,7 +1,9 @@
 //! Purpose: Parses assignment CLI commands, reads YAML/JSON imports, and renders responses.
-use crate::{Settings, api_client::ApiClient, output::print_yaml};
+use crate::{
+    Settings, api_client::ApiClient, current_project_path, output::print_yaml, with_project_query,
+};
 use reqwest::Method;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{fs, path::Path};
 
 pub async fn handle(
@@ -10,20 +12,27 @@ pub async fn handle(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (action, input_path, json_output) = parse_args(args)?;
     let client = ApiClient::new(settings)?;
+    let project_path = current_project_path()?;
     let response = match action {
         "guess" => {
             client
-                .request(Method::POST, "/api/v1/assignments/guess", None)
+                .request(
+                    Method::POST,
+                    "/api/v1/assignments/guess",
+                    Some(json!({"project_path": project_path})),
+                )
                 .await?
         }
         "get" => {
-            client
-                .request(Method::GET, "/api/v1/assignments/get", None)
-                .await?
+            let endpoint = with_project_query("/api/v1/assignments/get", project_path.as_deref());
+            client.request(Method::GET, &endpoint, None).await?
         }
         "import" => {
             let path = input_path.ok_or("usage: thot assignments import FILE [--json]")?;
-            let value = read_input(Path::new(&path))?;
+            let mut value = read_input(Path::new(&path))?;
+            if let Some(project_path) = project_path {
+                value["project_path"] = json!(project_path);
+            }
             client
                 .request(Method::POST, "/api/v1/assignments/import", Some(value))
                 .await?

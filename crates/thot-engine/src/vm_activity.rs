@@ -173,6 +173,18 @@ fn project_identifier(path: &Path, is_directory: bool) -> String {
     format!("{slug}-{suffix}")
 }
 
+pub fn project_identifier_for_path(path: &Path) -> Result<String, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("project source {} is unavailable: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err("project source must not be a symlink".into());
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve project source: {error}"))?;
+    Ok(project_identifier(&canonical, metadata.is_dir()))
+}
+
 fn resolve_project_delivery(project_root: &Path, configured_path: &str) -> Result<PathBuf, String> {
     let requested = Path::new(configured_path);
     let path = if requested.is_absolute() {

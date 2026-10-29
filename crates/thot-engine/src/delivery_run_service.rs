@@ -10,7 +10,8 @@ use std::{
 use tokio::sync::Mutex;
 
 use crate::{
-    delivery_executor,
+    delivery_executor, project_context,
+    students::import_project_students,
     vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime},
 };
 
@@ -49,6 +50,7 @@ impl DeliveryRunService {
             .execute(&pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS vm_activity_expedients (expedient_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, delivery_id TEXT NOT NULL, report_path TEXT NOT NULL, status TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES vm_activity_runs(run_id), FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id))")
             .execute(&pool).await?;
+        crate::project_context::ensure_schema(&pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS student_assignments (student_id INTEGER PRIMARY KEY, delivery_id TEXT NOT NULL, match_score REAL, FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE, FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id) ON DELETE CASCADE)")
             .execute(&pool).await?;
         sqlx::query("UPDATE vm_activity_runs SET status='interrupted_cleanup_pending' WHERE status IN ('queued','running','cancelling')").execute(&pool).await?;
@@ -102,6 +104,51 @@ impl DeliveryRunService {
         let snapshot = vm_activity::load_project(Path::new(&project_path), &snapshot_dir)
             .await
             .map_err(ServiceError::Invalid)?;
+        project_context::activate(
+            &self.pool,
+            &snapshot.project_id,
+            &snapshot.configuration.activity_name,
+            &snapshot.archive_path,
+            Some(&snapshot.sha256),
+        )
+        .await
+        .map_err(|error| ServiceError::Internal(error.to_string()))?;
+        let students_csv = snapshot.extracted_root.join("students.csv");
+        match std::fs::symlink_metadata(&students_csv) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(ServiceError::Invalid(
+                    "project students.csv must be a regular non-symlink file".into(),
+                ));
+            }
+            Ok(_) => {
+                let contents = std::fs::read_to_string(&students_csv).map_err(|error| {
+                    ServiceError::Invalid(format!("cannot read project students.csv: {error}"))
+                })?;
+                let (students, malformed) = crate::student_csv::parse_students_csv(&contents)
+                    .map_err(ServiceError::Invalid)?;
+                let (imported, discarded, rejected) =
+                    import_project_students(&self.pool, &snapshot.project_id, students).await?;
+                tracing::info!(
+                    project_id = %snapshot.project_id,
+                    imported,
+                    discarded,
+                    malformed_rows = malformed.len(),
+                    "imported students.csv from project"
+                );
+                for (row, reason) in malformed {
+                    tracing::warn!(project_id = %snapshot.project_id, row, %reason, "skipped malformed project student CSV row");
+                }
+                for rejected in rejected {
+                    tracing::warn!(project_id = %snapshot.project_id, row = ?rejected.row, %rejected.reason, "rejected project student record");
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(ServiceError::Invalid(format!(
+                    "cannot inspect project students.csv: {error}"
+                )));
+            }
+        }
         let selected = if let Some(override_path) = delivery_directory {
             resolve_directory(Path::new(&override_path), None).map_err(ServiceError::Invalid)?
         } else {
@@ -398,12 +445,13 @@ impl DeliveryRunService {
 
     pub async fn delete_run(&self, run_id: &str) -> Result<bool, ServiceError> {
         let mut transaction = self.pool.begin().await?;
-        let status =
-            sqlx::query_scalar::<_, String>("SELECT status FROM vm_activity_runs WHERE run_id=?")
-                .bind(run_id)
-                .fetch_optional(&mut *transaction)
-                .await?;
-        let Some(status) = status else {
+        let run = sqlx::query_as::<_, (String, String)>(
+            "SELECT status, project_id FROM vm_activity_runs WHERE run_id=?",
+        )
+        .bind(run_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((status, project_id)) = run else {
             transaction.rollback().await?;
             return Ok(false);
         };
@@ -428,6 +476,13 @@ impl DeliveryRunService {
             .execute(&mut *transaction)
             .await?;
         for delivery_id in delivery_ids {
+            sqlx::query("DELETE FROM project_assignments WHERE delivery_id=? AND project_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients e JOIN vm_activity_runs r ON r.run_id=e.run_id WHERE e.delivery_id=? AND r.project_id=?)")
+                .bind(&delivery_id)
+                .bind(&project_id)
+                .bind(&delivery_id)
+                .bind(&project_id)
+                .execute(&mut *transaction)
+                .await?;
             sqlx::query("DELETE FROM student_assignments WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM vm_activity_expedients WHERE delivery_id=?)")
                 .bind(&delivery_id)
                 .bind(&delivery_id)

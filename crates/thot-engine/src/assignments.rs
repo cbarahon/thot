@@ -7,6 +7,8 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr};
 use thiserror::Error;
 
+use crate::project_context::{self, ProjectContextError};
+
 const MINIMUM_MATCH_SCORE: f64 = 0.56;
 const AMBIGUOUS_MATCH_MARGIN: f64 = 0.04;
 
@@ -16,10 +18,14 @@ pub enum AssignmentError {
     Invalid(String),
     #[error("assignment storage error: {0}")]
     Storage(#[from] sqlx::Error),
+    #[error(transparent)]
+    Project(#[from] ProjectContextError),
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ImportAssignmentsRequest {
+    #[serde(default)]
+    pub project_path: Option<String>,
     #[serde(default)]
     pub assignments: Vec<AssignmentInput>,
 }
@@ -54,6 +60,9 @@ pub struct DeliveryAssignmentSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AssignmentsResponse {
+    pub project_id: String,
+    pub project_name: String,
+    pub project_path: String,
     pub assignments: Vec<StudentAssignment>,
     pub unassigned_deliverables: Vec<DeliveryAssignmentSummary>,
 }
@@ -87,24 +96,26 @@ impl AssignmentService {
             .max_connections(5)
             .connect_with(options)
             .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS student_assignments (student_id INTEGER PRIMARY KEY, delivery_id TEXT NOT NULL, match_score REAL, FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE, FOREIGN KEY(delivery_id) REFERENCES vm_activity_deliveries(delivery_id) ON DELETE CASCADE)",
-        )
-        .execute(&pool)
-        .await?;
+        project_context::ensure_schema(&pool).await?;
         Ok(Self { pool })
     }
 
     /// Recomputes and stores the best non-ambiguous filename match for each student.
-    pub async fn guess(&self) -> Result<AssignmentsResponse, AssignmentError> {
+    pub async fn guess(
+        &self,
+        requested_project_path: Option<&str>,
+    ) -> Result<AssignmentsResponse, AssignmentError> {
+        let project = project_context::resolve(&self.pool, requested_project_path).await?;
         let students = sqlx::query_as::<_, StudentMatchRow>(
-            "SELECT id, name, surname, email, external_id FROM students ORDER BY id",
+            "SELECT s.id, ps.name, ps.surname, ps.email, ps.external_id FROM students s JOIN project_students ps ON ps.student_id=s.id WHERE ps.project_id=? ORDER BY s.id",
         )
+        .bind(&project.project_id)
         .fetch_all(&self.pool)
         .await?;
         let deliveries = sqlx::query_as::<_, DeliveryRow>(
-            "SELECT delivery_id, original_filename FROM vm_activity_deliveries ORDER BY original_filename, delivery_id",
+            "SELECT DISTINCT d.delivery_id, d.original_filename FROM vm_activity_deliveries d JOIN vm_activity_expedients e ON e.delivery_id=d.delivery_id JOIN vm_activity_runs r ON r.run_id=e.run_id WHERE r.project_id=? ORDER BY d.original_filename, d.delivery_id",
         )
+        .bind(&project.project_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -139,13 +150,15 @@ impl AssignmentService {
         }
 
         let mut transaction = self.pool.begin().await?;
-        sqlx::query("DELETE FROM student_assignments")
+        sqlx::query("DELETE FROM project_assignments WHERE project_id=?")
+            .bind(&project.project_id)
             .execute(&mut *transaction)
             .await?;
         for (student_id, delivery_id, score) in suggestions {
             sqlx::query(
-                "INSERT INTO student_assignments(student_id, delivery_id, match_score) VALUES(?, ?, ?)",
+                "INSERT INTO project_assignments(project_id, student_id, delivery_id, match_score) VALUES(?, ?, ?, ?)",
             )
+            .bind(&project.project_id)
             .bind(student_id)
             .bind(delivery_id)
             .bind(score)
@@ -153,22 +166,35 @@ impl AssignmentService {
             .await?;
         }
         transaction.commit().await?;
-        self.get().await
+        self.get(None).await
     }
 
     /// Returns one row per student and the deliveries not assigned to anyone.
-    pub async fn get(&self) -> Result<AssignmentsResponse, AssignmentError> {
+    pub async fn get(
+        &self,
+        requested_project_path: Option<&str>,
+    ) -> Result<AssignmentsResponse, AssignmentError> {
+        let project = project_context::resolve(&self.pool, requested_project_path).await?;
         let rows = sqlx::query_as::<_, AssignmentViewRow>(
-            r#"SELECT s.id, s.name, s.surname, s.email, s.external_id,
+            r#"SELECT s.id, ps.name, ps.surname, ps.email, ps.external_id,
                       a.delivery_id, d.original_filename,
-                      COALESCE((SELECT COUNT(*) FROM student_assignments counts
-                                WHERE counts.delivery_id = a.delivery_id), 0) AS assignment_count,
+                      COALESCE((SELECT COUNT(*) FROM project_assignments counts
+                                WHERE counts.project_id = ps.project_id
+                                  AND counts.delivery_id = a.delivery_id), 0) AS assignment_count,
                       a.match_score
                FROM students s
-               LEFT JOIN student_assignments a ON a.student_id = s.id
+               JOIN project_students ps ON ps.student_id = s.id
+               LEFT JOIN project_assignments a ON a.student_id = s.id AND a.project_id=ps.project_id
+                    AND EXISTS (
+                        SELECT 1 FROM vm_activity_expedients e
+                        JOIN vm_activity_runs r ON r.run_id=e.run_id
+                        WHERE e.delivery_id=a.delivery_id AND r.project_id=ps.project_id
+                    )
                LEFT JOIN vm_activity_deliveries d ON d.delivery_id = a.delivery_id
+               WHERE ps.project_id=?
                ORDER BY s.id"#,
         )
+        .bind(&project.project_id)
         .fetch_all(&self.pool)
         .await?;
         let assignments = rows
@@ -187,14 +213,21 @@ impl AssignmentService {
             .collect();
         let unassigned_deliverables = sqlx::query_as::<_, UnassignedDeliveryRow>(
             r#"SELECT d.delivery_id, d.original_filename,
-                      (SELECT COUNT(*) FROM student_assignments a
-                       WHERE a.delivery_id = d.delivery_id) AS assignment_count
+                      (SELECT COUNT(*) FROM project_assignments a
+                       WHERE a.project_id=? AND a.delivery_id = d.delivery_id) AS assignment_count
                FROM vm_activity_deliveries d
-               WHERE NOT EXISTS (
-                   SELECT 1 FROM student_assignments a WHERE a.delivery_id = d.delivery_id
+               JOIN vm_activity_expedients e ON e.delivery_id=d.delivery_id
+               JOIN vm_activity_runs r ON r.run_id=e.run_id
+               WHERE r.project_id=?
+               AND NOT EXISTS (
+                   SELECT 1 FROM project_assignments a WHERE a.project_id=? AND a.delivery_id = d.delivery_id
                )
+               GROUP BY d.delivery_id, d.original_filename
                ORDER BY d.original_filename, d.delivery_id"#,
         )
+        .bind(&project.project_id)
+        .bind(&project.project_id)
+        .bind(&project.project_id)
         .fetch_all(&self.pool)
         .await?
         .into_iter()
@@ -205,23 +238,32 @@ impl AssignmentService {
         })
         .collect();
         Ok(AssignmentsResponse {
+            project_id: project.project_id,
+            project_name: project.project_name,
+            project_path: project.project_path,
             assignments,
             unassigned_deliverables,
         })
     }
 
-    /// Replaces all saved assignments after validating every referenced student and delivery.
+    /// Replaces this project's saved assignments after validating student and delivery IDs.
     pub async fn import(
         &self,
         request: ImportAssignmentsRequest,
     ) -> Result<AssignmentsResponse, AssignmentError> {
-        let students = sqlx::query_scalar::<_, i64>("SELECT id FROM students")
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let deliveries =
-            sqlx::query_scalar::<_, String>("SELECT delivery_id FROM vm_activity_deliveries")
+        let project = project_context::resolve(&self.pool, request.project_path.as_deref()).await?;
+        let students = sqlx::query_scalar::<_, i64>(
+            "SELECT student_id FROM project_students WHERE project_id=?",
+        )
+        .bind(&project.project_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+        let deliveries = sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT d.delivery_id FROM vm_activity_deliveries d JOIN vm_activity_expedients e ON e.delivery_id=d.delivery_id JOIN vm_activity_runs r ON r.run_id=e.run_id WHERE r.project_id=?",
+        )
+                .bind(&project.project_id)
                 .fetch_all(&self.pool)
                 .await?
                 .into_iter()
@@ -264,14 +306,16 @@ impl AssignmentService {
         }
 
         let mut transaction = self.pool.begin().await?;
-        sqlx::query("DELETE FROM student_assignments")
+        sqlx::query("DELETE FROM project_assignments WHERE project_id=?")
+            .bind(&project.project_id)
             .execute(&mut *transaction)
             .await?;
         for assignment in request.assignments {
             if let Some(delivery_id) = assignment.delivery_id {
                 sqlx::query(
-                    "INSERT INTO student_assignments(student_id, delivery_id, match_score) VALUES(?, ?, NULL)",
+                    "INSERT INTO project_assignments(project_id, student_id, delivery_id, match_score) VALUES(?, ?, ?, NULL)",
                 )
+                .bind(&project.project_id)
                 .bind(assignment.student_id)
                 .bind(delivery_id)
                 .execute(&mut *transaction)
@@ -279,7 +323,7 @@ impl AssignmentService {
             }
         }
         transaction.commit().await?;
-        self.get().await
+        self.get(None).await
     }
 }
 
@@ -363,10 +407,16 @@ fn score_student_filename(student: &StudentMatchRow, filename: &str) -> f64 {
     if numeric_id.len() >= 3 {
         candidate_sets.push(vec![numeric_id]);
     }
-    candidate_sets
+    let mut scores = candidate_sets
         .iter()
         .map(|candidate| token_set_similarity(candidate, &filename_tokens))
-        .fold(0.0, f64::max)
+        .filter(|score| *score > 0.0)
+        .collect::<Vec<_>>();
+    scores.sort_by(f64::total_cmp);
+    let best = scores.last().copied().unwrap_or(0.0);
+    let second = scores.iter().rev().nth(1).copied().unwrap_or(0.0);
+    // A second pass rewards filenames that independently resemble more than one student field.
+    (0.85 * best + 0.15 * second).min(1.0)
 }
 
 fn filename_tokens(filename: &str) -> Vec<String> {
@@ -406,7 +456,7 @@ fn token_set_similarity(candidate: &[String], filename: &[String]) -> f64 {
         .filter(|token| {
             filename
                 .iter()
-                .any(|filename_token| token_similarity(token, filename_token) >= 0.78)
+                .any(|filename_token| token_similarity(token, filename_token) >= 0.68)
         })
         .count();
     let coverage = matched as f64 / eligible.len() as f64;
@@ -417,6 +467,15 @@ fn token_set_similarity(candidate: &[String], filename: &[String]) -> f64 {
 fn token_similarity(left: &str, right: &str) -> f64 {
     if left == right {
         return 1.0;
+    }
+    let shorter = if left.chars().count() <= right.chars().count() {
+        left
+    } else {
+        right
+    };
+    let longer = if shorter == left { right } else { left };
+    if shorter.chars().count() >= 4 && longer.contains(shorter) {
+        return 0.9;
     }
     let distance = levenshtein(left, right);
     1.0 - distance as f64 / left.chars().count().max(right.chars().count()) as f64

@@ -95,7 +95,9 @@ Scoring and LO evaluation should be repeatable from stored test results without 
 
 The implemented POC executes project-defined tests for OVA deliveries. Deliveries are tested sequentially within each delivery. Multiple deliveries may run concurrently up to the project's `concurrency` limit when their test references do not use VirtualBox or SSH shared host resources; projects using those adapters are restricted to concurrency one because the current guest forwarding ports are shared. The engine records an expedient and captured process result for each delivery and test. It does not yet calculate scores or learning outcomes.
 
-The assignment service compares student names, surnames, email usernames, external IDs, and IDs against delivery filenames. Professors can inspect and replace these suggestions before evaluation. Each student has at most one assigned delivery, while one delivery can be assigned to multiple students for group work. Unassigned deliveries remain listed for review.
+The assignment service compares student names, surnames, email usernames and addresses, external IDs, and IDs against delivery filenames using token and edit-distance similarity. A second scoring pass uses agreement across student fields to break close candidate matches. Professors can inspect and replace these suggestions before evaluation. Each student has at most one assigned delivery per project, while one delivery can be assigned to multiple students for group work. Unassigned deliveries remain listed for review.
+
+Students and assignments are scoped to a current project. Creating a run selects that project; CLI commands invoked from a directory with root `configuration.yaml` select that directory's project. A root `students.csv` inside the project bundle is imported during run creation. External IDs are required in stored project records; when CSV has no recognized external-ID column, email is copied to the external ID.
 
 ## 4. Logical architecture
 

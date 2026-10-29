@@ -1,6 +1,6 @@
 [package]
 name = "thot-runner"
-version = "0.1.4"
+version.workspace = true
 edition = "2018"
 
 [dependencies]

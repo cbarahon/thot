@@ -31,8 +31,9 @@ runs. The `create` forms accept an archive path or project directory;
 `--deliveries`, the engine uses `delivery_folder` from `configuration.yaml`;
 relative paths resolve from the archive's containing directory or the project
 directory, and absolute paths are accepted. A delivery override can point
-anywhere the daemon can read. The engine processes direct `.ova` children and
-does not map results to students.
+anywhere the daemon can read. The engine processes direct `.ova` children;
+afterward, the project-scoped assignment commands can associate those
+deliveries with students.
 
 Successful run and expedient responses are printed as human-readable YAML,
 including multiline `stdout` and `stderr` fields. The HTTP API continues to use
@@ -58,6 +59,16 @@ among `./thot-config.yaml`, `./.thot-config.yaml`, and
 CSV import recognizes common Catalan, Spanish, and English headers. Unknown
 columns are ignored, malformed rows are reported on stderr, and validation of
 student data remains in the server.
+
+Student operations are scoped to one project. When the current directory has a
+root `configuration.yaml`, its project is selected automatically. Otherwise the
+CLI uses the most recently selected project, normally the one passed to
+`thot run create`; commands fail if no project context exists. Student import
+and retrieval responses identify their project. A project's root
+`students.csv` is imported automatically on run creation. If it has no
+recognized external-ID column or a row has a blank external ID, each student's
+email is used as `external_id`. The `get students csv` command writes project
+details to stderr and CSV rows to stdout.
 
 `thot assignments guess` compares student names, surnames, email usernames,
 external IDs, and student IDs with delivery filenames. It replaces current
@@ -85,3 +96,5 @@ assignments:
 Guess, get, and import print YAML by default. Add `--json` to print their
 responses as formatted JSON. The API endpoints are `POST /api/v1/assignments/guess`,
 `GET /api/v1/assignments/get`, and `POST /api/v1/assignments/import`.
+Assignment operations are scoped to the current project, and deliverable
+candidates come only from that project's runs.
