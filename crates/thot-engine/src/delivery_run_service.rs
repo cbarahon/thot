@@ -230,6 +230,28 @@ impl DeliveryRunService {
             &inventory,
         )
         .await?;
+        if let Some(assignments) =
+            crate::assignments::load_project_assignments_file(&snapshot.extracted_root)
+                .map_err(ServiceError::Invalid)?
+        {
+            crate::assignments::replace_project_assignments(
+                &self.pool,
+                &snapshot.project_id,
+                &assignments,
+            )
+            .await
+            .map_err(|error| match error {
+                crate::assignments::AssignmentError::Invalid(message) => {
+                    ServiceError::Invalid(message)
+                }
+                crate::assignments::AssignmentError::Storage(error) => {
+                    ServiceError::Internal(format!("cannot import project assignments: {error}"))
+                }
+                crate::assignments::AssignmentError::Project(error) => {
+                    ServiceError::Internal(format!("cannot resolve project assignments: {error}"))
+                }
+            })?;
+        }
 
         let student_ids = sqlx::query_scalar::<_, i64>(
             "SELECT student_id FROM project_students WHERE project_id=? ORDER BY student_id",

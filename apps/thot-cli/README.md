@@ -83,19 +83,31 @@ and a list of unassigned deliveries.
 
 `thot assignments import FILE` replaces all current assignments. The file may
 be JSON or YAML and can be edited from `assignments get` output. Include exactly
-one row for every student. Each entry uses `student_id` and `delivery_id`; set
-`delivery_id: null` to leave that student unassigned while reviewing mappings.
+one row for every student. Each entry is resolved using `student_external_id`
+and `delivery_filename`; other row fields from `assignments get` are ignored and
+the student and delivery details are read from the database. Set
+`delivery_filename: null` to leave that student unassigned while reviewing
+mappings. The response includes `imported_records` and an `errors` list. Each
+error identifies its input record when available, describes the problem, and
+suggests a correction. Valid records are imported; invalid records are omitted
+from the replacement mapping, so correct the reported rows and import again.
 Before running, assign every student and every deliverable. For example:
 
 ```yaml
 assignments:
-  - student_id: 1
-    delivery_id: delivery-a1b2
-  - student_id: 2
-    delivery_id: delivery-a1b2
-  - student_id: 3
-    delivery_id: null
+  - student_external_id: student-001
+    delivery_filename: student-001.ova
+  - student_external_id: student-002
+    delivery_filename: student-001.ova
+  - student_external_id: student-003
+    delivery_filename: null
 ```
+
+When `assignments.yaml` or `assignments.json` is present at the project root,
+run creation imports it automatically after indexing the project's students
+and deliveries. If both files exist, run creation fails with an error explaining
+that only one may be present. The project file's assignments replace the
+current database assignments.
 
 Guess, get, and import print YAML by default. Add `--json` to print their
 responses as formatted JSON. The API endpoints are `POST /api/v1/assignments/guess`,

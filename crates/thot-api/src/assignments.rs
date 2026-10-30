@@ -10,7 +10,9 @@ use serde::Deserialize;
 use serde_json::json;
 use thot_engine::{
     AssignmentService,
-    assignments::{AssignmentError, AssignmentsResponse, ImportAssignmentsRequest},
+    assignments::{
+        AssignmentError, AssignmentImportResponse, AssignmentsResponse, ImportAssignmentsRequest,
+    },
     project_context::ProjectContextError,
 };
 
@@ -58,7 +60,7 @@ async fn get_assignments(
 async fn import_assignments(
     State(service): State<AssignmentService>,
     Json(request): Json<ImportAssignmentsRequest>,
-) -> Result<Json<AssignmentsResponse>, ApiError> {
+) -> Result<Json<AssignmentImportResponse>, ApiError> {
     service
         .import(request)
         .await

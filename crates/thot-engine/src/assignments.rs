@@ -1,10 +1,16 @@
 //! Purpose: Guesses, stores, and reports student-to-delivery assignments.
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
-use std::{collections::HashSet, path::Path, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::Path,
+    str::FromStr,
+};
 use thiserror::Error;
 
 use crate::{
@@ -32,14 +38,12 @@ pub struct ImportAssignmentsRequest {
     #[serde(default)]
     pub project_path: Option<String>,
     #[serde(default)]
-    pub assignments: Vec<AssignmentInput>,
+    pub assignments: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AssignmentInput {
-    pub student_id: i64,
-    #[serde(default)]
-    pub delivery_id: Option<String>,
+struct AssignmentFile {
+    assignments: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +74,23 @@ pub struct AssignmentsResponse {
     pub project_path: String,
     pub assignments: Vec<StudentAssignment>,
     pub unassigned_deliverables: Vec<DeliveryAssignmentSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AssignmentRecordError {
+    /// One-based index in the submitted assignments array. Missing project rows have no index.
+    pub record_index: Option<usize>,
+    pub student_external_id: Option<String>,
+    pub error: String,
+    pub correction: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AssignmentImportResponse {
+    #[serde(flatten)]
+    pub assignments: AssignmentsResponse,
+    pub imported_records: usize,
+    pub errors: Vec<AssignmentRecordError>,
 }
 
 #[derive(Clone)]
@@ -251,85 +272,23 @@ impl AssignmentService {
         })
     }
 
-    /// Replaces this project's saved assignments after validating student and delivery IDs.
+    /// Replaces this project's saved assignments using external IDs and delivery filenames.
     pub async fn import(
         &self,
         request: ImportAssignmentsRequest,
-    ) -> Result<AssignmentsResponse, AssignmentError> {
+    ) -> Result<AssignmentImportResponse, AssignmentError> {
         let project = project_context::resolve(&self.pool, request.project_path.as_deref()).await?;
         self.refresh_project_inventory(&project).await?;
-        let students = sqlx::query_scalar::<_, i64>(
-            "SELECT student_id FROM project_students WHERE project_id=?",
-        )
-        .bind(&project.project_id)
-        .fetch_all(&self.pool)
-        .await?
-        .into_iter()
-        .collect::<HashSet<_>>();
-        let deliveries = sqlx::query_scalar::<_, String>(
-            "SELECT delivery_id FROM project_deliveries WHERE project_id=?",
-        )
-        .bind(&project.project_id)
-        .fetch_all(&self.pool)
-        .await?
-        .into_iter()
-        .collect::<HashSet<_>>();
-        let mut seen_students = HashSet::new();
-        for assignment in &request.assignments {
-            if !students.contains(&assignment.student_id) {
-                return Err(AssignmentError::Invalid(format!(
-                    "student_id {} does not exist",
-                    assignment.student_id
-                )));
-            }
-            if !seen_students.insert(assignment.student_id) {
-                return Err(AssignmentError::Invalid(format!(
-                    "student_id {} appears more than once",
-                    assignment.student_id
-                )));
-            }
-            if let Some(delivery_id) = assignment.delivery_id.as_ref() {
-                if !deliveries.contains(delivery_id) {
-                    return Err(AssignmentError::Invalid(format!(
-                        "delivery_id {delivery_id:?} does not exist"
-                    )));
-                }
-            }
-        }
-        let missing_students = students
-            .difference(&seen_students)
-            .copied()
-            .collect::<Vec<_>>();
-        if !missing_students.is_empty() {
-            return Err(AssignmentError::Invalid(format!(
-                "assignment import must include every student; missing student IDs: {}",
-                missing_students
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
-        }
-
-        let mut transaction = self.pool.begin().await?;
-        sqlx::query("DELETE FROM project_assignments WHERE project_id=?")
-            .bind(&project.project_id)
-            .execute(&mut *transaction)
-            .await?;
-        for assignment in request.assignments {
-            if let Some(delivery_id) = assignment.delivery_id {
-                sqlx::query(
-                    "INSERT INTO project_assignments(project_id, student_id, delivery_id, match_score) VALUES(?, ?, ?, NULL)",
-                )
-                .bind(&project.project_id)
-                .bind(assignment.student_id)
-                .bind(delivery_id)
-                .execute(&mut *transaction)
+        let resolved =
+            resolve_project_assignments(&self.pool, &project.project_id, &request.assignments)
                 .await?;
-            }
-        }
-        transaction.commit().await?;
-        self.get(None).await
+        persist_project_assignments(&self.pool, &project.project_id, &resolved.rows).await?;
+        let assignments = self.get(None).await?;
+        Ok(AssignmentImportResponse {
+            assignments,
+            imported_records: resolved.imported_records,
+            errors: resolved.errors,
+        })
     }
 
     async fn refresh_project_inventory(
@@ -399,6 +358,306 @@ impl AssignmentService {
         replace_project_deliveries(&self.pool, &project.project_id, &inventory).await?;
         Ok(())
     }
+}
+
+/// Read the optional project-root assignment file, rejecting ambiguous dual formats.
+pub(crate) fn load_project_assignments_file(
+    project_root: &Path,
+) -> Result<Option<Vec<Value>>, String> {
+    let yaml_path = project_root.join("assignments.yaml");
+    let json_path = project_root.join("assignments.json");
+    let yaml_exists = regular_file_exists(&yaml_path)?;
+    let json_exists = regular_file_exists(&json_path)?;
+    if yaml_exists && json_exists {
+        return Err("project contains both assignments.yaml and assignments.json".into());
+    }
+    let path = if yaml_exists {
+        yaml_path
+    } else if json_exists {
+        json_path
+    } else {
+        return Ok(None);
+    };
+    let bytes = fs::read(&path).map_err(|error| {
+        format!(
+            "cannot read project assignment file {}: {error}",
+            path.display()
+        )
+    })?;
+    let file: AssignmentFile = if path.extension().and_then(|value| value.to_str()) == Some("json")
+    {
+        serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "invalid project assignment file {}: {error}",
+                path.display()
+            )
+        })?
+    } else {
+        serde_yaml::from_slice(&bytes).map_err(|error| {
+            format!(
+                "invalid project assignment file {}: {error}",
+                path.display()
+            )
+        })?
+    };
+    Ok(Some(file.assignments))
+}
+
+fn regular_file_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(format!(
+            "project assignment file {} must be a regular non-symlink file",
+            path.display()
+        )),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "cannot inspect project assignment file {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+/// Atomically replace project assignments after resolving identities against current project data.
+pub(crate) async fn replace_project_assignments(
+    pool: &SqlitePool,
+    project_id: &str,
+    assignments: &[Value],
+) -> Result<(), AssignmentError> {
+    let resolved = resolve_project_assignments(pool, project_id, assignments).await?;
+    if !resolved.errors.is_empty() {
+        let details = resolved
+            .errors
+            .iter()
+            .map(|error| {
+                let record = error
+                    .record_index
+                    .map(|index| format!("record {index}: "))
+                    .unwrap_or_default();
+                format!("{record}{}; correction: {}", error.error, error.correction)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(AssignmentError::Invalid(format!(
+            "assignment file has {} error(s): {details}",
+            resolved.errors.len()
+        )));
+    }
+    persist_project_assignments(pool, project_id, &resolved.rows).await
+}
+
+struct ResolvedAssignmentImport {
+    rows: Vec<(i64, Option<String>)>,
+    imported_records: usize,
+    errors: Vec<AssignmentRecordError>,
+}
+
+async fn resolve_project_assignments(
+    pool: &SqlitePool,
+    project_id: &str,
+    assignments: &[Value],
+) -> Result<ResolvedAssignmentImport, AssignmentError> {
+    let student_rows = sqlx::query_as::<_, (i64, String)>(
+        "SELECT student_id, external_id FROM project_students WHERE project_id=?",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+    let mut student_ids_by_external_id = HashMap::<String, Vec<i64>>::new();
+    for (student_id, external_id) in &student_rows {
+        student_ids_by_external_id
+            .entry(external_id.trim().to_owned())
+            .or_default()
+            .push(*student_id);
+    }
+
+    let delivery_rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT d.delivery_id, d.original_filename FROM project_deliveries pd JOIN vm_activity_deliveries d ON d.delivery_id=pd.delivery_id WHERE pd.project_id=?",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+    let mut delivery_ids_by_filename = HashMap::<String, Vec<String>>::new();
+    for (delivery_id, filename) in delivery_rows {
+        delivery_ids_by_filename
+            .entry(filename)
+            .or_default()
+            .push(delivery_id);
+    }
+
+    let mut seen_students = HashSet::new();
+    let mut resolved = Vec::with_capacity(assignments.len());
+    let mut errors = Vec::new();
+    for (index, assignment) in assignments.iter().enumerate() {
+        let Some(object) = assignment.as_object() else {
+            errors.push(AssignmentRecordError {
+                record_index: Some(index + 1),
+                student_external_id: None,
+                error: "assignment record must be an object".into(),
+                correction:
+                    "use a mapping with `student_external_id` and `delivery_filename` fields."
+                        .into(),
+            });
+            continue;
+        };
+        let external_id = match object.get("student_external_id") {
+            Some(Value::String(value)) if !value.trim().is_empty() => value.trim(),
+            Some(Value::String(_)) | None | Some(Value::Null) => {
+                errors.push(AssignmentRecordError {
+                    record_index: Some(index + 1),
+                    student_external_id: None,
+                    error: "student_external_id is missing or empty".into(),
+                    correction: "set it to the student's external ID shown by `thot get students`."
+                        .into(),
+                });
+                continue;
+            }
+            Some(_) => {
+                errors.push(AssignmentRecordError {
+                    record_index: Some(index + 1),
+                    student_external_id: None,
+                    error: "student_external_id must be a string".into(),
+                    correction: "quote the student's external ID as a string, as shown by `thot get students`.".into(),
+                });
+                continue;
+            }
+        };
+        let Some(student_ids) = student_ids_by_external_id.get(external_id) else {
+            errors.push(AssignmentRecordError {
+                record_index: Some(index + 1),
+                student_external_id: Some(external_id.to_owned()),
+                error: format!(
+                    "student_external_id {external_id:?} does not exist in this project"
+                ),
+                correction: "copy the exact external ID from `thot get students` for this project."
+                    .into(),
+            });
+            continue;
+        };
+        if student_ids.len() != 1 {
+            errors.push(AssignmentRecordError {
+                record_index: Some(index + 1),
+                student_external_id: Some(external_id.to_owned()),
+                error: format!("student_external_id {external_id:?} is not unique in this project"),
+                correction:
+                    "make external IDs unique in the project student roster, then import again."
+                        .into(),
+            });
+            continue;
+        }
+        let student_id = student_ids[0];
+        if !seen_students.insert(student_id) {
+            errors.push(AssignmentRecordError {
+                record_index: Some(index + 1),
+                student_external_id: Some(external_id.to_owned()),
+                error: format!("student_external_id {external_id:?} appears more than once"),
+                correction: "keep exactly one assignment row for each student external ID.".into(),
+            });
+            continue;
+        }
+
+        let delivery_filename = match object.get("delivery_filename") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(filename)) => Some(filename.as_str()),
+            Some(_) => {
+                errors.push(AssignmentRecordError {
+                    record_index: Some(index + 1),
+                    student_external_id: Some(external_id.to_owned()),
+                    error: "delivery_filename must be a string or null".into(),
+                    correction:
+                        "use an exact filename from `thot assignments get`, or set it to null."
+                            .into(),
+                });
+                continue;
+            }
+        };
+        let delivery_id = match delivery_filename {
+            None => None,
+            Some(filename) if filename.trim().is_empty() => {
+                errors.push(AssignmentRecordError {
+                    record_index: Some(index + 1),
+                    student_external_id: Some(external_id.to_owned()),
+                    error: "delivery_filename is empty".into(),
+                    correction:
+                        "use an exact filename from `thot assignments get`, or set it to null."
+                            .into(),
+                });
+                continue;
+            }
+            Some(filename) => {
+                let Some(delivery_ids) = delivery_ids_by_filename.get(filename) else {
+                    errors.push(AssignmentRecordError {
+                        record_index: Some(index + 1),
+                        student_external_id: Some(external_id.to_owned()),
+                        error: format!("delivery_filename {filename:?} does not exist in this project"),
+                        correction: "copy an exact delivery filename from `thot assignments get`, or use null.".into(),
+                    });
+                    continue;
+                };
+                if delivery_ids.len() != 1 {
+                    errors.push(AssignmentRecordError {
+                        record_index: Some(index + 1),
+                        student_external_id: Some(external_id.to_owned()),
+                        error: format!(
+                            "delivery_filename {filename:?} is not unique in this project"
+                        ),
+                        correction:
+                            "use a unique delivery filename in the project delivery folder.".into(),
+                    });
+                    continue;
+                }
+                Some(delivery_ids[0].clone())
+            }
+        };
+        resolved.push((student_id, delivery_id));
+    }
+
+    let missing_students = student_rows
+        .iter()
+        .filter(|(student_id, _)| !seen_students.contains(student_id))
+        .map(|(_, external_id)| external_id.clone())
+        .collect::<Vec<_>>();
+    for external_id in missing_students {
+        errors.push(AssignmentRecordError {
+            record_index: None,
+            student_external_id: Some(external_id.clone()),
+            error: format!("project student {external_id:?} has no assignment record"),
+            correction: "add one row with this external ID and a delivery filename or null.".into(),
+        });
+    }
+
+    let imported_records = resolved.len();
+    Ok(ResolvedAssignmentImport {
+        rows: resolved,
+        imported_records,
+        errors,
+    })
+}
+
+async fn persist_project_assignments(
+    pool: &SqlitePool,
+    project_id: &str,
+    assignments: &[(i64, Option<String>)],
+) -> Result<(), AssignmentError> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query("DELETE FROM project_assignments WHERE project_id=?")
+        .bind(project_id)
+        .execute(&mut *transaction)
+        .await?;
+    for (student_id, delivery_id) in assignments {
+        if let Some(delivery_id) = delivery_id {
+            sqlx::query(
+                "INSERT INTO project_assignments(project_id, student_id, delivery_id, match_score) VALUES(?, ?, ?, NULL)",
+            )
+            .bind(project_id)
+            .bind(student_id)
+            .bind(delivery_id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+    }
+    transaction.commit().await?;
+    Ok(())
 }
 
 pub(crate) async fn replace_project_deliveries(
