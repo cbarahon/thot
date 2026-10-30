@@ -11,6 +11,8 @@ pub struct VMActivityProject {
     pub concurrency: usize,
     pub timeout: u64,
     pub tests: Vec<ProjectTest>,
+    #[serde(default)]
+    pub checks: Vec<ProjectCheck>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -24,6 +26,19 @@ pub struct ProjectTest {
     pub repeat: usize,
     #[serde(default)]
     pub timeout: Option<u64>,
+    #[serde(default)]
+    pub parameters: ParameterInput,
+}
+
+/// A configured check evaluated against a named test result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectCheck {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(rename = "check")]
+    pub check_ref: String,
+    pub test: String,
     #[serde(default)]
     pub parameters: ParameterInput,
 }

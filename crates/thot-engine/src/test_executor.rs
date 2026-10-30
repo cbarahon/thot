@@ -161,5 +161,12 @@ pub async fn execute_project_tests(
         }
         prior.insert(definition.name.clone(), vec![all_passed]);
     }
+    report["checks"] = json!(crate::checks::evaluate_checks(
+        &project.checks,
+        &project.tests,
+        report
+    ));
+    test_result_store::persist_report(report_path, report)
+        .map_err(|e| format!("cannot persist expedient checks: {e}"))?;
     Ok(())
 }

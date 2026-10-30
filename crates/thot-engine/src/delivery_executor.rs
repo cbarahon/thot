@@ -43,6 +43,7 @@ pub async fn execute_delivery(
             "validation_error": input.validation_error
         },
         "test_results": [],
+        "checks": [],
         "cleanup": {"status":"not_run", "details":[]},
         "overall_status": "running",
         "started_at": now,

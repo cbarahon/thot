@@ -38,3 +38,12 @@ tests:
     requirements: [import_ova]
     parameters:
       - vm_name: linux_competition
+checks:
+  - name: ova
+    description: has delivered an ova and it can be imported
+    check: pass
+    test: import_ova
+  - name: ssh
+    description: vm has working ssh
+    check: pass
+    test: vm_info

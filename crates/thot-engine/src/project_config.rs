@@ -1,6 +1,6 @@
 //! Purpose: Parses and validates the root configuration.yaml project test model.
 use std::collections::HashSet;
-use thot_core::{ProjectTest, VMActivityProject};
+use thot_core::{ProjectCheck, ProjectTest, VMActivityProject};
 
 pub fn parse_configuration(bytes: &[u8]) -> Result<VMActivityProject, String> {
     let project: VMActivityProject =
@@ -44,6 +44,39 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
         test.parameters.into_strings()?;
         prior_names.insert(test.name.as_str());
     }
+    let mut check_names = HashSet::new();
+    for check in &project.checks {
+        validate_check(check, &names)?;
+        if !check_names.insert(check.name.as_str()) {
+            return Err(format!("check name {:?} is repeated", check.name));
+        }
+    }
+    Ok(())
+}
+
+fn validate_check(check: &ProjectCheck, test_names: &HashSet<&str>) -> Result<(), String> {
+    let valid_name = |name: &str| {
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    };
+    if !valid_name(&check.name) {
+        return Err(format!("invalid check name {:?}", check.name));
+    }
+    if !test_names.contains(check.test.as_str()) {
+        return Err(format!(
+            "check {:?} refers to unknown test {:?}",
+            check.name, check.test
+        ));
+    }
+    if check.check_ref != "pass" {
+        return Err(format!(
+            "check {:?} uses unknown internal check {:?}",
+            check.name, check.check_ref
+        ));
+    }
+    check.parameters.into_strings()?;
     Ok(())
 }
 
@@ -115,7 +148,7 @@ fn validate_test_reference(reference: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const EXAMPLE: &str = "activity_name: The Linux Competition\ndelivery_folder: ./delivery\nconcurrency: 1\ntimeout: 120\ntests:\n  - name: import_ova\n    test: VirtualBox/import_ova\n    parameters:\n      - vm_name: linux_competition\n      - vbox_group: /linux_competition\n  - name: start_time\n    test: extern/tests/vm_start_time.py\n    requirements: [import_ova]\n    repeat: 3\n    parameters:\n      vm_name: linux_competition\n";
+    const EXAMPLE: &str = "activity_name: The Linux Competition\ndelivery_folder: ./delivery\nconcurrency: 1\ntimeout: 120\ntests:\n  - name: import_ova\n    test: VirtualBox/import_ova\n    parameters:\n      - vm_name: linux_competition\n      - vbox_group: /linux_competition\n  - name: start_time\n    test: extern/tests/vm_start_time.py\n    requirements: [import_ova]\n    repeat: 3\n    parameters:\n      vm_name: linux_competition\nchecks:\n  - name: ova\n    description: has delivered an ova and it can be imported\n    check: pass\n    test: import_ova\n";
 
     #[test]
     fn parses_requested_project_and_parameter_formats() {

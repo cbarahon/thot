@@ -1,6 +1,7 @@
 //! Purpose: Exports the engine's project, test, student, and delivery-run services.
 
 pub mod assignments;
+pub mod checks;
 pub mod delivery_executor;
 pub mod delivery_run_service;
 pub mod maintenance;
