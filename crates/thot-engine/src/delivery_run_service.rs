@@ -3,7 +3,7 @@ use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -270,34 +270,6 @@ impl DeliveryRunService {
         .bind(&snapshot.project_id)
         .fetch_all(&self.pool)
         .await?;
-        let assigned_students = assignments.iter().map(|row| row.0).collect::<HashSet<_>>();
-        if assigned_students.len() != student_ids.len() {
-            let missing = student_ids
-                .iter()
-                .filter(|student_id| !assigned_students.contains(student_id))
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
-            return Err(ServiceError::Invalid(format!(
-                "assign a delivery to every project student before creating a run; unassigned student IDs: {}",
-                missing.join(", ")
-            )));
-        }
-        let assigned_deliveries = assignments
-            .iter()
-            .map(|row| row.5.as_str())
-            .collect::<HashSet<_>>();
-        let unassigned = inventory
-            .iter()
-            .filter(|(delivery_id, _)| !assigned_deliveries.contains(delivery_id.as_str()))
-            .map(|(_, filename)| filename.clone())
-            .collect::<Vec<_>>();
-        if !unassigned.is_empty() {
-            return Err(ServiceError::Invalid(format!(
-                "assign every project deliverable to at least one student before creating a run; unassigned files: {}",
-                unassigned.join(", ")
-            )));
-        }
-
         let mut student_work = Vec::with_capacity(assignments.len());
         for (
             student_id,

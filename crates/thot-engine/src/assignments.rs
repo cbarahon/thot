@@ -612,20 +612,6 @@ async fn resolve_project_assignments(
         resolved.push((student_id, delivery_id));
     }
 
-    let missing_students = student_rows
-        .iter()
-        .filter(|(student_id, _)| !seen_students.contains(student_id))
-        .map(|(_, external_id)| external_id.clone())
-        .collect::<Vec<_>>();
-    for external_id in missing_students {
-        errors.push(AssignmentRecordError {
-            record_index: None,
-            student_external_id: Some(external_id.clone()),
-            error: format!("project student {external_id:?} has no assignment record"),
-            correction: "add one row with this external ID and a delivery filename or null.".into(),
-        });
-    }
-
     let imported_records = resolved.len();
     Ok(ResolvedAssignmentImport {
         rows: resolved,

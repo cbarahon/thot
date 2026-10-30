@@ -32,8 +32,9 @@ runs. The `create` forms accept an archive path or project directory;
 relative paths resolve from the archive's containing directory or the project
 directory, and absolute paths are accepted. A delivery override can point
 anywhere the daemon can read. Assignment commands index the project's direct
-`.ova` children before a run begins. Assign deliveries to students first; run
-creation requires every student and every delivery to have an assignment.
+`.ova` children before a run begins. Students without deliveries and deliveries
+without assigned students are skipped. If there are no assigned pairs, the run
+completes without creating student expedients or running tests.
 
 Successful run and expedient responses are printed as human-readable YAML,
 including multiline `stdout` and `stderr` fields. The HTTP API continues to use
@@ -82,8 +83,8 @@ assigned delivery ID and filename, the number of students sharing that delivery,
 and a list of unassigned deliveries.
 
 `thot assignments import FILE` replaces all current assignments. The file may
-be JSON or YAML and can be edited from `assignments get` output. Include exactly
-one row for every student. Each entry is resolved using `student_external_id`
+be JSON or YAML and can be edited from `assignments get` output. Each entry is
+resolved using `student_external_id`
 and `delivery_filename`; other row fields from `assignments get` are ignored and
 the student and delivery details are read from the database. Set
 `delivery_filename: null` to leave that student unassigned while reviewing
@@ -91,7 +92,9 @@ mappings. The response includes `imported_records` and an `errors` list. Each
 error identifies its input record when available, describes the problem, and
 suggests a correction. Valid records are imported; invalid records are omitted
 from the replacement mapping, so correct the reported rows and import again.
-Before running, assign every student and every deliverable. For example:
+Students omitted from the file become unassigned and are skipped by the next
+run. Deliveries omitted from all rows are also skipped. If no pairs remain, the
+run completes without tests. For example:
 
 ```yaml
 assignments:
