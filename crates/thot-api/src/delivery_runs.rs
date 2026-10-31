@@ -6,6 +6,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use serde::Deserialize;
 use serde_json::json;
 use thot_core::DeliveryRunRequest;
 use thot_engine::{DeliveryRunService, RunRecord, delivery_run_service::ServiceError};
@@ -13,6 +14,7 @@ use thot_engine::{DeliveryRunService, RunRecord, delivery_run_service::ServiceEr
 pub(super) fn router(service: DeliveryRunService) -> Router {
     Router::new()
         .route("/api/v1/runs", get(list_runs).post(create_run))
+        .route("/api/v1/runs/checks", post(run_checks))
         .route("/api/v1/runs/{run_id}", get(get_run).delete(delete_run))
         .route("/api/v1/runs/{run_id}/cancel", post(cancel_run))
         .route("/api/v1/expedients/{expedient_id}", get(get_expedient))
@@ -27,6 +29,23 @@ async fn list_runs(
     State(service): State<DeliveryRunService>,
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     service.list_runs().await.map(Json).map_err(ApiError::from)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RunChecksRequest {
+    run_id: Option<String>,
+}
+
+async fn run_checks(
+    State(service): State<DeliveryRunService>,
+    body: Option<Json<RunChecksRequest>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let run_id = body.and_then(|Json(request)| request.run_id);
+    service
+        .run_checks(run_id.as_deref())
+        .await?
+        .map(|result| (StatusCode::OK, Json(result)))
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "run not found".into()))
 }
 
 async fn create_run(

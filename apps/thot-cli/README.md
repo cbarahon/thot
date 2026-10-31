@@ -13,6 +13,7 @@ thot [-h HOST] [-p PORT] run [list]
 thot [-h HOST] [-p PORT] run create <PROJECT_PATH> [--deliveries DIR]
 thot [-h HOST] [-p PORT] run create --project <PROJECT_PATH> [--deliveries DIR]
 thot [-h HOST] [-p PORT] run status [RUN_ID]
+thot [-h HOST] [-p PORT] run checks [RUN_ID]
 thot [-h HOST] [-p PORT] run delete RUN_ID
 thot [-h HOST] [-p PORT] run expedient EXPEDIENT_ID
 thot [-h HOST] [-p PORT] run cancel RUN_ID
@@ -35,6 +36,11 @@ anywhere the daemon can read. Assignment commands index the project's direct
 `.ova` children before a run begins. Students without deliveries and deliveries
 without assigned students are skipped. If there are no assigned pairs, the run
 completes without creating student expedients or running tests.
+
+`thot run checks [RUN_ID]` evaluates only configured checks against saved test
+results and writes each student's updated `checks` section to their expedient.
+Without an ID, it selects the most recently created finished run. It does not
+start or repeat tests. Check results replace the previous `checks` section.
 
 Successful run and expedient responses are printed as human-readable YAML,
 including multiline `stdout` and `stderr` fields. The HTTP API continues to use

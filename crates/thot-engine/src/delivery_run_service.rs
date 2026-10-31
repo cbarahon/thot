@@ -40,6 +40,20 @@ pub struct RunExpedientSummary {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RunChecksResponse {
+    pub run_id: String,
+    pub expedients_updated: usize,
+    pub expedients: Vec<ExpedientChecksResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExpedientChecksResult {
+    pub expedient_id: String,
+    pub student_id: Option<i64>,
+    pub checks: Vec<serde_json::Value>,
+}
+
 #[derive(Debug, Clone)]
 struct StudentExpedientWork {
     expedient_id: String,
@@ -572,6 +586,119 @@ impl DeliveryRunService {
             });
         }
         Ok(runs)
+    }
+
+    /// Re-evaluate configured checks against saved test results for a finished run.
+    pub async fn run_checks(
+        &self,
+        requested_run_id: Option<&str>,
+    ) -> Result<Option<RunChecksResponse>, ServiceError> {
+        let _guard = self.create_gate.lock().await;
+        let run = if let Some(run_id) = requested_run_id {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT run_id, status FROM vm_activity_runs WHERE run_id=?",
+            )
+            .bind(run_id)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT run_id, status FROM vm_activity_runs WHERE status NOT IN ('queued','running','cancelling') ORDER BY created_at DESC, run_id DESC LIMIT 1",
+            )
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let Some((run_id, status)) = run else {
+            if requested_run_id.is_some() {
+                return Ok(None);
+            }
+            return Err(ServiceError::Invalid(
+                "there is no finished run to check; specify a RUN_ID or run tests first".into(),
+            ));
+        };
+        if matches!(status.as_str(), "queued" | "running" | "cancelling") {
+            return Err(ServiceError::Conflict(format!(
+                "cannot run checks for run {run_id:?} while its tests are still running"
+            )));
+        }
+
+        let configuration_path = self
+            .artifact_root
+            .join("project-snapshots")
+            .join(&run_id)
+            .join("project")
+            .join("configuration.yaml");
+        let metadata = fs::symlink_metadata(&configuration_path).map_err(|error| {
+            ServiceError::Internal(format!(
+                "saved project configuration for run {run_id:?} is unavailable at {}: {error}",
+                configuration_path.display()
+            ))
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(ServiceError::Internal(format!(
+                "saved project configuration for run {run_id:?} is not a regular file: {}",
+                configuration_path.display()
+            )));
+        }
+        let configuration_bytes = fs::read(&configuration_path).map_err(|error| {
+            ServiceError::Internal(format!(
+                "cannot read saved project configuration for run {run_id:?}: {error}"
+            ))
+        })?;
+        let project =
+            crate::project_config::parse_configuration(&configuration_bytes).map_err(|error| {
+                ServiceError::Internal(format!("saved run configuration is invalid: {error}"))
+            })?;
+
+        let expedients = sqlx::query_as::<_, (String, Option<i64>, String)>(
+            "SELECT expedient_id, student_id, report_path FROM vm_activity_expedients WHERE run_id=? ORDER BY student_id, expedient_id",
+        )
+        .bind(&run_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut reports = Vec::with_capacity(expedients.len());
+        for (expedient_id, student_id, report_path) in expedients {
+            let bytes = fs::read(&report_path).map_err(|error| {
+                ServiceError::Internal(format!(
+                    "cannot read expedient {expedient_id:?} report at {report_path}: {error}"
+                ))
+            })?;
+            let mut report: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    ServiceError::Internal(format!(
+                        "expedient {expedient_id:?} report is invalid JSON: {error}"
+                    ))
+                })?;
+            let check_rows =
+                crate::checks::evaluate_checks(&project.checks, &project.tests, &report);
+            report["checks"] = serde_json::json!(check_rows);
+            reports.push((
+                expedient_id,
+                student_id,
+                PathBuf::from(report_path),
+                report,
+                check_rows,
+            ));
+        }
+
+        let mut result_rows = Vec::with_capacity(reports.len());
+        for (expedient_id, student_id, report_path, report, checks) in reports {
+            crate::test_result_store::persist_report(&report_path, &report).map_err(|error| {
+                ServiceError::Internal(format!(
+                    "cannot save checks to expedient {expedient_id:?}: {error}"
+                ))
+            })?;
+            result_rows.push(ExpedientChecksResult {
+                expedient_id,
+                student_id,
+                checks,
+            });
+        }
+        Ok(Some(RunChecksResponse {
+            run_id,
+            expedients_updated: result_rows.len(),
+            expedients: result_rows,
+        }))
     }
 
     async fn list_run_expedients(
