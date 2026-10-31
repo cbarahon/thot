@@ -1,4 +1,5 @@
 //! Purpose: Parses and validates the root configuration.yaml project test model.
+use regex::Regex;
 use std::collections::HashSet;
 use thot_core::{ProjectCheck, ProjectTest, VMActivityProject};
 
@@ -70,14 +71,112 @@ fn validate_check(check: &ProjectCheck, test_names: &HashSet<&str>) -> Result<()
             check.name, check.test
         ));
     }
-    if check.check_ref != "pass" {
-        return Err(format!(
-            "check {:?} uses unknown internal check {:?}",
-            check.name, check.check_ref
-        ));
+    let parameters = check.parameters.into_strings()?;
+    match check.check_ref.as_str() {
+        "pass" => Ok(()),
+        "regex_extract" => {
+            let property = check.property.as_deref().unwrap_or_default();
+            if property.trim().is_empty() {
+                return Err(format!(
+                    "check {:?} using regex_extract requires a non-empty property",
+                    check.name
+                ));
+            }
+            if property.split('.').any(str::is_empty) {
+                return Err(format!(
+                    "check {:?} property must use non-empty dot-separated path components",
+                    check.name
+                ));
+            }
+            let regex = parameters.get("regex").ok_or_else(|| {
+                format!(
+                    "check {:?} using regex_extract requires parameter regex",
+                    check.name
+                )
+            })?;
+            let compiled = Regex::new(regex).map_err(|error| {
+                format!(
+                    "check {:?} has invalid regex parameter: {error}",
+                    check.name
+                )
+            })?;
+            if compiled.captures_len() < 2 {
+                return Err(format!(
+                    "check {:?} regex must contain a capture group",
+                    check.name
+                ));
+            }
+            let data_type = parameters.get("data_type").ok_or_else(|| {
+                format!(
+                    "check {:?} using regex_extract requires parameter data_type",
+                    check.name
+                )
+            })?;
+            if !matches!(data_type.as_str(), "number" | "text" | "date" | "datetime") {
+                return Err(format!(
+                    "check {:?} data_type must be number, text, date, or datetime",
+                    check.name
+                ));
+            }
+            let condition = parameters.get("condition").ok_or_else(|| {
+                format!(
+                    "check {:?} using regex_extract requires parameter condition",
+                    check.name
+                )
+            })?;
+            let valid_condition =
+                matches!(condition.as_str(), "<" | "<=" | ">" | ">=" | "==" | "!=")
+                    || (condition == "contains" && data_type == "text");
+            if !valid_condition {
+                return Err(format!(
+                    "check {:?} condition must be <, <=, >, >=, ==, !=, or contains for text",
+                    check.name
+                ));
+            }
+            let value = parameters.get("value").ok_or_else(|| {
+                format!(
+                    "check {:?} using regex_extract requires parameter value",
+                    check.name
+                )
+            })?;
+            match data_type.as_str() {
+                "number" => {
+                    let parsed = value
+                        .parse::<f64>()
+                        .map_err(|_| format!("check {:?} value must be a number", check.name))?;
+                    if !parsed.is_finite() {
+                        return Err(format!(
+                            "check {:?} value must be a finite number",
+                            check.name
+                        ));
+                    }
+                }
+                "date" => {
+                    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| {
+                        format!(
+                            "check {:?} value must use YYYY-MM-DD for data_type date",
+                            check.name
+                        )
+                    })?;
+                }
+                "datetime" => {
+                    chrono::DateTime::parse_from_rfc3339(value).map_err(|_| {
+                        format!(
+                            "check {:?} value must be RFC 3339 for data_type datetime",
+                            check.name
+                        )
+                    })?;
+                }
+                "text" => {}
+                _ => unreachable!("data_type was validated above"),
+            }
+            Ok(())
+        }
+        unknown => Err(format!(
+            "check {:?} uses unknown internal check {unknown:?}",
+            check.name
+        )),
     }
-    check.parameters.into_strings()?;
-    Ok(())
 }
 
 fn validate_test(test: &ProjectTest, global_timeout: u64) -> Result<(), String> {

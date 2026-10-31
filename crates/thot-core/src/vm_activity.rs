@@ -40,6 +40,8 @@ pub struct ProjectCheck {
     pub check_ref: String,
     pub test: String,
     #[serde(default)]
+    pub property: Option<String>,
+    #[serde(default)]
     pub parameters: ParameterInput,
 }
 

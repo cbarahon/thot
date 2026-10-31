@@ -47,3 +47,13 @@ checks:
     description: vm has working ssh
     check: pass
     test: vm_info
+  - name: ova_disk_size
+    description: The disk size meets the technical requirement (1 Gb).
+    check: regex_extract
+    test: import_ova
+    property: stdout
+    parameters:
+      - regex: 'vmdisk1\t([0-9]+)'
+      - data_type: number
+      - condition: '<='
+      - value: 1073742000

@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.12"
+version = "0.1.13"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 
@@ -30,4 +30,5 @@ futures-util = "0.3"
 ssh2 = "0.9.6"
 serde_yaml = "0.9"
 sha2 = "0.10"
+regex = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
