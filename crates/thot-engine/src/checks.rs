@@ -2,6 +2,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use regex::Regex;
 use serde_json::{Value, json};
+use serde_json_path::JsonPath;
 use std::{cmp::Ordering, collections::BTreeMap};
 use thot_core::{ProjectCheck, ProjectTest};
 
@@ -38,7 +39,82 @@ fn run_check(check: &ProjectCheck, test: &ProjectTest, report: &Value) -> Result
     match check.check_ref.as_str() {
         "pass" => passed_test_result(test, report),
         "regex_extract" => regex_extract_check(check, test, report, &parameters),
+        "yaml_extract" => yaml_extract_check(check, test, report, &parameters),
         unknown => Err(format!("unknown internal check {unknown:?}")),
+    }
+}
+
+fn yaml_extract_check(
+    check: &ProjectCheck,
+    test: &ProjectTest,
+    report: &Value,
+    parameters: &BTreeMap<String, String>,
+) -> Result<u8, String> {
+    let property = check
+        .property
+        .as_deref()
+        .ok_or("yaml_extract check has no property")?;
+    let expression = parameters
+        .get("JSONPath")
+        .or_else(|| parameters.get("jsonpath"))
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("yaml_extract check is missing parameter \"JSONPath\"")?;
+    let path = JsonPath::parse(expression)
+        .map_err(|error| format!("invalid yaml_extract JSONPath: {error}"))?;
+    let data_type = required_parameter(parameters, "data_type")?;
+    let condition = required_parameter(parameters, "condition")?;
+    let expected = required_parameter(parameters, "value")?;
+
+    let results = report["test_results"]
+        .as_array()
+        .ok_or("expedient has no test_results array")?;
+    let expected_ids = expected_test_ids(test);
+    let mut found_results = Vec::with_capacity(expected_ids.len());
+    for test_id in expected_ids {
+        let row = results
+            .iter()
+            .find(|row| row["test_id"].as_str() == Some(&test_id))
+            .ok_or_else(|| format!("test result {test_id:?} is missing"))?;
+        found_results.push(row);
+    }
+
+    for test_result in found_results {
+        let Some(value) = property_value(test_result, property) else {
+            return Err(format!("test result property {property:?} does not exist"));
+        };
+        let document = parse_document(value, property)?;
+        let selected = path.query(&document).exactly_one().map_err(|error| {
+            format!("yaml_extract JSONPath must select exactly one value: {error}")
+        })?;
+        let Some(captured) = property_text(selected) else {
+            return Err(format!(
+                "yaml_extract JSONPath {expression:?} selected a non-scalar value"
+            ));
+        };
+        if !compare_captured(&captured, expected, data_type, condition)? {
+            return Ok(0);
+        }
+    }
+    Ok(1)
+}
+
+fn parse_document(value: &Value, property: &str) -> Result<Value, String> {
+    match value {
+        Value::String(document) => match serde_json::from_str(document) {
+            Ok(json) => Ok(json),
+            Err(json_error) => {
+                let yaml = serde_yaml::from_str::<serde_yaml::Value>(document).map_err(|yaml_error| {
+                    format!(
+                        "test result property {property:?} is neither valid JSON nor YAML (JSON: {json_error}; YAML: {yaml_error})"
+                    )
+                })?;
+                serde_json::to_value(yaml).map_err(|error| {
+                    format!("cannot convert YAML property {property:?} to JSON: {error}")
+                })
+            }
+        },
+        structured => Ok(structured.clone()),
     }
 }
 
@@ -55,10 +131,7 @@ fn regex_extract_check(
     let regex_text = required_parameter(parameters, "regex")?;
     let data_type = required_parameter(parameters, "data_type")?;
     let condition = required_parameter(parameters, "condition")?;
-    let expected = parameters
-        .get("value")
-        .map(String::as_str)
-        .ok_or("regex_extract check is missing parameter \"value\"")?;
+    let expected = required_parameter(parameters, "value")?;
     let regex = Regex::new(regex_text).map_err(|error| format!("invalid regex: {error}"))?;
     if regex.captures_len() < 2 {
         return Err("regex_extract expression must contain a capture group".into());
@@ -107,7 +180,7 @@ fn required_parameter<'a>(
         .get(key)
         .map(String::as_str)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("regex_extract check is missing parameter {key:?}"))
+        .ok_or_else(|| format!("extract check is missing parameter {key:?}"))
 }
 
 fn expected_test_ids(test: &ProjectTest) -> Vec<String> {
@@ -177,7 +250,7 @@ fn compare_captured(
                 .map_err(|error| format!("check value is not an RFC 3339 datetime: {error}"))?;
             captured.cmp(&expected)
         }
-        other => return Err(format!("unsupported regex_extract data_type {other:?}")),
+        other => return Err(format!("unsupported check data_type {other:?}")),
     };
     match condition {
         "<" => Ok(ordering == Ordering::Less),
@@ -187,7 +260,7 @@ fn compare_captured(
         "==" => Ok(ordering == Ordering::Equal),
         "!=" => Ok(ordering != Ordering::Equal),
         "contains" => Err("condition contains is only supported for text".into()),
-        other => Err(format!("unsupported regex_extract condition {other:?}")),
+        other => Err(format!("unsupported check condition {other:?}")),
     }
 }
 

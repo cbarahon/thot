@@ -57,3 +57,13 @@ checks:
       - data_type: number
       - condition: '<='
       - value: 1073742000
+  - name: ova_ram_size
+    description: The imported VM has at most 260 MB of configured RAM.
+    check: yaml_extract
+    test: import_ova
+    property: observation
+    parameters:
+      - JSONPath: $.vm_configuration.memory
+      - data_type: number
+      - condition: '<='
+      - value: 260
