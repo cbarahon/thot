@@ -34,15 +34,18 @@ async fn list_runs(
 #[derive(Debug, Default, Deserialize)]
 struct RunChecksRequest {
     run_id: Option<String>,
+    project_path: Option<String>,
 }
 
 async fn run_checks(
     State(service): State<DeliveryRunService>,
     body: Option<Json<RunChecksRequest>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let run_id = body.and_then(|Json(request)| request.run_id);
+    let (run_id, project_path) = body
+        .map(|Json(request)| (request.run_id, request.project_path))
+        .unwrap_or_default();
     service
-        .run_checks(run_id.as_deref())
+        .run_checks(run_id.as_deref(), project_path.as_deref())
         .await?
         .map(|result| (StatusCode::OK, Json(result)))
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "run not found".into()))

@@ -592,23 +592,24 @@ impl DeliveryRunService {
     pub async fn run_checks(
         &self,
         requested_run_id: Option<&str>,
+        requested_project_path: Option<&str>,
     ) -> Result<Option<RunChecksResponse>, ServiceError> {
         let _guard = self.create_gate.lock().await;
         let run = if let Some(run_id) = requested_run_id {
-            sqlx::query_as::<_, (String, String)>(
-                "SELECT run_id, status FROM vm_activity_runs WHERE run_id=?",
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT run_id, status, project_id FROM vm_activity_runs WHERE run_id=?",
             )
             .bind(run_id)
             .fetch_optional(&self.pool)
             .await?
         } else {
-            sqlx::query_as::<_, (String, String)>(
-                "SELECT run_id, status FROM vm_activity_runs WHERE status NOT IN ('queued','running','cancelling') ORDER BY created_at DESC, run_id DESC LIMIT 1",
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT run_id, status, project_id FROM vm_activity_runs WHERE status NOT IN ('queued','running','cancelling') ORDER BY created_at DESC, run_id DESC LIMIT 1",
             )
             .fetch_optional(&self.pool)
             .await?
         };
-        let Some((run_id, status)) = run else {
+        let Some((run_id, status, project_id)) = run else {
             if requested_run_id.is_some() {
                 return Ok(None);
             }
@@ -622,33 +623,54 @@ impl DeliveryRunService {
             )));
         }
 
-        let configuration_path = self
+        let snapshot_configuration_path = self
             .artifact_root
             .join("project-snapshots")
             .join(&run_id)
             .join("project")
             .join("configuration.yaml");
+        let current_configuration_path = if let Some(project_path) = requested_project_path {
+            let path = Path::new(project_path);
+            let matches_run_project = crate::vm_activity::project_identifier_for_path(path)
+                .is_ok_and(|candidate_id| candidate_id == project_id);
+            if matches_run_project && path.is_dir() {
+                Some(path.join("configuration.yaml"))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let configuration_path = current_configuration_path
+            .as_deref()
+            .unwrap_or(&snapshot_configuration_path);
         let metadata = fs::symlink_metadata(&configuration_path).map_err(|error| {
             ServiceError::Internal(format!(
-                "saved project configuration for run {run_id:?} is unavailable at {}: {error}",
+                "project configuration for run {run_id:?} is unavailable at {}: {error}",
                 configuration_path.display()
             ))
         })?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(ServiceError::Internal(format!(
-                "saved project configuration for run {run_id:?} is not a regular file: {}",
+                "project configuration for run {run_id:?} is not a regular file: {}",
                 configuration_path.display()
             )));
         }
         let configuration_bytes = fs::read(&configuration_path).map_err(|error| {
             ServiceError::Internal(format!(
-                "cannot read saved project configuration for run {run_id:?}: {error}"
+                "cannot read project configuration for run {run_id:?}: {error}"
             ))
         })?;
         let project =
             crate::project_config::parse_configuration(&configuration_bytes).map_err(|error| {
-                ServiceError::Internal(format!("saved run configuration is invalid: {error}"))
+                ServiceError::Internal(format!("project configuration for run is invalid: {error}"))
             })?;
+        if project.checks.is_empty() {
+            return Err(ServiceError::Invalid(format!(
+                "no checks are configured for run {run_id:?} in the project configuration used at {}",
+                configuration_path.display()
+            )));
+        }
 
         let expedients = sqlx::query_as::<_, (String, Option<i64>, String)>(
             "SELECT expedient_id, student_id, report_path FROM vm_activity_expedients WHERE run_id=? ORDER BY student_id, expedient_id",

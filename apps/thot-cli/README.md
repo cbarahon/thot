@@ -39,8 +39,11 @@ completes without creating student expedients or running tests.
 
 `thot run checks [RUN_ID]` evaluates only configured checks against saved test
 results and writes each student's updated `checks` section to their expedient.
-Without an ID, it selects the most recently created finished run. It does not
-start or repeat tests. Check results replace the previous `checks` section.
+Without an ID, it selects the most recently created finished run. When run from
+the same unpacked project directory used by that run, it reads that directory's
+current `configuration.yaml`; otherwise it uses the run's saved configuration.
+It does not start or repeat tests. Check results replace the previous `checks`
+section.
 
 Successful run and expedient responses are printed as human-readable YAML,
 including multiline `stdout` and `stderr` fields. The HTTP API continues to use

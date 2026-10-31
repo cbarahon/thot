@@ -1,5 +1,5 @@
 //! Purpose: Parses run and expedient CLI commands and calls the corresponding API routes.
-use crate::{Settings, api_client::ApiClient, output::print_yaml};
+use crate::{Settings, api_client::ApiClient, current_project_path, output::print_yaml};
 use reqwest::Method;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -43,7 +43,7 @@ pub async fn handle(
         [command] if command == "checks" => (
             Method::POST,
             "/api/v1/runs/checks".to_owned(),
-            Some(json!({})),
+            Some(json!({ "project_path": current_project_path()? })),
         ),
         [] => (
             Method::POST,
@@ -88,7 +88,10 @@ pub async fn handle(
         [action, id] if action == "checks" => (
             Method::POST,
             "/api/v1/runs/checks".to_owned(),
-            Some(json!({"run_id": id})),
+            Some(json!({
+                "run_id": id,
+                "project_path": current_project_path()?
+            })),
         ),
         [action, id] if action == "delete" => {
             (Method::DELETE, format!("/api/v1/runs/{id}"), None)
