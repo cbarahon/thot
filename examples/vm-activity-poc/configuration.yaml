@@ -67,3 +67,33 @@ checks:
       - data_type: number
       - condition: '<='
       - value: 260
+  - name: fastest_boot
+    description: Compare this delivery's boot time with the maximum observed boot time.
+    check: stats/yaml_extract
+    test: start_time_01
+    property: stdout
+    parameters:
+      - JSONPath: $.elapsed_ms
+      - data_type: number
+      - stat: max
+      - condition: '=='
+  - name: fast_boot
+    description: Boot time falls within the five-percentile threshold.
+    check: stats/yaml_extract
+    test: start_time_01
+    property: stdout
+    parameters:
+      - JSONPath: $.elapsed_ms
+      - data_type: number
+      - stat: p5
+      - condition: '<='
+  - name: fast_boot_regex
+    description: Compare boot time extracted from process output with the five-percentile threshold.
+    check: stats/regex_extract
+    test: start_time_01
+    property: stdout
+    parameters:
+      - regex: '"elapsed_ms":\s*([0-9]+)'
+      - data_type: number
+      - stat: p5
+      - condition: '<='

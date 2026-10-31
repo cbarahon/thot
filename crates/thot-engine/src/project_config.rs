@@ -48,7 +48,7 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
     }
     let mut check_names = HashSet::new();
     for check in &project.checks {
-        validate_check(check, &names)?;
+        validate_check(check, &project.tests, &names)?;
         if !check_names.insert(check.name.as_str()) {
             return Err(format!("check name {:?} is repeated", check.name));
         }
@@ -56,7 +56,11 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_check(check: &ProjectCheck, test_names: &HashSet<&str>) -> Result<(), String> {
+fn validate_check(
+    check: &ProjectCheck,
+    tests: &[ProjectTest],
+    test_names: &HashSet<&str>,
+) -> Result<(), String> {
     let valid_name = |name: &str| {
         !name.is_empty()
             && name
@@ -66,9 +70,23 @@ fn validate_check(check: &ProjectCheck, test_names: &HashSet<&str>) -> Result<()
     if !valid_name(&check.name) {
         return Err(format!("invalid check name {:?}", check.name));
     }
-    if !test_names.contains(check.test.as_str()) {
+    let statistical = crate::stats::is_stats_check(&check.check_ref);
+    let matched_test = tests.iter().find(|test| {
+        test.name == check.test
+            || (statistical
+                && crate::checks::expected_test_ids(test)
+                    .iter()
+                    .any(|test_id| test_id == &check.test))
+    });
+    if (!statistical && !test_names.contains(check.test.as_str())) || matched_test.is_none() {
         return Err(format!(
             "check {:?} refers to unknown test {:?}",
+            check.name, check.test
+        ));
+    }
+    if statistical && matched_test.is_some_and(|test| test.repeat > 1 && test.name == check.test) {
+        return Err(format!(
+            "statistical check {:?} must refer to one repeated test result, for example {:?}_01",
             check.name, check.test
         ));
     }
@@ -113,11 +131,96 @@ fn validate_check(check: &ProjectCheck, test_names: &HashSet<&str>) -> Result<()
                 .map_err(|error| format!("check {:?} has invalid JSONPath: {error}", check.name))?;
             validate_comparison_parameters(check, &parameters, "yaml_extract")
         }
+        "stats/regex_extract" => {
+            validate_extract_property(check, "stats/regex_extract")?;
+            let regex = parameters.get("regex").ok_or_else(|| {
+                format!(
+                    "check {:?} using stats/regex_extract requires parameter regex",
+                    check.name
+                )
+            })?;
+            let compiled = Regex::new(regex).map_err(|error| {
+                format!(
+                    "check {:?} has invalid regex parameter: {error}",
+                    check.name
+                )
+            })?;
+            if compiled.captures_len() < 2 {
+                return Err(format!(
+                    "check {:?} regex must contain a capture group",
+                    check.name
+                ));
+            }
+            validate_stat_parameters(check, &parameters)
+        }
+        "stats/yaml_extract" => {
+            validate_extract_property(check, "stats/yaml_extract")?;
+            let expression = parameters
+                .get("JSONPath")
+                .or_else(|| parameters.get("jsonpath"))
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "check {:?} using stats/yaml_extract requires parameter JSONPath",
+                        check.name
+                    )
+                })?;
+            JsonPath::parse(expression)
+                .map_err(|error| format!("check {:?} has invalid JSONPath: {error}", check.name))?;
+            validate_stat_parameters(check, &parameters)
+        }
         unknown => Err(format!(
             "check {:?} uses unknown internal check {unknown:?}",
             check.name
         )),
     }
+}
+
+fn validate_stat_parameters(
+    check: &ProjectCheck,
+    parameters: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let data_type = parameters
+        .get("data_type")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("check {:?} requires parameter data_type", check.name))?;
+    if !matches!(data_type.as_str(), "number" | "text" | "date" | "datetime") {
+        return Err(format!(
+            "check {:?} data_type must be number, text, date, or datetime",
+            check.name
+        ));
+    }
+    let statistic = parameters
+        .get("stat")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("check {:?} requires parameter stat", check.name))?;
+    if !crate::stats::valid_statistic(statistic) {
+        return Err(format!(
+            "check {:?} has unknown statistic {:?}; supported statistics are max, min, avg, freq, p1, p5, p10, p20, p30, p40, p50, p60, p70, p80, p90, p95, p99, var, and std",
+            check.name, statistic
+        ));
+    }
+    if matches!(statistic.as_str(), "avg" | "var" | "std") || statistic.starts_with('p') {
+        if data_type != "number" {
+            return Err(format!(
+                "check {:?} statistic {:?} requires data_type number",
+                check.name, statistic
+            ));
+        }
+    }
+    let condition = parameters
+        .get("condition")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("check {:?} requires parameter condition", check.name))?;
+    let valid_condition = matches!(condition.as_str(), "<" | "<=" | ">" | ">=" | "==" | "!=")
+        || (condition == "contains" && data_type == "text");
+    if !valid_condition {
+        return Err(format!(
+            "check {:?} condition must be <, <=, >, >=, ==, !=, or contains for text",
+            check.name
+        ));
+    }
+    Ok(())
 }
 
 fn validate_extract_property(check: &ProjectCheck, check_type: &str) -> Result<(), String> {

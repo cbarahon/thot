@@ -1,4 +1,5 @@
 //! Purpose: Evaluates configured internal checks against the test results in an expedient.
+use crate::stats;
 use chrono::{DateTime, NaiveDate, Utc};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -11,27 +12,46 @@ pub fn evaluate_checks(
     checks: &[ProjectCheck],
     tests: &[ProjectTest],
     report: &Value,
+    reports_for_run: &[Value],
 ) -> Vec<Value> {
     checks
         .iter()
         .map(|check| {
-            let result = match tests.iter().find(|test| test.name == check.test) {
-                Some(test) => run_check(check, test, report),
+            let result = match find_test(check, tests) {
+                Some(test) if stats::is_stats_check(&check.check_ref) => {
+                    stats::evaluate_check(check, test, report, reports_for_run)
+                        .map(|result| (result.passed, Some(result)))
+                }
+                Some(test) => run_check(check, test, report).map(|passed| (passed, None)),
                 None => Err(format!("configured test {:?} was not found", check.test)),
             };
-            let (value, error) = match result {
-                Ok(value) => (value, Value::Null),
-                Err(error) => (0, json!(error)),
+            let (value, error, details) = match result {
+                Ok((value, details)) => (value, Value::Null, details),
+                Err(error) => (0, json!(error), None),
             };
-            json!({
+            let mut row = json!({
                 "name": check.name,
                 "description": check.description,
                 "result": value,
                 "err": error,
                 "date_time": Utc::now().to_rfc3339()
-            })
+            });
+            if let Some(details) = details {
+                row["statistic"] = details.statistic;
+                row["sample_count"] = json!(details.sample_count);
+                row["student_value"] = details.student_value;
+            }
+            row
         })
         .collect()
+}
+
+fn find_test<'a>(check: &ProjectCheck, tests: &'a [ProjectTest]) -> Option<&'a ProjectTest> {
+    tests.iter().find(|test| {
+        test.name == check.test
+            || (stats::is_stats_check(&check.check_ref)
+                && expected_test_ids(test).iter().any(|id| id == &check.test))
+    })
 }
 
 fn run_check(check: &ProjectCheck, test: &ProjectTest, report: &Value) -> Result<u8, String> {
@@ -99,7 +119,7 @@ fn yaml_extract_check(
     Ok(1)
 }
 
-fn parse_document(value: &Value, property: &str) -> Result<Value, String> {
+pub(crate) fn parse_document(value: &Value, property: &str) -> Result<Value, String> {
     match value {
         Value::String(document) => match serde_json::from_str(document) {
             Ok(json) => Ok(json),
@@ -183,7 +203,7 @@ fn required_parameter<'a>(
         .ok_or_else(|| format!("extract check is missing parameter {key:?}"))
 }
 
-fn expected_test_ids(test: &ProjectTest) -> Vec<String> {
+pub(crate) fn expected_test_ids(test: &ProjectTest) -> Vec<String> {
     (0..test.repeat)
         .map(|index| {
             if test.repeat == 1 {
@@ -195,7 +215,7 @@ fn expected_test_ids(test: &ProjectTest) -> Vec<String> {
         .collect()
 }
 
-fn property_value<'a>(root: &'a Value, property: &str) -> Option<&'a Value> {
+pub(crate) fn property_value<'a>(root: &'a Value, property: &str) -> Option<&'a Value> {
     let mut value = root;
     for component in property.split('.') {
         value = if let Some(object) = value.as_object() {
@@ -209,7 +229,7 @@ fn property_value<'a>(root: &'a Value, property: &str) -> Option<&'a Value> {
     Some(value)
 }
 
-fn property_text(value: &Value) -> Option<String> {
+pub(crate) fn property_text(value: &Value) -> Option<String> {
     match value {
         Value::String(value) => Some(value.clone()),
         Value::Number(value) => Some(value.to_string()),
@@ -218,7 +238,7 @@ fn property_text(value: &Value) -> Option<String> {
     }
 }
 
-fn compare_captured(
+pub(crate) fn compare_captured(
     captured: &str,
     expected: &str,
     data_type: &str,
@@ -264,7 +284,7 @@ fn compare_captured(
     }
 }
 
-fn parse_finite_number(value: &str, label: &str) -> Result<f64, String> {
+pub(crate) fn parse_finite_number(value: &str, label: &str) -> Result<f64, String> {
     let number = value
         .parse::<f64>()
         .map_err(|error| format!("{label} is not a number: {error}"))?;

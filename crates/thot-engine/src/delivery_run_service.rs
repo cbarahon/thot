@@ -513,6 +513,18 @@ impl DeliveryRunService {
             .collect::<Vec<_>>()
             .await;
         had_errors |= outcomes.into_iter().any(|failed| failed);
+        if !project.configuration.checks.is_empty()
+            && let Err(error) = self
+                .evaluate_saved_run_checks(
+                    &run_id,
+                    &project.configuration.checks,
+                    &project.configuration.tests,
+                )
+                .await
+        {
+            tracing::error!(%error, %run_id, "could not evaluate run checks");
+            had_errors = true;
+        }
         let final_status = if self
             .get_run(&run_id)
             .await
@@ -672,10 +684,26 @@ impl DeliveryRunService {
             )));
         }
 
+        let result_rows = self
+            .evaluate_saved_run_checks(&run_id, &project.checks, &project.tests)
+            .await?;
+        Ok(Some(RunChecksResponse {
+            run_id,
+            expedients_updated: result_rows.len(),
+            expedients: result_rows,
+        }))
+    }
+
+    async fn evaluate_saved_run_checks(
+        &self,
+        run_id: &str,
+        checks: &[thot_core::ProjectCheck],
+        tests: &[thot_core::ProjectTest],
+    ) -> Result<Vec<ExpedientChecksResult>, ServiceError> {
         let expedients = sqlx::query_as::<_, (String, Option<i64>, String)>(
             "SELECT expedient_id, student_id, report_path FROM vm_activity_expedients WHERE run_id=? ORDER BY student_id, expedient_id",
         )
-        .bind(&run_id)
+        .bind(run_id)
         .fetch_all(&self.pool)
         .await?;
         let mut reports = Vec::with_capacity(expedients.len());
@@ -685,26 +713,22 @@ impl DeliveryRunService {
                     "cannot read expedient {expedient_id:?} report at {report_path}: {error}"
                 ))
             })?;
-            let mut report: serde_json::Value =
-                serde_json::from_slice(&bytes).map_err(|error| {
-                    ServiceError::Internal(format!(
-                        "expedient {expedient_id:?} report is invalid JSON: {error}"
-                    ))
-                })?;
-            let check_rows =
-                crate::checks::evaluate_checks(&project.checks, &project.tests, &report);
-            report["checks"] = serde_json::json!(check_rows);
-            reports.push((
-                expedient_id,
-                student_id,
-                PathBuf::from(report_path),
-                report,
-                check_rows,
-            ));
+            let report: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+                ServiceError::Internal(format!(
+                    "expedient {expedient_id:?} report is invalid JSON: {error}"
+                ))
+            })?;
+            reports.push((expedient_id, student_id, PathBuf::from(report_path), report));
         }
-
+        let reports_for_run = reports
+            .iter()
+            .map(|(_, _, _, report)| report.clone())
+            .collect::<Vec<_>>();
         let mut result_rows = Vec::with_capacity(reports.len());
-        for (expedient_id, student_id, report_path, report, checks) in reports {
+        for (expedient_id, student_id, report_path, mut report) in reports {
+            let check_rows =
+                crate::checks::evaluate_checks(checks, tests, &report, &reports_for_run);
+            report["checks"] = serde_json::json!(check_rows);
             crate::test_result_store::persist_report(&report_path, &report).map_err(|error| {
                 ServiceError::Internal(format!(
                     "cannot save checks to expedient {expedient_id:?}: {error}"
@@ -713,14 +737,10 @@ impl DeliveryRunService {
             result_rows.push(ExpedientChecksResult {
                 expedient_id,
                 student_id,
-                checks,
+                checks: check_rows,
             });
         }
-        Ok(Some(RunChecksResponse {
-            run_id,
-            expedients_updated: result_rows.len(),
-            expedients: result_rows,
-        }))
+        Ok(result_rows)
     }
 
     async fn list_run_expedients(
