@@ -19,7 +19,7 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
         "-Pn".to_owned(),
         "-sT".to_owned(),
         "-sV".to_owned(),
-        "--version-light".to_owned(),
+        "--version-all".to_owned(),
         "--reason".to_owned(),
         "--max-retries".to_owned(),
         "1".to_owned(),
