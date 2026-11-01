@@ -1,4 +1,5 @@
 //! Purpose: Defines the invocation and outcome contracts shared by test platform adapters.
+use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use thot_core::test_results::TestStatus;
 
@@ -18,6 +19,8 @@ pub struct TestInvocation {
     pub runtime: VmActivityRuntime,
     pub run_id: String,
     pub expedient_id: String,
+    /// Completed results earlier in the configured test sequence for this delivery.
+    pub prior_test_results: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]

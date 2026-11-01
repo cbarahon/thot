@@ -79,6 +79,10 @@ pub async fn execute_project_tests(
                     runtime: runtime.clone(),
                     run_id: run_id.into(),
                     expedient_id: expedient_id.into(),
+                    prior_test_results: report["test_results"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default(),
                 };
                 tests::dispatch(&invocation).await
             };

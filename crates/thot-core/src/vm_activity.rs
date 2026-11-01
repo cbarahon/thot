@@ -72,6 +72,18 @@ impl ParameterInput {
                 Value::Number(value) => value.to_string(),
                 Value::Bool(value) => value.to_string(),
                 Value::Null => String::new(),
+                Value::Array(values) if key == "tests" => {
+                    let names = values
+                        .iter()
+                        .map(|value| match value {
+                            Value::String(name) if !name.trim().is_empty() => Ok(name.clone()),
+                            _ => Err(format!(
+                                "parameter {key:?} list entries must be non-empty strings"
+                            )),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    names.join(",")
+                }
                 Value::Array(_) | Value::Object(_) => {
                     return Err(format!("parameter {key:?} must be a scalar"));
                 }

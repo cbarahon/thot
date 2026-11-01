@@ -2,6 +2,7 @@
 #[path = "extern.rs"]
 pub mod extern_tests;
 pub mod ssh;
+pub mod stats;
 pub mod virtualbox;
 
 use crate::test_execution::{TestInvocation, TestOutcome};
@@ -9,6 +10,9 @@ use crate::test_execution::{TestInvocation, TestOutcome};
 pub async fn dispatch(invocation: &TestInvocation) -> TestOutcome {
     if invocation.test_reference.starts_with("extern/") {
         return extern_tests::run(invocation).await;
+    }
+    if invocation.test_reference.starts_with("stats/") {
+        return stats::run(invocation).await;
     }
     match invocation.test_reference.as_str() {
         "ssh/get_host_info" => ssh::run(invocation).await,

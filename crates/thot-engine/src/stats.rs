@@ -28,6 +28,29 @@ pub(crate) fn valid_statistic(statistic: &str) -> bool {
     STATISTICS.contains(&statistic)
 }
 
+/// Calculate every statistic available for the selected scalar data type.
+pub(crate) fn summarize_values(values: &[String], data_type: &str) -> Result<Value, String> {
+    if values.is_empty() {
+        return Err("no extracted values are available for statistical summary".into());
+    }
+    let samples = values
+        .iter()
+        .map(|value| parse_scalar(value, data_type, "extracted value"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut summary = serde_json::Map::new();
+    summary.insert("count".into(), json!(samples.len()));
+    for name in STATISTICS {
+        if data_type != "number" && matches!(*name, "avg" | "var" | "std")
+            || data_type != "number" && name.starts_with('p')
+        {
+            continue;
+        }
+        let value = calculate_statistic(&samples, name, data_type)?;
+        summary.insert((*name).into(), value.to_json());
+    }
+    Ok(Value::Object(summary))
+}
+
 /// Compare this delivery's extracted test value with a statistic over unique delivery reports.
 pub(crate) fn evaluate_check(
     check: &ProjectCheck,

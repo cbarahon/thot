@@ -43,7 +43,13 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
                 ));
             }
         }
-        test.parameters.into_strings()?;
+        let test_parameters = test.parameters.into_strings()?;
+        if matches!(
+            test.test_ref.as_str(),
+            "stats/regex_extract" | "stats/yaml_extract"
+        ) {
+            validate_stats_test(test, &test_parameters, &prior_names)?;
+        }
         prior_names.insert(test.name.as_str());
     }
     let mut check_names = HashSet::new();
@@ -52,6 +58,83 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
         if !check_names.insert(check.name.as_str()) {
             return Err(format!("check name {:?} is repeated", check.name));
         }
+    }
+    Ok(())
+}
+
+fn validate_stats_test(
+    test: &ProjectTest,
+    parameters: &std::collections::BTreeMap<String, String>,
+    prior_tests: &HashSet<&str>,
+) -> Result<(), String> {
+    let selectors = parameters
+        .get("tests")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("stats test {:?} requires parameter tests", test.name))?;
+    let selected = selectors
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Err(format!(
+            "stats test {:?} must select at least one earlier test",
+            test.name
+        ));
+    }
+    for name in selected {
+        if !prior_tests.contains(name) {
+            return Err(format!(
+                "stats test {:?} selects {:?}, which must name an earlier configured test",
+                test.name, name
+            ));
+        }
+    }
+    let property = parameters
+        .get("property")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("stats test {:?} requires parameter property", test.name))?;
+    if property.split('.').any(str::is_empty) {
+        return Err(format!(
+            "stats test {:?} property must use non-empty dot-separated path components",
+            test.name
+        ));
+    }
+    if let Some(data_type) = parameters.get("data_type")
+        && !matches!(data_type.as_str(), "number" | "text" | "date" | "datetime")
+    {
+        return Err(format!(
+            "stats test {:?} data_type must be number, text, date, or datetime",
+            test.name
+        ));
+    }
+    match test.test_ref.as_str() {
+        "stats/regex_extract" => {
+            let expression = parameters
+                .get("regex")
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("stats test {:?} requires parameter regex", test.name))?;
+            let regex = Regex::new(expression).map_err(|error| {
+                format!("stats test {:?} has invalid regex: {error}", test.name)
+            })?;
+            if regex.captures_len() < 2 {
+                return Err(format!(
+                    "stats test {:?} regex must contain a capture group",
+                    test.name
+                ));
+            }
+        }
+        "stats/yaml_extract" => {
+            let expression = parameters
+                .get("JSONPath")
+                .or_else(|| parameters.get("jsonpath"))
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("stats test {:?} requires parameter JSONPath", test.name))?;
+            JsonPath::parse(expression).map_err(|error| {
+                format!("stats test {:?} has invalid JSONPath: {error}", test.name)
+            })?;
+        }
+        _ => unreachable!("only stats test references call this validator"),
     }
     Ok(())
 }
