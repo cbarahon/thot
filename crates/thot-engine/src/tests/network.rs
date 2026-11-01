@@ -37,6 +37,10 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
         arguments.push("--top-ports".into());
         arguments.push(top_ports.into());
     }
+    if let Some(excluded_ports) = parameters.get("exclude-ports") {
+        arguments.push("--exclude-ports".into());
+        arguments.push(excluded_ports.clone());
+    }
     arguments.push(host.clone());
 
     let working_directory = if invocation.project_root.as_os_str().is_empty() {
@@ -86,6 +90,7 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
         "host": host,
         "scan": "tcp_connect_service_detection",
         "ports_scanned": parameters.get("ports").cloned().unwrap_or_else(|| format!("top {} TCP ports", parameters.get("top_ports").map(String::as_str).unwrap_or("1000"))),
+        "ports_excluded": parameters.get("exclude-ports"),
         "open_ports": open_ports,
         "duration_ms": output.elapsed.as_millis(),
         "output_truncated": output.stdout_truncated || output.stderr_truncated,
@@ -116,7 +121,18 @@ pub(crate) fn validate_parameters(parameters: &BTreeMap<String, String>) -> Resu
         return Err("network/nmap host must be one hostname or IP address".into());
     }
     if let Some(ports) = parameters.get("ports") {
-        validate_port_spec(ports)?;
+        validate_port_spec(ports, "ports")?;
+    }
+    if let Some(excluded_ports) = parameters.get("exclude-ports") {
+        if excluded_ports.trim().is_empty()
+            || excluded_ports.starts_with('-')
+            || excluded_ports.chars().any(char::is_whitespace)
+        {
+            return Err(
+                "network/nmap exclude-ports must be a non-empty Nmap port expression without whitespace"
+                    .into(),
+            );
+        }
     }
     if let Some(top_ports) = parameters.get("top_ports") {
         let parsed = top_ports
@@ -132,14 +148,16 @@ pub(crate) fn validate_parameters(parameters: &BTreeMap<String, String>) -> Resu
     Ok(())
 }
 
-fn validate_port_spec(specification: &str) -> Result<(), String> {
+fn validate_port_spec(specification: &str, parameter_name: &str) -> Result<(), String> {
     if specification.trim().is_empty() {
-        return Err("network/nmap ports must list one or more TCP ports".into());
+        return Err(format!(
+            "network/nmap {parameter_name} must list one or more TCP ports"
+        ));
     }
     for part in specification.split(',') {
         let invalid = || {
             format!(
-                "invalid network/nmap ports value {specification:?}; use comma-separated ports and ranges such as 22,80,8000-8100"
+                "invalid network/nmap {parameter_name} value {specification:?}; use comma-separated ports and ranges such as 22,80,8000-8100"
             )
         };
         let (start, end) = match part.split_once('-') {
