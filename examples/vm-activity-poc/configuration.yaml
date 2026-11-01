@@ -32,6 +32,12 @@ tests:
     requirements: [import_ova]
     parameters:
       - vm_name: linux_competition
+  - name: network_info
+    test: network/nmap
+    requirements: [start_vm]
+    parameters:
+      - host: 127.0.0.1
+      - ports: 22,80,443,2222,8080
   - name: vm_info
     test: ssh/get_host_info
     requirements: [start_vm]

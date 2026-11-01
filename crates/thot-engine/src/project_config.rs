@@ -44,6 +44,10 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
             }
         }
         let test_parameters = test.parameters.into_strings()?;
+        if test.test_ref == "network/nmap" {
+            crate::tests::network::validate_parameters(&test_parameters)
+                .map_err(|error| format!("test {:?}: {error}", test.name))?;
+        }
         if matches!(
             test.test_ref.as_str(),
             "stats/regex_extract" | "stats/yaml_extract"

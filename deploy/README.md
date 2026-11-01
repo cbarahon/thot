@@ -38,6 +38,8 @@ sudo env THOT_VERSION=v0.1.0 bash thot-install.sh
 
 The installer checks that `VBoxManage`, `/dev/vboxdrv`, and systemd are available. `thotd` does not need direct read/write permission on `/dev/vboxdrv`: VirtualBox starts its headless VM process through its privileged helper. Keep the service's `NoNewPrivileges=false` setting so that helper can gain its installed privileges. The installer does not change VirtualBox device permissions, add `thotd` to `vboxusers`, install VirtualBox, or change firewall rules. VirtualBox's `vboxusers` group is for guest USB access, which Thot does not use.
 
+The installer does not install Nmap. Projects using the `network/nmap` test need the system `nmap` package installed and available on the `thotd` service `PATH`; that test uses an unprivileged TCP connect scan.
+
 The installer creates `/etc/thot/thotd.env` and starts with `THOTD_FIREWALL_CONFIRMATION=false`. Review the file and set this value to `true` only after the firewall and guest egress policy are configured. The expected VirtualBox version is detected during initial installation and pinned in the environment file. When updating VirtualBox itself, update that value to the new `VBoxManage --version` without its trailing `r<build>` suffix.
 
 Rust, Cargo, Docker, the web UI, and lighttpd are not needed on the server.
