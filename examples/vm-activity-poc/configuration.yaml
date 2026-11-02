@@ -11,6 +11,7 @@ tests:
       - vm_path: ./vms
   - name: start_time
     test: extern/tests/vm_start_time.py
+    timeout: 480
     requirements: [import_ova]
     repeat: 3
     parameters:
@@ -21,12 +22,6 @@ tests:
       - tests: [start_time]
       - property: stdout
       - JSONPath: $.elapsed_ms
-  - name: start_time_stats_regex
-    test: stats/regex_extract
-    parameters:
-      - tests: [start_time]
-      - property: stdout
-      - regex: '"elapsed_ms":\s*([0-9]+)'
   - name: start_vm
     test: VirtualBox/start_vm
     requirements: [import_ova]
@@ -37,24 +32,19 @@ tests:
     requirements: [start_vm]
     parameters:
       - host: 127.0.0.1
-      - ports: 22,80,443,2222,8080
-      - exclude-ports: 443
+#     - ports: 22,80,443,2222,8080
+      - exclude-ports: 22,8081
   - name: vm_info
     test: ssh/get_host_info
     requirements: [start_vm]
     parameters:
       - host: 127.0.0.1
       - port: 2222
-      - user: sysadmin
+      - user: tvadmin
       - pass: Asdqwe!23
   - name: vm_stop
     test: VirtualBox/stop_vm
     requirements: [start_vm]
-    parameters:
-      - vm_name: linux_competition
-  - name: vm_destroy
-    test: VirtualBox/destroy_vm
-    requirements: [import_ova]
     parameters:
       - vm_name: linux_competition
 checks:
@@ -66,7 +56,7 @@ checks:
     description: vm has working ssh
     check: pass
     test: vm_info
-  - name: ova_disk_size
+  - name: disk_size_ok
     description: The disk size meets the technical requirement (1 Gb).
     check: regex_extract
     test: import_ova
@@ -76,7 +66,17 @@ checks:
       - data_type: number
       - condition: '<='
       - value: 1073742000
-  - name: ova_ram_size
+  - name: disk_size_small
+    description: The disk size meets the technical requirement (2.5 Gb).
+    check: regex_extract
+    test: import_ova
+    property: stdout
+    parameters:
+      - regex: 'vmdisk1\t([0-9]+)'
+      - data_type: number
+      - condition: '<='
+      - value: 2600000000
+  - name: ram_size_ok
     description: The imported VM has at most 260 MB of configured RAM.
     check: yaml_extract
     test: import_ova
@@ -86,33 +86,33 @@ checks:
       - data_type: number
       - condition: '<='
       - value: 260
+  - name: ram_size_small
+    description: The imported VM has at most 512 MB of configured RAM.
+    check: yaml_extract
+    test: import_ova
+    property: observation
+    parameters:
+      - JSONPath: $.vm_configuration.memory
+      - data_type: number
+      - condition: '<='
+      - value: 525
   - name: fastest_boot
     description: Compare this delivery's boot time with the maximum observed boot time.
     check: stats/yaml_extract
-    test: start_time_01
+    test: start_time_stats
     property: stdout
     parameters:
-      - JSONPath: $.elapsed_ms
+      - JSONPath: $.min
       - data_type: number
-      - stat: max
+      - stat: min
       - condition: '=='
   - name: fast_boot
     description: Boot time falls within the five-percentile threshold.
     check: stats/yaml_extract
-    test: start_time_01
+    test: start_time_stats
     property: stdout
     parameters:
-      - JSONPath: $.elapsed_ms
-      - data_type: number
-      - stat: p5
-      - condition: '<='
-  - name: fast_boot_regex
-    description: Compare boot time extracted from process output with the five-percentile threshold.
-    check: stats/regex_extract
-    test: start_time_01
-    property: stdout
-    parameters:
-      - regex: '"elapsed_ms":\s*([0-9]+)'
+      - JSONPath: $.min
       - data_type: number
       - stat: p5
       - condition: '<='

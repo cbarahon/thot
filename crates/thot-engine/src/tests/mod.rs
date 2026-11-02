@@ -1,6 +1,7 @@
 //! Purpose: Dispatches configured test references to external, SSH, or VirtualBox adapters.
 #[path = "extern.rs"]
 pub mod extern_tests;
+pub mod libguestfs;
 pub mod network;
 pub mod ssh;
 pub mod stats;
@@ -17,6 +18,9 @@ pub async fn dispatch(invocation: &TestInvocation) -> TestOutcome {
     }
     if invocation.test_reference == "network/nmap" {
         return network::run(invocation).await;
+    }
+    if invocation.test_reference.starts_with("libguestfs/") {
+        return libguestfs::run(invocation).await;
     }
     match invocation.test_reference.as_str() {
         "ssh/get_host_info" => ssh::run(invocation).await,
