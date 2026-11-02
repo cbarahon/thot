@@ -76,7 +76,9 @@ pub mod vm_activity;
 
 pub use deliveries::DeliveryIdentity as Delivery;
 pub use test_results::TestResult as NormalizedTestResult;
-pub use vm_activity::{ParameterInput, ProjectCheck, ProjectTest, VMActivity, VMActivityProject};
+pub use vm_activity::{
+    ParameterInput, ProjectCheck, ProjectRubric, ProjectTest, VMActivity, VMActivityProject,
+};
 
 /// Request accepted by the POC run-creation endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]

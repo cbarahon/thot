@@ -41,13 +41,14 @@ anywhere the daemon can read. Assignment commands index the project's direct
 without assigned students are skipped. If there are no assigned pairs, the run
 completes without creating student expedients or running tests.
 
-`thot run checks [RUN_ID]` evaluates only configured checks against saved test
-results and writes each student's updated `checks` section to their expedient.
-Without an ID, it selects the most recently created finished run. When run from
-the same unpacked project directory used by that run, it reads that directory's
-current `configuration.yaml`; otherwise it uses the run's saved configuration.
+`thot run checks [RUN_ID]` reevaluates configured checks against saved test
+results, recalculates configured rubrics, and updates each student's `checks`
+and `evaluation.results` sections. Without an ID, it selects the most recently
+created finished run. When run from the same unpacked project directory used
+by that run, it reads that directory's current `configuration.yaml`; otherwise
+it uses the run's saved configuration.
 It does not start or repeat tests. Check results replace the previous `checks`
-section.
+section, and rubric scores replace the previous evaluation results.
 
 Successful run and expedient responses are printed as human-readable YAML,
 including multiline `stdout` and `stderr` fields. The HTTP API continues to use

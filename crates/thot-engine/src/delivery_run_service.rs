@@ -52,6 +52,7 @@ pub struct ExpedientChecksResult {
     pub expedient_id: String,
     pub student_id: Option<i64>,
     pub checks: Vec<serde_json::Value>,
+    pub rubrics: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -518,6 +519,7 @@ impl DeliveryRunService {
                 .evaluate_saved_run_checks(
                     &run_id,
                     &project.configuration.checks,
+                    &project.configuration.rubrics,
                     &project.configuration.tests,
                 )
                 .await
@@ -699,7 +701,7 @@ impl DeliveryRunService {
         }
 
         let result_rows = self
-            .evaluate_saved_run_checks(&run_id, &project.checks, &project.tests)
+            .evaluate_saved_run_checks(&run_id, &project.checks, &project.rubrics, &project.tests)
             .await?;
         Ok(Some(RunChecksResponse {
             run_id,
@@ -712,6 +714,7 @@ impl DeliveryRunService {
         &self,
         run_id: &str,
         checks: &[thot_core::ProjectCheck],
+        rubrics: &[thot_core::ProjectRubric],
         tests: &[thot_core::ProjectTest],
     ) -> Result<Vec<ExpedientChecksResult>, ServiceError> {
         let expedients = sqlx::query_as::<_, (String, Option<i64>, String)>(
@@ -743,6 +746,18 @@ impl DeliveryRunService {
             let check_rows =
                 crate::checks::evaluate_checks(checks, tests, &report, &reports_for_run);
             report["checks"] = serde_json::json!(check_rows);
+            let rubric_rows = crate::rubrics::evaluate_rubrics(rubrics, &check_rows);
+            let evaluation_status = if rubrics.is_empty() {
+                "not_evaluated"
+            } else if rubric_rows.iter().any(|row| !row["err"].is_null()) {
+                "completed_with_errors"
+            } else {
+                "evaluated"
+            };
+            report["evaluation"] = serde_json::json!({
+                "status": evaluation_status,
+                "results": rubric_rows,
+            });
             crate::test_result_store::persist_report(&report_path, &report).map_err(|error| {
                 ServiceError::Internal(format!(
                     "cannot save checks to expedient {expedient_id:?}: {error}"
@@ -752,6 +767,7 @@ impl DeliveryRunService {
                 expedient_id,
                 student_id,
                 checks: check_rows,
+                rubrics: rubric_rows,
             });
         }
         Ok(result_rows)

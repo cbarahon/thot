@@ -13,6 +13,8 @@ pub struct VMActivityProject {
     pub tests: Vec<ProjectTest>,
     #[serde(default)]
     pub checks: Vec<ProjectCheck>,
+    #[serde(default)]
+    pub rubrics: Vec<ProjectRubric>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,6 +43,19 @@ pub struct ProjectCheck {
     pub test: String,
     #[serde(default)]
     pub property: Option<String>,
+    #[serde(default)]
+    pub parameters: ParameterInput,
+}
+
+/// A project rubric calculates one numeric result from named check outcomes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectRubric {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(rename = "checks", alias = "checks_list")]
+    pub checks: Vec<String>,
+    pub calculation: String,
     #[serde(default)]
     pub parameters: ParameterInput,
 }
@@ -83,6 +98,23 @@ impl ParameterInput {
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     names.join(",")
+                }
+                Value::Array(values) if key == "weights" => {
+                    let weights = values
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_number()
+                                .and_then(serde_json::Number::as_f64)
+                                .filter(|weight| weight.is_finite())
+                                .map(|weight| weight.to_string())
+                                .ok_or_else(|| {
+                                    "parameter \"weights\" must contain only finite numbers"
+                                        .to_owned()
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    weights.join(",")
                 }
                 Value::Array(_) | Value::Object(_) => {
                     return Err(format!("parameter {key:?} must be a scalar"));

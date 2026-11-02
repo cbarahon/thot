@@ -2,7 +2,7 @@
 use regex::Regex;
 use serde_json_path::JsonPath;
 use std::collections::HashSet;
-use thot_core::{ProjectCheck, ProjectTest, VMActivityProject};
+use thot_core::{ProjectCheck, ProjectRubric, ProjectTest, VMActivityProject};
 
 pub fn parse_configuration(bytes: &[u8]) -> Result<VMActivityProject, String> {
     let project: VMActivityProject =
@@ -62,6 +62,97 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
         if !check_names.insert(check.name.as_str()) {
             return Err(format!("check name {:?} is repeated", check.name));
         }
+    }
+    let mut rubric_names = HashSet::new();
+    for rubric in &project.rubrics {
+        validate_rubric(rubric, &check_names)?;
+        if !rubric_names.insert(rubric.name.as_str()) {
+            return Err(format!("rubric name {:?} is repeated", rubric.name));
+        }
+    }
+    Ok(())
+}
+
+fn validate_rubric(rubric: &ProjectRubric, check_names: &HashSet<&str>) -> Result<(), String> {
+    if rubric.name.trim().is_empty()
+        || !rubric
+            .name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(format!("invalid rubric name {:?}", rubric.name));
+    }
+    if rubric.checks.is_empty() {
+        return Err(format!(
+            "rubric {:?} must reference at least one check",
+            rubric.name
+        ));
+    }
+    for check in &rubric.checks {
+        if !check_names.contains(check.as_str()) {
+            return Err(format!(
+                "rubric {:?} references unknown check {:?}",
+                rubric.name, check
+            ));
+        }
+    }
+    if !crate::rubrics::supported_calculations().contains(&rubric.calculation.as_str()) {
+        return Err(format!(
+            "rubric {:?} has unknown calculation {:?}; supported calculations are {}",
+            rubric.name,
+            rubric.calculation,
+            crate::rubrics::supported_calculations().join(", ")
+        ));
+    }
+    let parameters = rubric.parameters.into_strings()?;
+    if rubric.calculation == "weighted_avg" {
+        if parameters.keys().any(|key| key != "weights") {
+            return Err(format!(
+                "weighted_avg rubric {:?} accepts only the weights parameter",
+                rubric.name
+            ));
+        }
+        let weights = parameters.get("weights").ok_or_else(|| {
+            format!(
+                "weighted_avg rubric {:?} requires parameter weights",
+                rubric.name
+            )
+        })?;
+        let weights = weights
+            .split(',')
+            .map(|weight| {
+                let value = weight.parse::<f64>().map_err(|_| {
+                    format!("rubric {:?} has invalid weight {weight:?}", rubric.name)
+                })?;
+                if !value.is_finite() || value < 0.0 {
+                    return Err(format!(
+                        "rubric {:?} weights must be finite non-negative numbers",
+                        rubric.name
+                    ));
+                }
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if weights.len() != rubric.checks.len() {
+            return Err(format!(
+                "weighted_avg rubric {:?} has {} weights for {} checks",
+                rubric.name,
+                weights.len(),
+                rubric.checks.len()
+            ));
+        }
+        let total_weight = weights.iter().sum::<f64>();
+        if !total_weight.is_finite() || total_weight <= 0.0 {
+            return Err(format!(
+                "weighted_avg rubric {:?} weights must have a positive sum",
+                rubric.name
+            ));
+        }
+    } else if !parameters.is_empty() {
+        return Err(format!(
+            "rubric {:?} calculation {:?} does not accept parameters",
+            rubric.name, rubric.calculation
+        ));
     }
     Ok(())
 }

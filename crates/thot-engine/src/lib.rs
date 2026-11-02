@@ -11,6 +11,7 @@ pub mod project_archive;
 pub mod project_config;
 pub mod project_context;
 pub mod report;
+pub mod rubrics;
 pub mod stats;
 pub mod storage;
 mod student_csv;

@@ -116,3 +116,10 @@ checks:
       - data_type: number
       - stat: p5
       - condition: '<='
+rubrics:
+  - name: vm_quality
+    description: Overall VM quality from import and SSH checks.
+    checks: [ova, ssh]
+    calculation: weighted_avg
+    parameters:
+      - weights: [0.8, 0.2]
