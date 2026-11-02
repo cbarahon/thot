@@ -4,7 +4,7 @@ use reqwest::Method;
 use serde_json::Value;
 use std::{
     error::Error,
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -108,48 +108,26 @@ fn print_csv(report: Report, response: &Value) -> Result<(), Box<dyn Error>> {
 }
 
 fn print_table(report: Report, response: &Value) -> Result<(), Box<dyn Error>> {
-    let (headers, rows) = tabular_data(report, response);
-    let terminal_width = std::env::var("COLUMNS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|width| *width >= 40)
-        .unwrap_or(120);
-    let mut widths = headers
+    let (headers, mut rows) = tabular_data(report, response);
+    compact_table_rows(report, &mut rows);
+    let headers = console_headers(report, &headers);
+    let widths = allocate_widths(report, &headers, &rows, terminal_width());
+    let wrapped_headers = headers
         .iter()
-        .enumerate()
-        .map(|(column, header)| {
-            let content = rows
-                .iter()
-                .filter_map(|row| row.get(column))
-                .map(|value| display_width(value))
-                .max()
-                .unwrap_or(0);
-            let cap = if column == 0 {
-                32
-            } else if header.len() > 16 {
-                18
-            } else {
-                16
-            };
-            display_width(header).max(content).min(cap)
-        })
+        .zip(&widths)
+        .map(|(header, width)| wrap_header(header, *width))
         .collect::<Vec<_>>();
-    let mut total = table_width(&widths);
-    while total > terminal_width {
-        let candidate = widths
-            .iter()
-            .enumerate()
-            .filter(|(_, width)| **width > 6)
-            .max_by_key(|(_, width)| **width)
-            .map(|(index, _)| index);
-        let Some(index) = candidate else { break };
-        widths[index] -= 1;
-        total = table_width(&widths);
-    }
+    let header_height = wrapped_headers.iter().map(Vec::len).max().unwrap_or(1);
 
     let mut output = io::BufWriter::new(io::stdout().lock());
     write_border(&mut output, &widths)?;
-    write_table_row(&mut output, &headers, &widths)?;
+    for line in 0..header_height {
+        let header_row = wrapped_headers
+            .iter()
+            .map(|parts| parts.get(line).cloned().unwrap_or_default())
+            .collect::<Vec<_>>();
+        write_table_row(&mut output, &header_row, &widths)?;
+    }
     write_border(&mut output, &widths)?;
     for row in &rows {
         write_table_row(&mut output, row, &widths)?;
@@ -157,6 +135,252 @@ fn print_table(report: Report, response: &Value) -> Result<(), Box<dyn Error>> {
     write_border(&mut output, &widths)?;
     output.flush()?;
     Ok(())
+}
+
+fn terminal_width() -> usize {
+    #[cfg(target_os = "linux")]
+    if io::stdout().is_terminal() {
+        let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
+        // SAFETY: `size` points to writable storage for a winsize struct, and ioctl only
+        // fills that struct when the file descriptor refers to a terminal.
+        let result =
+            unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, size.as_mut_ptr()) };
+        if result == 0 {
+            // SAFETY: ioctl returned success and initialized the winsize structure.
+            let columns = unsafe { size.assume_init() }.ws_col as usize;
+            if columns >= 40 {
+                return columns;
+            }
+        }
+    }
+    if let Some(width) = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|width| *width >= 40)
+    {
+        return width;
+    }
+    120
+}
+
+fn allocate_widths(
+    report: Report,
+    headers: &[String],
+    rows: &[Vec<String>],
+    terminal_width: usize,
+) -> Vec<usize> {
+    let desired = headers
+        .iter()
+        .enumerate()
+        .map(|(column, header)| {
+            let content_width = rows
+                .iter()
+                .filter_map(|row| row.get(column))
+                .map(|value| display_width(value))
+                .max()
+                .unwrap_or(0);
+            let header_width = if matches!(report, Report::DeliveryTests | Report::DeliveryChecks)
+                && column >= 2
+            {
+                two_line_header_width(header).min(12)
+            } else {
+                header
+                    .split(['\n', '_', '-', ' '])
+                    .map(display_width)
+                    .max()
+                    .unwrap_or(1)
+            };
+            let default_cap = if column == 0 { 48 } else { 24 };
+            content_width.max(header_width).min(default_cap).max(1)
+        })
+        .collect::<Vec<_>>();
+    let mut widths = desired.clone();
+    let mut available = terminal_width.saturating_sub(widths.len() * 3 + 1);
+    if widths.iter().sum::<usize>() <= available {
+        return widths;
+    }
+
+    let minimums = headers
+        .iter()
+        .enumerate()
+        .map(|(column, _)| match report {
+            Report::Runs => match column {
+                0 => 10,
+                1 => 8,
+                2 | 3 => 12,
+                4 => 6,
+                _ => 5,
+            },
+            Report::DeliveriesSummary => match column {
+                0 => 10,
+                1 => 3,
+                _ => 5,
+            },
+            Report::DeliveryTests | Report::DeliveryChecks => match column {
+                0 => 10,
+                1 => 3,
+                _ => 5,
+            },
+        })
+        .collect::<Vec<_>>();
+    widths.clone_from(&minimums);
+    let minimum_total = widths.iter().sum::<usize>();
+    if minimum_total > available {
+        // A report with more test columns than fit at their minimum still keeps one column
+        // per test; its table may exceed the terminal width instead of hiding results.
+        return widths;
+    }
+    available -= minimum_total;
+    while available > 0 {
+        let candidate = widths
+            .iter()
+            .enumerate()
+            .filter(|(index, width)| **width < desired[*index])
+            .max_by(|(left_index, left_width), (right_index, right_width)| {
+                let left_need = (desired[*left_index] - **left_width) as f64;
+                let right_need = (desired[*right_index] - **right_width) as f64;
+                let left_weight = if *left_index == 0 { 2.5 } else { 1.0 };
+                let right_weight = if *right_index == 0 { 2.5 } else { 1.0 };
+                (left_need * left_weight / desired[*left_index] as f64)
+                    .total_cmp(&(right_need * right_weight / desired[*right_index] as f64))
+            })
+            .map(|(index, _)| index);
+        let Some(index) = candidate else { break };
+        widths[index] += 1;
+        available -= 1;
+    }
+    widths
+}
+
+fn console_headers(report: Report, headers: &[String]) -> Vec<String> {
+    match report {
+        Report::Runs => [
+            "Run",
+            "Status",
+            "Start\nUTC",
+            "Finish\nUTC",
+            "Duration",
+            "Tests\npending",
+            "Tests\nrunning",
+            "Tests\nfinished",
+            "Finished\nOK",
+            "Finished\nerrors",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        Report::DeliveriesSummary => [
+            "Delivery",
+            "Students",
+            "Tests\npass",
+            "Tests\nfailed",
+            "Checks\npass",
+            "Checks\nfailed",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        Report::DeliveryTests | Report::DeliveryChecks => headers.to_vec(),
+    }
+}
+
+fn compact_table_rows(report: Report, rows: &mut [Vec<String>]) {
+    match report {
+        Report::Runs => {
+            for row in rows {
+                for index in [2, 3] {
+                    if let Some(value) = row.get_mut(index) {
+                        *value = compact_timestamp(value);
+                    }
+                }
+            }
+        }
+        Report::DeliveryTests | Report::DeliveryChecks => {
+            for row in rows {
+                for value in row.iter_mut().skip(2) {
+                    *value = match value.as_str() {
+                        "pending" => "pend".into(),
+                        "running" => "run".into(),
+                        _ => value.clone(),
+                    };
+                }
+            }
+        }
+        Report::DeliveriesSummary => {}
+    }
+}
+
+fn compact_timestamp(value: &str) -> String {
+    if value.len() >= 16 && value.as_bytes().get(10) == Some(&b'T') {
+        format!("{} {}Z", &value[..10], &value[11..16])
+    } else {
+        value.to_owned()
+    }
+}
+
+fn wrap_header(header: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    if header.contains('\n') {
+        return header
+            .split('\n')
+            .take(2)
+            .map(|part| truncate(part, width))
+            .collect();
+    }
+    if display_width(header) <= width {
+        return vec![header.to_owned()];
+    }
+    let words = header
+        .split(['_', '-', ' '])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if words.len() > 1 {
+        let mut first = String::new();
+        let mut split_at = 0;
+        for (index, word) in words.iter().enumerate() {
+            let candidate = if first.is_empty() {
+                (*word).to_owned()
+            } else {
+                format!("{first}_{word}")
+            };
+            if display_width(&candidate) > width {
+                break;
+            }
+            first = candidate;
+            split_at = index + 1;
+        }
+        if split_at > 0 && split_at < words.len() {
+            let second = words[split_at..].join("_");
+            return vec![first, truncate(&second, width)];
+        }
+    }
+    let chars = header.chars().collect::<Vec<_>>();
+    if chars.len() > width && chars.len() <= width * 2 {
+        return vec![
+            chars[..width].iter().collect(),
+            chars[width..].iter().collect(),
+        ];
+    }
+    vec![truncate(header, width)]
+}
+
+fn two_line_header_width(header: &str) -> usize {
+    let Some(width) = header
+        .char_indices()
+        .filter(|(_, character)| matches!(character, '_' | '-' | ' '))
+        .map(|(index, character)| {
+            let split = index + character.len_utf8();
+            let first = header[..index].trim_end_matches(['_', '-', ' ']);
+            let second = header[split..].trim_start_matches(['_', '-', ' ']);
+            display_width(first).max(display_width(second))
+        })
+        .min_by_key(|width| *width)
+    else {
+        return display_width(header).div_ceil(2);
+    };
+    width
 }
 
 fn tabular_data(report: Report, response: &Value) -> (Vec<String>, Vec<Vec<String>>) {
@@ -296,10 +520,6 @@ fn write_csv_record(output: &mut impl Write, fields: &[String]) -> io::Result<()
         }
     }
     output.write_all(b"\r\n")
-}
-
-fn table_width(widths: &[usize]) -> usize {
-    widths.iter().sum::<usize>() + widths.len() * 3 + 1
 }
 
 fn write_border(output: &mut impl Write, widths: &[usize]) -> io::Result<()> {

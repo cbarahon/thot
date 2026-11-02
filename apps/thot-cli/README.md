@@ -65,9 +65,11 @@ progress/error totals. `thot report deliveries [RUN_ID]` summarizes test and
 check outcomes once per distinct delivery, including the number of students
 sharing it. Without `RUN_ID`, delivery reports use the newest saved run.
 `thot report deliveries tests` and `thot report deliveries checks` show a
-pass/error column for each configured test or check. Reports use a width-aware
-terminal table by default; select `--csv`, `--yaml`, or `--json` to export the
-same report data. The JSON API routes are `GET /api/v1/reports/runs` and
+pass/error column for each configured test or check. Reports use a terminal
+table sized from the console width, with data-based column widths, concise
+two-line headers, and long values truncated as needed. Select `--csv`,
+`--yaml`, or `--json` to export the same report data. The JSON API routes are
+`GET /api/v1/reports/runs` and
 `GET /api/v1/reports/deliveries?run_id=...&view=summary|tests|checks`.
 
 `thot clean` removes orphaned Thot artifacts and VMs only when ownership can be
