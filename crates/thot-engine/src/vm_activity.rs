@@ -315,10 +315,6 @@ pub async fn preflight(runtime: &VmActivityRuntime) -> Result<String, String> {
             runtime.vbox_manage.display()
         ));
     }
-    for port in [8080, 2222] {
-        TcpListener::bind(("127.0.0.1", port))
-            .map_err(|_| format!("required loopback port {port} is unavailable"))?;
-    }
     if let Some(entry) = fs::read_dir(&storage)
         .map_err(|e| format!("cannot inspect dedicated storage root: {e}"))?
         .next()
