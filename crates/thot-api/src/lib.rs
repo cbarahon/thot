@@ -16,6 +16,7 @@ use thot_engine::{AssignmentService, DeliveryRunService, StudentService, Student
 mod assignments;
 mod delivery_runs;
 mod maintenance;
+mod reports;
 
 #[derive(Clone)]
 struct StudentState {
@@ -42,7 +43,8 @@ pub fn router_with_runs(
 ) -> Router {
     router(students)
         .merge(delivery_runs::router(runs.clone()))
-        .merge(maintenance::router(runs))
+        .merge(maintenance::router(runs.clone()))
+        .merge(reports::router(runs))
         .merge(assignments::router(assignments_service))
 }
 

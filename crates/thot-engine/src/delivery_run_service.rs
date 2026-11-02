@@ -600,6 +600,20 @@ impl DeliveryRunService {
         Ok(runs)
     }
 
+    /// Return compact run-level report rows for the presentation clients.
+    pub async fn report_runs(&self) -> Result<serde_json::Value, ServiceError> {
+        crate::report::runs(&self.pool, &self.artifact_root).await
+    }
+
+    /// Return summary, test-matrix, or check-matrix rows for one run.
+    pub async fn report_deliveries(
+        &self,
+        run_id: Option<&str>,
+        view: &str,
+    ) -> Result<serde_json::Value, ServiceError> {
+        crate::report::deliveries(&self.pool, &self.artifact_root, run_id, view).await
+    }
+
     /// Re-evaluate configured checks against saved test results for a finished run.
     pub async fn run_checks(
         &self,

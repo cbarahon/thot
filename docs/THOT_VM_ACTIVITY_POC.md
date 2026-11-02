@@ -42,6 +42,8 @@ Projects may define a `checks` list after `tests`. Each check has a unique `name
 
 Maintenance commands are available through the CLI. `thot clean` removes only orphan data whose ownership can be established. `thot prune` keeps the latest run per project, requests confirmation, deletes older run records, and then cleans orphaned data. `thot reset` requires a generated six-digit confirmation code and clears Thot runtime/database records while retaining installation configuration, project archives, and original delivery files. Files and VMs whose ownership cannot be proven are preserved and reported.
 
+Reports are available with `thot report runs`, `thot report deliveries [run-id]`, `thot report deliveries tests [run-id]`, and `thot report deliveries checks [run-id]`. Delivery reports default to the newest saved run and aggregate once per unique delivery, including shared group submissions. The default terminal view is a compact table; `--csv`, `--yaml`, and `--json` select export formats. The corresponding JSON endpoints are `GET /api/v1/reports/runs` and `GET /api/v1/reports/deliveries?run_id=...&view=summary|tests|checks`.
+
 External tests are executable teacher code. They run as child processes with the daemon's operating-system permissions, bounded by each test timeout and the configured stdout/stderr output limit. The process boundary does not sandbox scripts. Only install project archives from trusted instructors, and run the daemon under a dedicated unprivileged account and VirtualBox profile. ZIP and TGZ extraction rejects traversal paths and links and enforces archive size and entry limits.
 
 ## Results and artifacts

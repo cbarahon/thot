@@ -31,5 +31,7 @@ VM tests require a pinned VirtualBox version, a dedicated profile/storage config
 - `GET /api/v1/runs/{run_id}`, `POST /api/v1/runs/{run_id}/cancel`
 - `GET /api/v1/expedients/{expedient_id}`
 - `POST /api/v1/expedients/{expedient_id}/cleanup`
+- `GET /api/v1/reports/runs`
+- `GET /api/v1/reports/deliveries?run_id=...&view=summary|tests|checks`
 
 Run metadata is stored in SQLite and expedients and evidence are persisted under the artifact root. VirtualBox integration requires a Linux host with VirtualBox and is not validated by the basic tests when VirtualBox is unavailable.

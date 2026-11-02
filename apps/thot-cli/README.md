@@ -18,6 +18,10 @@ thot [-h HOST] [-p PORT] run delete RUN_ID
 thot [-h HOST] [-p PORT] run expedient EXPEDIENT_ID
 thot [-h HOST] [-p PORT] run cancel RUN_ID
 thot [-h HOST] [-p PORT] run cleanup EXPEDIENT_ID
+thot [-h HOST] [-p PORT] report runs [--csv|--yaml|--json]
+thot [-h HOST] [-p PORT] report deliveries [RUN_ID] [--csv|--yaml|--json]
+thot [-h HOST] [-p PORT] report deliveries tests [RUN_ID] [--csv|--yaml|--json]
+thot [-h HOST] [-p PORT] report deliveries checks [RUN_ID] [--csv|--yaml|--json]
 thot [-h HOST] [-p PORT] clean
 thot [-h HOST] [-p PORT] prune
 thot [-h HOST] [-p PORT] reset
@@ -55,6 +59,16 @@ cancelling run; otherwise specify `RUN_ID`. Status output includes one
 expedient per student, its assigned delivery, and lifecycle state (`pending`,
 `running`, or `finished`). Cleanup uses the persisted manifest and checks
 recorded VM identity and storage ownership.
+
+`thot report runs` shows run status, start/finish time, duration, and test
+progress/error totals. `thot report deliveries [RUN_ID]` summarizes test and
+check outcomes once per distinct delivery, including the number of students
+sharing it. Without `RUN_ID`, delivery reports use the newest saved run.
+`thot report deliveries tests` and `thot report deliveries checks` show a
+pass/error column for each configured test or check. Reports use a width-aware
+terminal table by default; select `--csv`, `--yaml`, or `--json` to export the
+same report data. The JSON API routes are `GET /api/v1/reports/runs` and
+`GET /api/v1/reports/deliveries?run_id=...&view=summary|tests|checks`.
 
 `thot clean` removes orphaned Thot artifacts and VMs only when ownership can be
 verified. `thot prune` keeps the newest run per project and requires an
