@@ -1,4 +1,6 @@
 //! Purpose: Inspects VM disk images offline with libguestfs tools and emits structured disk or Linux root filesystem data.
+mod tinycore;
+
 use serde_json::{Map, Value, json};
 use std::{
     fs,
@@ -16,6 +18,7 @@ pub async fn run(invocation: &TestInvocation) -> TestOutcome {
     match invocation.test_reference.as_str() {
         "libguestfs/disk_info" => disk_info(invocation).await,
         "libguestfs/linux_rootfs_info" => linux_rootfs_info(invocation).await,
+        "libguestfs/linux_tinycore_info" => tinycore::run(invocation).await,
         reference => TestOutcome::error(format!("unknown libguestfs test {reference:?}")),
     }
 }
@@ -92,6 +95,24 @@ async fn linux_rootfs_info(invocation: &TestInvocation) -> TestOutcome {
         .and_then(|operating_system| operating_system["root_device"].as_str())
         .map(str::to_owned);
 
+    let Some(root_device) = root_device else {
+        let partitions = partition_summary(&objects);
+        let stderr = format!(
+            "libguestfs did not identify a Linux root filesystem. Partitions found:\n{}",
+            serde_yaml::to_string(&partitions)
+                .unwrap_or_else(|_| "- unable to format partition details\n".into())
+        );
+        return TestOutcome {
+            status: TestStatus::Error,
+            stdout: String::new(),
+            stderr,
+            exit_code: Some(1),
+            diagnostics: "libguestfs did not identify a Linux root filesystem".into(),
+            observation: json!({}),
+            evidence: Vec::new(),
+        };
+    };
+
     let mut stderr = labeled_stderr("virt-filesystems", &filesystems.stderr);
     append_stderr(
         &mut stderr,
@@ -101,53 +122,48 @@ async fn linux_rootfs_info(invocation: &TestInvocation) -> TestOutcome {
     if let Some(problem) = &usage_problem {
         append_stderr(&mut stderr, &format!("virt-df: {problem}"));
     }
-    let (users, users_problem, users_timed_out) = if root_device.is_some() {
-        collect_guest_records(invocation, &disk, started, "/etc/passwd", parse_passwd).await
-    } else {
-        (None, None, false)
-    };
+    let (users, users_problem, users_timed_out) =
+        collect_guest_records(invocation, &disk, started, "/etc/passwd", parse_passwd).await;
     if let Some(problem) = &users_problem {
         append_stderr(&mut stderr, &format!("virt-cat /etc/passwd: {problem}"));
     }
-    let (groups, groups_problem, groups_timed_out) = if root_device.is_some() {
-        collect_guest_records(invocation, &disk, started, "/etc/group", parse_group).await
-    } else {
-        (None, None, false)
-    };
+    let (groups, groups_problem, groups_timed_out) =
+        collect_guest_records(invocation, &disk, started, "/etc/group", parse_group).await;
     if let Some(problem) = &groups_problem {
         append_stderr(&mut stderr, &format!("virt-cat /etc/group: {problem}"));
     }
 
-    let root_filesystem = root_device.as_deref().map(|device| {
-        let object = objects.iter().find(|object| object["name"] == device);
-        let filesystem_usage = usage
-            .as_ref()
-            .and_then(|records| records.iter().find(|record| record["device"] == device));
-        json!({
-            "device": device,
-            "filesystem": object.map(|item| item["filesystem_type"].clone()).unwrap_or(Value::Null),
-            "label": object.map(|item| item["label"].clone()).unwrap_or(Value::Null),
-            "size_bytes": object.map(|item| item["size_bytes"].clone()).unwrap_or(Value::Null),
-            "parent": object.map(|item| item["parent"].clone()).unwrap_or(Value::Null),
-            "usage": filesystem_usage.cloned().unwrap_or(Value::Null),
-        })
+    let root_object = objects.iter().find(|object| object["name"] == root_device);
+    let root_partition = objects
+        .iter()
+        .find(|object| object["name"] == root_device && object["type"] == "partition");
+    let filesystem_usage = usage.as_ref().and_then(|records| {
+        records
+            .iter()
+            .find(|record| record["device"] == root_device)
+    });
+    let root_filesystem = json!({
+        "device": root_device,
+        "filesystem_type": root_object.map(|item| item["filesystem_type"].clone()).unwrap_or(Value::Null),
+        "label": root_object.map(|item| item["label"].clone()).unwrap_or(Value::Null),
+        "uuid": root_object.map(|item| item["uuid"].clone()).unwrap_or(Value::Null),
+        "filesystem_size_bytes": root_object.map(|item| item["size_bytes"].clone()).unwrap_or(Value::Null),
+        "partition_size_bytes": root_partition
+            .and_then(|item| item["size_bytes"].as_u64())
+            .map_or_else(|| root_object.map(|item| item["size_bytes"].clone()).unwrap_or(Value::Null), |size| json!(size)),
+        "partition_type": root_partition.map(|item| item["mbr_type"].clone()).unwrap_or(Value::Null),
+        "parent": root_object.map(|item| item["parent"].clone()).unwrap_or(Value::Null),
+        "usage": filesystem_usage.cloned().unwrap_or(Value::Null),
     });
     let observation = json!({
         "disk_path": disk.path,
         "disk_name": disk.path.file_name().and_then(|name| name.to_str()).unwrap_or_default(),
         "disk_format": disk.format,
-        "image_file_size_bytes": fs::metadata(&disk.path).map(|metadata| metadata.len()).ok(),
-        "disks": objects.iter().filter(|item| item["type"] == "device").cloned().collect::<Vec<_>>(),
-        "partitions": objects.iter().filter(|item| item["type"] == "partition").cloned().collect::<Vec<_>>(),
-        "filesystems": objects.iter().filter(|item| item["type"] == "filesystem").cloned().collect::<Vec<_>>(),
-        "storage_objects": objects,
-        "filesystem_usage": usage,
-        "operating_systems": operating_systems,
+        "operating_system": linux,
         "linux_root_filesystem": root_filesystem,
         "users": users,
         "groups": groups,
         "inspection_notes": {
-            "root_filesystem": if root_device.is_some() { Value::Null } else { json!("No Linux root filesystem was identified by libguestfs.") },
             "users": users_problem,
             "groups": groups_problem,
             "filesystem_usage": usage_problem,
@@ -159,19 +175,31 @@ async fn linux_rootfs_info(invocation: &TestInvocation) -> TestOutcome {
         outcome.exit_code = None;
         outcome.diagnostics =
             "libguestfs Linux root filesystem inspection exceeded the configured timeout".into();
-    } else if root_device.is_none() {
-        outcome.diagnostics = "libguestfs did not identify a Linux root filesystem; disk and OS inspection data are still available".into();
     }
     outcome
 }
 
-#[derive(Debug)]
-struct ResolvedDisk {
-    path: PathBuf,
-    format: &'static str,
+pub(super) fn partition_summary(objects: &[Value]) -> Vec<Value> {
+    objects
+        .iter()
+        .filter(|object| object["type"] == "partition")
+        .map(|object| {
+            json!({
+                "device": object["name"],
+                "size_bytes": object["size_bytes"],
+                "partition_type": object["mbr_type"],
+            })
+        })
+        .collect()
 }
 
-fn resolve_disk(invocation: &TestInvocation) -> Result<ResolvedDisk, String> {
+#[derive(Debug)]
+pub(super) struct ResolvedDisk {
+    pub(super) path: PathBuf,
+    pub(super) format: &'static str,
+}
+
+pub(super) fn resolve_disk(invocation: &TestInvocation) -> Result<ResolvedDisk, String> {
     let disk_path = invocation
         .parameters
         .get("disk_path")
@@ -407,7 +435,7 @@ fn disk_format(path: &Path) -> Option<&'static str> {
     }
 }
 
-async fn run_filesystems(
+pub(super) async fn run_filesystems(
     invocation: &TestInvocation,
     disk: &ResolvedDisk,
     started: Instant,
@@ -449,7 +477,7 @@ async fn run_inspector(
     .await
 }
 
-async fn run_tool(
+pub(super) async fn run_tool(
     invocation: &TestInvocation,
     executable: &str,
     arguments: Vec<String>,
@@ -487,7 +515,7 @@ async fn run_tool(
     })
 }
 
-async fn collect_usage(
+pub(super) async fn collect_usage(
     invocation: &TestInvocation,
     disk: &ResolvedDisk,
     started: Instant,
@@ -595,7 +623,7 @@ fn disk_observation(disk: &ResolvedDisk, objects: Vec<Value>, usage: Option<Vec<
     })
 }
 
-fn parse_filesystems_csv(output: &str) -> Result<Vec<Value>, String> {
+pub(super) fn parse_filesystems_csv(output: &str) -> Result<Vec<Value>, String> {
     let rows = parse_csv(output)?;
     let Some(headers) = rows.first() else {
         return Ok(Vec::new());
@@ -748,7 +776,7 @@ fn xml_unescape(value: &str) -> String {
         .replace("&amp;", "&")
 }
 
-fn parse_passwd(text: &str) -> Vec<Value> {
+pub(super) fn parse_passwd(text: &str) -> Vec<Value> {
     text.lines()
         .filter_map(|line| {
             let fields = line.split(':').collect::<Vec<_>>();
@@ -765,7 +793,7 @@ fn parse_passwd(text: &str) -> Vec<Value> {
         .collect()
 }
 
-fn parse_group(text: &str) -> Vec<Value> {
+pub(super) fn parse_group(text: &str) -> Vec<Value> {
     text.lines()
         .filter_map(|line| {
             let fields = line.split(':').collect::<Vec<_>>();
@@ -780,7 +808,7 @@ fn parse_group(text: &str) -> Vec<Value> {
         .collect()
 }
 
-fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, String> {
+pub(super) fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, String> {
     let mut rows = Vec::new();
     let mut row = Vec::new();
     let mut field = String::new();
@@ -820,7 +848,7 @@ fn insert_optional(map: &mut Map<String, Value>, key: &str, value: Option<&str>)
     map.insert(key.into(), value.map_or(Value::Null, |value| json!(value)));
 }
 
-fn success_outcome(observation: Value, stderr: String) -> TestOutcome {
+pub(super) fn success_outcome(observation: Value, stderr: String) -> TestOutcome {
     let stdout = match serde_yaml::to_string(&observation) {
         Ok(output) => output,
         Err(error) => {
@@ -840,7 +868,7 @@ fn success_outcome(observation: Value, stderr: String) -> TestOutcome {
     }
 }
 
-fn failed_command(name: &str, output: ExternalProcessResult) -> TestOutcome {
+pub(super) fn failed_command(name: &str, output: ExternalProcessResult) -> TestOutcome {
     let timed_out = output.timed_out;
     let diagnostics = if timed_out {
         format!("{name} exceeded the configured test timeout")
@@ -862,7 +890,7 @@ fn failed_command(name: &str, output: ExternalProcessResult) -> TestOutcome {
     }
 }
 
-fn labeled_stderr(name: &str, stderr: &str) -> String {
+pub(super) fn labeled_stderr(name: &str, stderr: &str) -> String {
     if stderr.trim().is_empty() {
         String::new()
     } else {
@@ -870,7 +898,7 @@ fn labeled_stderr(name: &str, stderr: &str) -> String {
     }
 }
 
-fn append_stderr(target: &mut String, addition: &str) {
+pub(super) fn append_stderr(target: &mut String, addition: &str) {
     if addition.trim().is_empty() {
         return;
     }
