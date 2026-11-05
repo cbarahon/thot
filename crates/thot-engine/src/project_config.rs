@@ -328,6 +328,22 @@ fn validate_check(
                 .map_err(|error| format!("check {:?} has invalid JSONPath: {error}", check.name))?;
             validate_comparison_parameters(check, &parameters, "yaml_extract")
         }
+        "yaml_match" => {
+            validate_extract_property(check, "yaml_match")?;
+            let expression = parameters
+                .get("JSONPath")
+                .or_else(|| parameters.get("jsonpath"))
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "check {:?} using yaml_match requires parameter JSONPath",
+                        check.name
+                    )
+                })?;
+            JsonPath::parse(expression)
+                .map_err(|error| format!("check {:?} has invalid JSONPath: {error}", check.name))?;
+            Ok(())
+        }
         "stats/regex_extract" => {
             validate_extract_property(check, "stats/regex_extract")?;
             let regex = parameters.get("regex").ok_or_else(|| {

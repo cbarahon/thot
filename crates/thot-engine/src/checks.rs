@@ -60,6 +60,7 @@ fn run_check(check: &ProjectCheck, test: &ProjectTest, report: &Value) -> Result
         "pass" => passed_test_result(test, report),
         "regex_match" => regex_match_check(check, test, report, &parameters),
         "regex_extract" => regex_extract_check(check, test, report, &parameters),
+        "yaml_match" => yaml_match_check(check, test, report, &parameters),
         "yaml_extract" => yaml_extract_check(check, test, report, &parameters),
         unknown => Err(format!("unknown internal check {unknown:?}")),
     }
@@ -150,6 +151,44 @@ fn yaml_extract_check(
             ));
         };
         if !compare_captured(&captured, expected, data_type, condition)? {
+            return Ok(0);
+        }
+    }
+    Ok(1)
+}
+
+fn yaml_match_check(
+    check: &ProjectCheck,
+    test: &ProjectTest,
+    report: &Value,
+    parameters: &BTreeMap<String, String>,
+) -> Result<u8, String> {
+    let property = check
+        .property
+        .as_deref()
+        .ok_or("yaml_match check has no property")?;
+    let expression = parameters
+        .get("JSONPath")
+        .or_else(|| parameters.get("jsonpath"))
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("yaml_match check is missing parameter \"JSONPath\"")?;
+    let path = JsonPath::parse(expression)
+        .map_err(|error| format!("invalid yaml_match JSONPath: {error}"))?;
+    let results = report["test_results"]
+        .as_array()
+        .ok_or("expedient has no test_results array")?;
+
+    for test_id in expected_test_ids(test) {
+        let test_result = results
+            .iter()
+            .find(|row| row["test_id"].as_str() == Some(&test_id))
+            .ok_or_else(|| format!("test result {test_id:?} is missing"))?;
+        let Some(value) = property_value(test_result, property) else {
+            return Err(format!("test result property {property:?} does not exist"));
+        };
+        let document = parse_document(value, property)?;
+        if path.query(&document).all().is_empty() {
             return Ok(0);
         }
     }

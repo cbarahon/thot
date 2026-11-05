@@ -11,7 +11,7 @@ This reference lists the test adapters and evaluation methods currently implemen
 | Test | `libguestfs/disk_info`, `libguestfs/linux_rootfs_info`, `libguestfs/linux_tinycore_info` | Inspects VM disk images without booting them. |
 | Test | `stats/regex_extract`, `stats/yaml_extract` | Summarizes values extracted from earlier tests for one delivery. |
 | Test | `extern/<path>` | Runs a project-provided Python, shell, or executable test program. |
-| Check | `pass`, `regex_match`, `regex_extract`, `yaml_extract`, `stats/regex_extract`, `stats/yaml_extract` | Evaluates test results into numeric 0/1 values. |
+| Check | `pass`, `regex_match`, `regex_extract`, `yaml_match`, `yaml_extract`, `stats/regex_extract`, `stats/yaml_extract` | Evaluates test results into numeric 0/1 values. |
 | Rubric | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum` | Aggregates configured check results into a numeric score. |
 
 ## Configuration and result conventions
@@ -50,11 +50,24 @@ Every check has a unique `name`, a configured test name in `test`, an implementa
 | `pass` | `test`; no extra parameters | Returns 1 when the test passed, or when every repetition passed; otherwise returns 0. |
 | `regex_match` | `property`, parameter `regex` | Applies the regex to the selected scalar result property. Returns 1 if it matches each result for the configured test, otherwise 0. It does not need a capture group, `data_type`, `condition`, or comparison `value`. |
 | `regex_extract` | `property`; parameters `regex`, `data_type`, `condition`, `value` | Captures group 1 from the property and compares it with the configured constant for each result. A non-match returns 0. |
+| `yaml_match` | `property`; parameter `JSONPath` | Parses the property as JSON or YAML (or uses a structured JSON value directly) and returns 1 when JSONPath selects one or more nodes for each result; returns 0 when any result has no matches. Selected values may be objects or scalars. |
 | `yaml_extract` | `property`; parameters `JSONPath`, `data_type`, `condition`, `value` | Parses the property as JSON or YAML (or uses a structured JSON value directly), selects exactly one scalar, and compares it with the configured constant. |
 | `stats/regex_extract` | `property`; parameters `regex`, `data_type`, `stat`, `condition` | Extracts group 1 from each unique delivery's named test result, calculates a run-wide statistic, then compares this delivery's extracted value with it. |
 | `stats/yaml_extract` | `property`; parameters `JSONPath`, `data_type`, `stat`, `condition` | Extracts one scalar by JSONPath from each unique delivery's named test result, calculates a run-wide statistic, then compares this delivery's value with it. |
 
-For `regex_extract`, `yaml_extract`, and the statistical checks, `data_type` is `number`, `text`, `date`, or `datetime`. The ordinary extract checks require a constant `value`; statistical checks instead require a `stat`. Valid comparison conditions are `<`, `<=`, `>`, `>=`, `==`, and `!=`; `contains` is available only for text. Number comparisons require finite numbers. Dates use `YYYY-MM-DD`; datetimes use RFC 3339.
+For `regex_extract`, `yaml_extract`, and the statistical checks, `data_type` is `number`, `text`, `date`, or `datetime`. The ordinary extract checks require a constant `value`; statistical checks instead require a `stat`. Valid comparison conditions are `<`, `<=`, `>`, `>=`, `==`, and `!=`; `contains` is available only for text. Number comparisons require finite numbers. Dates use `YYYY-MM-DD`; datetimes use RFC 3339. `yaml_match` is a presence predicate and does not take comparison parameters.
+
+Example check for at least one user named `bin` in an `observation.users` array:
+
+```yaml
+- name: bin_user_exists
+  description: The guest includes a user named bin.
+  check: yaml_match
+  test: linux_info
+  property: observation
+  parameters:
+    - JSONPath: "$.users[?(@.username == 'bin')]"
+```
 
 Statistical checks support `max`, `min`, `freq`, `avg`, `var`, `std`, and `p1`, `p5`, `p10`, `p20`, `p30`, `p40`, `p50`, `p60`, `p70`, `p80`, `p90`, `p95`, `p99`. `freq` returns the most frequent value; ties select the smallest value. `avg`, `var`, `std`, and percentiles require numeric data. Samples are deduplicated by delivery so shared group submissions count once. A statistical check targeting a repeated test must name one expanded result, such as `start_time_01`. Statistical check rows additionally include `statistic`, `sample_count`, and `student_value`.
 
