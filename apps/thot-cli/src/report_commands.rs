@@ -1,4 +1,4 @@
-//! Purpose: Fetches report summaries and renders them as terminal tables, CSV, YAML, or JSON.
+//! Purpose: Fetches report summaries, statistics, and matrices and renders tables or structured output.
 use crate::{Settings, api_client::ApiClient, output::print_yaml};
 use reqwest::Method;
 use serde_json::Value;
@@ -21,6 +21,10 @@ enum Report {
     DeliveriesSummary,
     DeliveryTests,
     DeliveryChecks,
+    TestStats,
+    ChecksStats,
+    RubricStats,
+    Expedients,
 }
 
 pub async fn handle(args: &[String], settings: &Settings) -> Result<(), Box<dyn Error>> {
@@ -37,7 +41,7 @@ pub async fn handle(args: &[String], settings: &Settings) -> Result<(), Box<dyn 
                 Report::DeliveriesSummary => "summary",
                 Report::DeliveryTests => "tests",
                 Report::DeliveryChecks => "checks",
-                Report::Runs => unreachable!(),
+                _ => unreachable!(),
             };
             let mut query = vec![format!("view={view}")];
             if let Some(run_id) = run_id.as_deref() {
@@ -47,6 +51,26 @@ pub async fn handle(args: &[String], settings: &Settings) -> Result<(), Box<dyn 
                 .request(
                     Method::GET,
                     &format!("/api/v1/reports/deliveries?{}", query.join("&")),
+                    None,
+                )
+                .await?
+        }
+        Report::TestStats | Report::ChecksStats | Report::RubricStats | Report::Expedients => {
+            let path = match report {
+                Report::TestStats => "test_stats",
+                Report::ChecksStats => "checks_stats",
+                Report::RubricStats => "rubric_stats",
+                Report::Expedients => "expedients",
+                _ => unreachable!(),
+            };
+            let suffix = run_id
+                .as_deref()
+                .map(|id| format!("?run_id={}", encode_query(id)))
+                .unwrap_or_default();
+            client
+                .request(
+                    Method::GET,
+                    &format!("/api/v1/reports/{path}{suffix}"),
                     None,
                 )
                 .await?
@@ -83,6 +107,14 @@ fn parse_args(args: &[String]) -> Result<(Report, Option<String>, Format), Box<d
     }
     let parsed = match positionals.as_slice() {
         ["runs"] => (Report::Runs, None),
+        ["test_stats"] => (Report::TestStats, None),
+        ["test_stats", run_id] => (Report::TestStats, Some((*run_id).to_owned())),
+        ["checks_stats"] => (Report::ChecksStats, None),
+        ["checks_stats", run_id] => (Report::ChecksStats, Some((*run_id).to_owned())),
+        ["rubric_stats"] => (Report::RubricStats, None),
+        ["rubric_stats", run_id] => (Report::RubricStats, Some((*run_id).to_owned())),
+        ["expedients"] => (Report::Expedients, None),
+        ["expedients", run_id] => (Report::Expedients, Some((*run_id).to_owned())),
         ["deliveries", "tests"] => (Report::DeliveryTests, None),
         ["deliveries", "tests", run_id] => (Report::DeliveryTests, Some((*run_id).to_owned())),
         ["deliveries", "checks"] => (Report::DeliveryChecks, None),
@@ -90,13 +122,45 @@ fn parse_args(args: &[String]) -> Result<(Report, Option<String>, Format), Box<d
         ["deliveries"] => (Report::DeliveriesSummary, None),
         ["deliveries", run_id] => (Report::DeliveriesSummary, Some((*run_id).to_owned())),
         _ => {
-            return Err("usage: thot report runs | deliveries [RUN_ID] | deliveries tests [RUN_ID] | deliveries checks [RUN_ID] [--csv|--yaml|--json]".into());
+            return Err("usage: thot report runs | deliveries [RUN_ID] | deliveries tests [RUN_ID] | deliveries checks [RUN_ID] | test_stats [RUN_ID] | checks_stats [RUN_ID] | rubric_stats [RUN_ID] | expedients [RUN_ID] [--csv|--yaml|--json]".into());
         }
     };
     Ok((parsed.0, parsed.1, format.unwrap_or(Format::Table)))
 }
 
 fn print_csv(report: Report, response: &Value) -> Result<(), Box<dyn Error>> {
+    if matches!(report, Report::Expedients) {
+        let mut output = Vec::new();
+        for (key, title) in expedient_matrix_keys() {
+            let matrix = &response[key];
+            write_csv_record(&mut output, &[title.into()])?;
+            let columns = matrix["columns"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let mut headers = vec!["Expedient".into(), "Delivery".into()];
+            headers.extend(columns.iter().cloned());
+            write_csv_record(&mut output, &headers)?;
+            for row in matrix["rows"].as_array().into_iter().flatten() {
+                let mut fields = vec![
+                    string_or_empty(&row["expedient_id"]),
+                    string_or_empty(&row["delivery_filename"]),
+                ];
+                fields.extend(
+                    columns
+                        .iter()
+                        .map(|column| string_or_empty(&row["values"][column])),
+                );
+                write_csv_record(&mut output, &fields)?;
+            }
+            write_csv_record(&mut output, &[])?;
+        }
+        io::stdout().write_all(&output)?;
+        return Ok(());
+    }
     let (headers, rows) = tabular_data(report, response);
     let mut output = Vec::new();
     write_csv_record(&mut output, &headers)?;
@@ -108,10 +172,141 @@ fn print_csv(report: Report, response: &Value) -> Result<(), Box<dyn Error>> {
 }
 
 fn print_table(report: Report, response: &Value) -> Result<(), Box<dyn Error>> {
+    if matches!(report, Report::Expedients) {
+        return print_expedient_tables(response);
+    }
     let (headers, mut rows) = tabular_data(report, response);
     compact_table_rows(report, &mut rows);
     let headers = console_headers(report, &headers);
-    let widths = allocate_widths(report, &headers, &rows, terminal_width());
+    let width = terminal_width();
+    let mut output = io::BufWriter::new(io::stdout().lock());
+    write_table(&mut output, report, &headers, &rows, width)?;
+
+    if matches!(
+        report,
+        Report::TestStats | Report::ChecksStats | Report::RubricStats
+    ) {
+        for item in response["statistics"].as_array().into_iter().flatten() {
+            for signal in item["signals"].as_array().into_iter().flatten() {
+                if let Some(signal) = signal.as_str() {
+                    writeln!(
+                        output,
+                        "Signal [{}]: {signal}",
+                        string_or_empty(&item["name"])
+                    )?;
+                }
+            }
+        }
+    }
+
+    if matches!(report, Report::Runs) {
+        for run in response["runs"].as_array().into_iter().flatten() {
+            let deliveries = run["deliveries"].as_array().filter(|rows| !rows.is_empty());
+            let Some(deliveries) = deliveries else {
+                continue;
+            };
+            writeln!(
+                output,
+                "\nDeliveries for run {}:",
+                string_or_empty(&run["run_id"])
+            )?;
+            let headers = [
+                "Delivery",
+                "Status",
+                "Started",
+                "Finished",
+                "Tests pending",
+                "Tests running",
+                "Tests failed",
+                "Tests completed",
+                "Tests total",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+            let rows = deliveries
+                .iter()
+                .map(|delivery| {
+                    vec![
+                        string_or_empty(&delivery["filename"]),
+                        string_or_empty(&delivery["status"]),
+                        compact_delivery_timestamp(&delivery["started_at"]),
+                        compact_delivery_timestamp(&delivery["finished_at"]),
+                        string_or_empty(&delivery["tests_pending"]),
+                        string_or_empty(&delivery["tests_running"]),
+                        string_or_empty(&delivery["tests_failed"]),
+                        string_or_empty(&delivery["tests_completed"]),
+                        string_or_empty(&delivery["tests_total"]),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(&mut output, Report::Runs, &headers, &rows, width)?;
+        }
+    }
+    output.flush()?;
+    Ok(())
+}
+
+fn print_expedient_tables(response: &Value) -> Result<(), Box<dyn Error>> {
+    let width = terminal_width();
+    let mut output = io::BufWriter::new(io::stdout().lock());
+    for (key, title) in expedient_matrix_keys() {
+        let matrix = &response[key];
+        let columns = matrix["columns"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut headers = vec!["Expedient".into(), "Delivery".into()];
+        headers.extend(columns.iter().cloned());
+        let rows = matrix["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|row| {
+                let mut values = vec![
+                    string_or_empty(&row["expedient_id"]),
+                    string_or_empty(&row["delivery_filename"]),
+                ];
+                values.extend(
+                    columns
+                        .iter()
+                        .map(|column| string_or_empty(&row["values"][column])),
+                );
+                values
+            })
+            .collect::<Vec<_>>();
+        writeln!(
+            output,
+            "{} for run {}:",
+            title,
+            string_or_empty(&response["run_id"])
+        )?;
+        write_table(&mut output, Report::Expedients, &headers, &rows, width)?;
+        writeln!(output)?;
+    }
+    output.flush()?;
+    Ok(())
+}
+
+fn expedient_matrix_keys() -> [(&'static str, &'static str); 3] {
+    [
+        ("expedient_x_test", "expedient_x_test"),
+        ("expedient_x_check", "expedient_x_check"),
+        ("expedient_x_rubric", "expedient_x_rubric"),
+    ]
+}
+
+fn write_table(
+    output: &mut impl Write,
+    layout: Report,
+    headers: &[String],
+    rows: &[Vec<String>],
+    terminal_width: usize,
+) -> io::Result<()> {
+    let widths = allocate_widths(layout, headers, rows, terminal_width);
     let wrapped_headers = headers
         .iter()
         .zip(&widths)
@@ -119,22 +314,30 @@ fn print_table(report: Report, response: &Value) -> Result<(), Box<dyn Error>> {
         .collect::<Vec<_>>();
     let header_height = wrapped_headers.iter().map(Vec::len).max().unwrap_or(1);
 
-    let mut output = io::BufWriter::new(io::stdout().lock());
-    write_border(&mut output, &widths)?;
+    write_border(output, &widths)?;
     for line in 0..header_height {
         let header_row = wrapped_headers
             .iter()
             .map(|parts| parts.get(line).cloned().unwrap_or_default())
             .collect::<Vec<_>>();
-        write_table_row(&mut output, &header_row, &widths)?;
+        write_table_row(output, &header_row, &widths)?;
     }
-    write_border(&mut output, &widths)?;
-    for row in &rows {
-        write_table_row(&mut output, row, &widths)?;
+    write_border(output, &widths)?;
+    for row in rows {
+        write_table_row(output, row, &widths)?;
     }
-    write_border(&mut output, &widths)?;
-    output.flush()?;
-    Ok(())
+    write_border(output, &widths)
+}
+
+fn compact_delivery_timestamp(value: &Value) -> String {
+    let Some(value) = value.as_str() else {
+        return String::new();
+    };
+    if value.len() >= 16 && value.as_bytes().get(10) == Some(&b'T') {
+        format!("{} {}", &value[5..10], &value[11..16])
+    } else {
+        value.to_owned()
+    }
 }
 
 fn terminal_width() -> usize {
@@ -221,6 +424,16 @@ fn allocate_widths(
                 1 => 3,
                 _ => 5,
             },
+            Report::Expedients => match column {
+                0 => 20,
+                1 => 16,
+                _ => 5,
+            },
+            Report::TestStats | Report::ChecksStats | Report::RubricStats => match column {
+                0 => 12,
+                1 => 8,
+                _ => 5,
+            },
         })
         .collect::<Vec<_>>();
     widths.clone_from(&minimums);
@@ -281,6 +494,9 @@ fn console_headers(report: Report, headers: &[String]) -> Vec<String> {
         .map(str::to_owned)
         .collect(),
         Report::DeliveryTests | Report::DeliveryChecks => headers.to_vec(),
+        Report::TestStats | Report::ChecksStats | Report::RubricStats | Report::Expedients => {
+            headers.to_vec()
+        }
     }
 }
 
@@ -306,7 +522,11 @@ fn compact_table_rows(report: Report, rows: &mut [Vec<String>]) {
                 }
             }
         }
-        Report::DeliveriesSummary => {}
+        Report::DeliveriesSummary
+        | Report::TestStats
+        | Report::ChecksStats
+        | Report::RubricStats
+        | Report::Expedients => {}
     }
 }
 
@@ -477,7 +697,153 @@ fn tabular_data(report: Report, response: &Value) -> (Vec<String>, Vec<Vec<Strin
                 .collect();
             (headers, rows)
         }
+        Report::TestStats => {
+            let headers = [
+                "Test",
+                "Reference",
+                "Expedients",
+                "Passed",
+                "Failed",
+                "Errors",
+                "Skipped",
+                "Pending",
+                "Running",
+                "Pass %",
+                "Avg ms",
+                "P95 ms",
+                "Max ms",
+                "Signals",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            let rows = statistics_rows(response)
+                .map(|item| {
+                    vec![
+                        string_or_empty(&item["name"]),
+                        string_or_empty(&item["test_reference"]),
+                        string_or_empty(&item["total_expedients"]),
+                        string_or_empty(&item["completed_successfully"]),
+                        string_or_empty(&item["failed"]),
+                        string_or_empty(&item["errors"]),
+                        string_or_empty(&item["skipped"]),
+                        string_or_empty(&item["pending"]),
+                        string_or_empty(&item["running"]),
+                        percent_text(&item["success_rate_percent"]),
+                        string_or_empty(&item["avg_duration_ms"]),
+                        string_or_empty(&item["p95_duration_ms"]),
+                        string_or_empty(&item["max_duration_ms"]),
+                        signals_text(&item["signals"]),
+                    ]
+                })
+                .collect();
+            (headers, rows)
+        }
+        Report::ChecksStats => {
+            let headers = [
+                "Check",
+                "Expedients",
+                "Passed",
+                "Failed",
+                "Errors",
+                "Pending",
+                "Running",
+                "Pass %",
+                "Avg ms",
+                "P95 ms",
+                "Signals",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            let rows = statistics_rows(response)
+                .map(|item| {
+                    vec![
+                        string_or_empty(&item["name"]),
+                        string_or_empty(&item["total_expedients"]),
+                        string_or_empty(&item["completed_successfully"]),
+                        string_or_empty(&item["failed"]),
+                        string_or_empty(&item["errors"]),
+                        string_or_empty(&item["pending"]),
+                        string_or_empty(&item["running"]),
+                        percent_text(&item["success_rate_percent"]),
+                        string_or_empty(&item["avg_duration_ms"]),
+                        string_or_empty(&item["p95_duration_ms"]),
+                        signals_text(&item["signals"]),
+                    ]
+                })
+                .collect();
+            (headers, rows)
+        }
+        Report::RubricStats => {
+            let headers = [
+                "Rubric",
+                "Expedients",
+                "Calculated",
+                "Errors",
+                "Pending",
+                "Running",
+                "Avg mark",
+                "Median",
+                "P10",
+                "P90",
+                "Min",
+                "Max",
+                "SD",
+                "Avg ms",
+                "P95 ms",
+                "Signals",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            let rows = statistics_rows(response)
+                .map(|item| {
+                    vec![
+                        string_or_empty(&item["name"]),
+                        string_or_empty(&item["total_expedients"]),
+                        string_or_empty(&item["completed_successfully"]),
+                        string_or_empty(&item["errors"]),
+                        string_or_empty(&item["pending"]),
+                        string_or_empty(&item["running"]),
+                        string_or_empty(&item["avg_score"]),
+                        string_or_empty(&item["median_score"]),
+                        string_or_empty(&item["p10_score"]),
+                        string_or_empty(&item["p90_score"]),
+                        string_or_empty(&item["min_score"]),
+                        string_or_empty(&item["max_score"]),
+                        string_or_empty(&item["stddev_score"]),
+                        string_or_empty(&item["avg_duration_ms"]),
+                        string_or_empty(&item["p95_duration_ms"]),
+                        signals_text(&item["signals"]),
+                    ]
+                })
+                .collect();
+            (headers, rows)
+        }
+        Report::Expedients => (Vec::new(), Vec::new()),
     }
+}
+
+fn statistics_rows(response: &Value) -> impl Iterator<Item = &Value> {
+    response["statistics"].as_array().into_iter().flatten()
+}
+
+fn signals_text(value: &Value) -> String {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn percent_text(value: &Value) -> String {
+    value
+        .as_f64()
+        .map(|value| format!("{value:.1}%"))
+        .unwrap_or_default()
 }
 
 fn delivery_rows(response: &Value) -> impl Iterator<Item = &Value> {

@@ -22,6 +22,10 @@ thot [-h HOST] [-p PORT] report runs [--csv|--yaml|--json]
 thot [-h HOST] [-p PORT] report deliveries [RUN_ID] [--csv|--yaml|--json]
 thot [-h HOST] [-p PORT] report deliveries tests [RUN_ID] [--csv|--yaml|--json]
 thot [-h HOST] [-p PORT] report deliveries checks [RUN_ID] [--csv|--yaml|--json]
+thot [-h HOST] [-p PORT] report test_stats [RUN_ID] [--csv|--yaml|--json]
+thot [-h HOST] [-p PORT] report checks_stats [RUN_ID] [--csv|--yaml|--json]
+thot [-h HOST] [-p PORT] report rubric_stats [RUN_ID] [--csv|--yaml|--json]
+thot [-h HOST] [-p PORT] report expedients [RUN_ID] [--csv|--yaml|--json]
 thot [-h HOST] [-p PORT] clean
 thot [-h HOST] [-p PORT] prune
 thot [-h HOST] [-p PORT] reset
@@ -62,7 +66,9 @@ expedient per student, its assigned delivery, and lifecycle state (`pending`,
 recorded VM identity and storage ownership.
 
 `thot report runs` shows run status, start/finish time, duration, and test
-progress/error totals. `thot report deliveries [RUN_ID]` summarizes test and
+progress/error totals. For each active run, it also shows a delivery table with
+delivery status and timing plus pending, running, failed, completed, and total
+test counts. `thot report deliveries [RUN_ID]` summarizes test and
 check outcomes once per distinct delivery, including the number of students
 sharing it. Without `RUN_ID`, delivery reports use the newest saved run.
 `thot report deliveries tests` and `thot report deliveries checks` show a
@@ -72,6 +78,14 @@ two-line headers, and long values truncated as needed. Select `--csv`,
 `--yaml`, or `--json` to export the same report data. The JSON API routes are
 `GET /api/v1/reports/runs` and
 `GET /api/v1/reports/deliveries?run_id=...&view=summary|tests|checks`.
+
+`thot report test_stats`, `checks_stats`, and `rubric_stats` show per-item
+success/failure or score distributions, pending/running counts, average and
+percentile execution times, and diagnostic signals for all expedients in the
+selected run. These commands default to the newest run.
+`thot report expedients [RUN_ID]` shows test, check, and rubric matrices; test/check cells
+use `Ok`, `X`, `R`, or blank, and rubric marks are rounded to at most three
+decimal places. Matrix and statistics reports accept the same export flags.
 
 `thot clean` removes orphaned Thot artifacts and VMs only when ownership can be
 verified. `thot prune` keeps the newest run per project and requires an

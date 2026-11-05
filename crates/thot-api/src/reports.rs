@@ -1,4 +1,4 @@
-//! Purpose: Exposes compact JSON reports for saved runs and their deliveries.
+//! Purpose: Exposes JSON run, delivery, evaluation-statistics, and expedient-matrix reports.
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -14,6 +14,10 @@ pub(super) fn router(service: DeliveryRunService) -> Router {
     Router::new()
         .route("/api/v1/reports/runs", get(runs))
         .route("/api/v1/reports/deliveries", get(deliveries))
+        .route("/api/v1/reports/test_stats", get(test_stats))
+        .route("/api/v1/reports/checks_stats", get(checks_stats))
+        .route("/api/v1/reports/rubric_stats", get(rubric_stats))
+        .route("/api/v1/reports/expedients", get(expedients))
         .with_state(service)
 }
 
@@ -21,6 +25,11 @@ pub(super) fn router(service: DeliveryRunService) -> Router {
 struct DeliveryReportQuery {
     run_id: Option<String>,
     view: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RunReportQuery {
+    run_id: Option<String>,
 }
 
 async fn runs(State(service): State<DeliveryRunService>) -> Result<Json<Value>, ApiError> {
@@ -40,6 +49,50 @@ async fn deliveries(
             query.run_id.as_deref(),
             query.view.as_deref().unwrap_or("summary"),
         )
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn test_stats(
+    State(service): State<DeliveryRunService>,
+    Query(query): Query<RunReportQuery>,
+) -> Result<Json<Value>, ApiError> {
+    service
+        .report_test_stats(query.run_id.as_deref())
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn checks_stats(
+    State(service): State<DeliveryRunService>,
+    Query(query): Query<RunReportQuery>,
+) -> Result<Json<Value>, ApiError> {
+    service
+        .report_checks_stats(query.run_id.as_deref())
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn rubric_stats(
+    State(service): State<DeliveryRunService>,
+    Query(query): Query<RunReportQuery>,
+) -> Result<Json<Value>, ApiError> {
+    service
+        .report_rubric_stats(query.run_id.as_deref())
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn expedients(
+    State(service): State<DeliveryRunService>,
+    Query(query): Query<RunReportQuery>,
+) -> Result<Json<Value>, ApiError> {
+    service
+        .report_expedients(query.run_id.as_deref())
         .await
         .map(Json)
         .map_err(ApiError::from)

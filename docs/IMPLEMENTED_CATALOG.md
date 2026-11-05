@@ -97,3 +97,9 @@ Rubrics are configured in the root `rubrics` list. Each rubric has a unique `nam
 | `weighted_avg` | `weights` | Weighted mean. `weights` must contain one finite, non-negative number per check, in the same order, and their sum must be positive. The weighted sum is divided by the sum of weights. |
 
 Check results, including zero results that have an `err`, are the numeric inputs to rubrics. Rubrics are recalculated whenever checks are evaluated, including with `thot run checks [run-id]`.
+
+## Reports
+
+`thot report test_stats [RUN_ID]`, `checks_stats`, and `rubric_stats` report per-item statistics across student expedients; without a run ID, they use the newest run. Test and check statistics include passed, failed, error, skipped, pending, and running counts where applicable, success rate, and average, median, p95, and maximum execution time. Rubric statistics include calculated/error counts, average and median marks, p10/p90, min/max, standard deviation, and calculation times. The reports flag tests with no successful expedients, all-pass results, high skip rates, or execution near/over 30 seconds or the configured timeout; they flag checks with no passes, all-pass outcomes, errors, or slow execution; and rubrics with calculation errors or identical marks.
+
+`thot report expedients [RUN_ID]` prints three matrices: `expedient_x_test`, `expedient_x_check`, and `expedient_x_rubric`. Test/check cells show `Ok`, `X`, `R`, or blank; rubric marks are rounded to three decimal places. Report endpoints return JSON, while the CLI supports terminal tables and `--csv`, `--yaml`, or `--json` output.

@@ -1,6 +1,7 @@
 //! Purpose: Calculates numeric rubric results from the configured check outcomes.
 use chrono::Utc;
 use serde_json::{Value, json};
+use std::time::Instant;
 use thot_core::ProjectRubric;
 
 const PERCENTILES: &[u32] = &[1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99];
@@ -34,6 +35,7 @@ pub fn evaluate_rubrics(rubrics: &[ProjectRubric], check_rows: &[Value]) -> Vec<
     rubrics
         .iter()
         .map(|rubric| {
+            let started = Instant::now();
             let result = evaluate_one(rubric, check_rows);
             let (value, check_results, weights, error) = match result {
                 Ok((value, check_results, weights)) => {
@@ -50,6 +52,7 @@ pub fn evaluate_rubrics(rubrics: &[ProjectRubric], check_rows: &[Value]) -> Vec<
                 "result": value,
                 "err": error,
                 "date_time": Utc::now().to_rfc3339(),
+                "duration_ms": started.elapsed().as_millis(),
             });
             if let Some(weights) = weights {
                 row["weights"] = json!(weights);

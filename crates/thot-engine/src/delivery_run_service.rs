@@ -616,6 +616,38 @@ impl DeliveryRunService {
         crate::report::deliveries(&self.pool, &self.artifact_root, run_id, view).await
     }
 
+    /// Return per-test outcomes and execution-time summaries for one run.
+    pub async fn report_test_stats(
+        &self,
+        run_id: Option<&str>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        crate::report::test_stats(&self.pool, &self.artifact_root, run_id).await
+    }
+
+    /// Return per-check outcomes and evaluation-time summaries for one run.
+    pub async fn report_checks_stats(
+        &self,
+        run_id: Option<&str>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        crate::report::checks_stats(&self.pool, &self.artifact_root, run_id).await
+    }
+
+    /// Return per-rubric score distributions and calculation-time summaries for one run.
+    pub async fn report_rubric_stats(
+        &self,
+        run_id: Option<&str>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        crate::report::rubric_stats(&self.pool, &self.artifact_root, run_id).await
+    }
+
+    /// Return expedient-by-test, expedient-by-check, and expedient-by-rubric matrices.
+    pub async fn report_expedients(
+        &self,
+        run_id: Option<&str>,
+    ) -> Result<serde_json::Value, ServiceError> {
+        crate::report::expedient_matrices(&self.pool, &self.artifact_root, run_id).await
+    }
+
     /// Re-evaluate configured checks against saved test results for a finished run.
     pub async fn run_checks(
         &self,

@@ -4,7 +4,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use regex::Regex;
 use serde_json::{Value, json};
 use serde_json_path::JsonPath;
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{cmp::Ordering, collections::BTreeMap, time::Instant};
 use thot_core::{ProjectCheck, ProjectTest};
 
 /// Evaluate every configured check and return the report rows to store in an expedient.
@@ -17,6 +17,7 @@ pub fn evaluate_checks(
     checks
         .iter()
         .map(|check| {
+            let started = Instant::now();
             let result = match find_test(check, tests) {
                 Some(test) if stats::is_stats_check(&check.check_ref) => {
                     stats::evaluate_check(check, test, report, reports_for_run)
@@ -34,7 +35,8 @@ pub fn evaluate_checks(
                 "description": check.description,
                 "result": value,
                 "err": error,
-                "date_time": Utc::now().to_rfc3339()
+                "date_time": Utc::now().to_rfc3339(),
+                "duration_ms": started.elapsed().as_millis(),
             });
             if let Some(details) = details {
                 row["statistic"] = details.statistic;
