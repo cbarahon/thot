@@ -58,10 +58,47 @@ fn run_check(check: &ProjectCheck, test: &ProjectTest, report: &Value) -> Result
     let parameters = check.parameters.into_strings()?;
     match check.check_ref.as_str() {
         "pass" => passed_test_result(test, report),
+        "regex_match" => regex_match_check(check, test, report, &parameters),
         "regex_extract" => regex_extract_check(check, test, report, &parameters),
         "yaml_extract" => yaml_extract_check(check, test, report, &parameters),
         unknown => Err(format!("unknown internal check {unknown:?}")),
     }
+}
+
+fn regex_match_check(
+    check: &ProjectCheck,
+    test: &ProjectTest,
+    report: &Value,
+    parameters: &BTreeMap<String, String>,
+) -> Result<u8, String> {
+    let property = check
+        .property
+        .as_deref()
+        .ok_or("regex_match check has no property")?;
+    let regex_text = required_parameter(parameters, "regex")?;
+    let regex = Regex::new(regex_text).map_err(|error| format!("invalid regex: {error}"))?;
+    let results = report["test_results"]
+        .as_array()
+        .ok_or("expedient has no test_results array")?;
+
+    for test_id in expected_test_ids(test) {
+        let test_result = results
+            .iter()
+            .find(|row| row["test_id"].as_str() == Some(&test_id))
+            .ok_or_else(|| format!("test result {test_id:?} is missing"))?;
+        let Some(value) = property_value(test_result, property) else {
+            return Err(format!("test result property {property:?} does not exist"));
+        };
+        let Some(value) = property_text(value) else {
+            return Err(format!(
+                "test result property {property:?} is not a scalar value"
+            ));
+        };
+        if !regex.is_match(&value) {
+            return Ok(0);
+        }
+    }
+    Ok(1)
 }
 
 fn yaml_extract_check(
@@ -200,7 +237,7 @@ fn required_parameter<'a>(
         .get(key)
         .map(String::as_str)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("extract check is missing parameter {key:?}"))
+        .ok_or_else(|| format!("check is missing parameter {key:?}"))
 }
 
 pub(crate) fn expected_test_ids(test: &ProjectTest) -> Vec<String> {

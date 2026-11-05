@@ -271,6 +271,25 @@ fn validate_check(
     let parameters = check.parameters.into_strings()?;
     match check.check_ref.as_str() {
         "pass" => Ok(()),
+        "regex_match" => {
+            validate_extract_property(check, "regex_match")?;
+            let regex = parameters
+                .get("regex")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "check {:?} using regex_match requires parameter regex",
+                        check.name
+                    )
+                })?;
+            Regex::new(regex).map_err(|error| {
+                format!(
+                    "check {:?} has invalid regex parameter: {error}",
+                    check.name
+                )
+            })?;
+            Ok(())
+        }
         "regex_extract" => {
             validate_extract_property(check, "regex_extract")?;
             let regex = parameters.get("regex").ok_or_else(|| {

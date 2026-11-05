@@ -56,6 +56,13 @@ checks:
     description: vm has working ssh
     check: pass
     test: vm_info
+  - name: http_forward_defined
+    description: A NAT rule maps host port 8080 to guest port 80.
+    check: regex_match
+    test: import_ova
+    property: stdout
+    parameters:
+      - regex: 'Forwarding\(\d+\)="[^"]*,tcp,,8080,,80"'
   - name: disk_size_ok
     description: The disk size meets the technical requirement (1 Gb).
     check: regex_extract
