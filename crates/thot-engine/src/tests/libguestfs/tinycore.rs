@@ -373,40 +373,39 @@ async fn inspect_candidate(
     started: Instant,
 ) -> Result<Option<TinyCoreImageInfo>, String> {
     let temporary = TemporaryDirectory::create(&invocation.artifacts_dir)?;
+    let copied_path = temporary.path.join("initramfs.gz");
     let output = run_tool(
         invocation,
-        "virt-copy-out",
+        "guestfish",
         vec![
+            "--ro".into(),
             format!("--format={}", disk.format),
             "-a".into(),
             disk.path.to_string_lossy().into_owned(),
             "-m".into(),
             format!("{}:/", candidate.device),
+            "--".into(),
+            "download".into(),
             candidate.path.clone(),
-            temporary.path.to_string_lossy().into_owned(),
+            copied_path.to_string_lossy().into_owned(),
         ],
         started,
     )
     .await
-    .map_err(|error| format!("cannot read initramfs with libguestfs: {error}"))?;
+    .map_err(|error| format!("cannot download initramfs with guestfish: {error}"))?;
     if output.timed_out {
-        return Err("copying the boot image timed out".into());
+        return Err("downloading the boot image timed out".into());
     }
     if output.exit_code != Some(0) {
         return Err(format!(
-            "virt-copy-out exited with {:?}: {}",
+            "guestfish download exited with {:?}: {}",
             output.exit_code,
             output.stderr.trim()
         ));
     }
-    let copied_path = copied_file_path(&temporary.path, &candidate.path).ok_or_else(|| {
-        format!(
-            "virt-copy-out succeeded but did not create the expected file for {}",
-            candidate.path
-        )
+    let metadata = fs::metadata(&copied_path).map_err(|error| {
+        format!("guestfish succeeded but did not create the downloaded initramfs: {error}")
     })?;
-    let metadata = fs::metadata(&copied_path)
-        .map_err(|error| format!("cannot inspect copied initramfs: {error}"))?;
     if metadata.len() > MAX_INITRD_COMPRESSED_BYTES {
         return Err(format!(
             "copied initramfs exceeds the {} byte compressed image limit",
@@ -449,17 +448,6 @@ async fn inspect_candidate(
         passwd_file_found: archive.files.contains_key("etc/passwd"),
         group_file_found: archive.files.contains_key("etc/group"),
     }))
-}
-
-fn copied_file_path(directory: &Path, guest_path: &str) -> Option<PathBuf> {
-    let relative = guest_path.trim_start_matches('/');
-    let nested = directory.join(relative);
-    if nested.is_file() {
-        return Some(nested);
-    }
-    let basename = Path::new(guest_path).file_name()?;
-    let flat = directory.join(basename);
-    flat.is_file().then_some(flat)
 }
 
 struct CpioArchive {

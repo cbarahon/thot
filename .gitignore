@@ -6,4 +6,5 @@
  !.env.example
  *.log
  .DS_Store
+ *.vdi
 
