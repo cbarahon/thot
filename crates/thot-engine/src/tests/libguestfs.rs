@@ -499,7 +499,7 @@ pub(super) async fn run_tool(
         Path::new(executable),
         &arguments,
         &invocation.project_root,
-        &[],
+        &[("LC_ALL".into(), "C".into())],
         remaining,
         invocation.runtime.output_limit,
     )
@@ -680,7 +680,14 @@ fn parse_usage_csv(output: &str) -> Result<Vec<Value>, String> {
             .iter()
             .position(|header| header.trim().eq_ignore_ascii_case(name))
     };
-    let device_index = index("Filesystem").ok_or("CSV output has no Filesystem column")?;
+    let device_index = index("Filesystem").ok_or_else(|| {
+        let columns = headers
+            .iter()
+            .map(|column| format!("{column:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("CSV output has no Filesystem column (header columns: {columns})")
+    })?;
     let total_index = index("1K-blocks").or_else(|| index("Size"));
     let used_index = index("Used");
     let available_index = index("Available");
