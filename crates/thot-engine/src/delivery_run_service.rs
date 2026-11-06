@@ -26,6 +26,8 @@ pub struct RunRecord {
     pub expedient_ids: Vec<String>,
     pub expedients: Vec<RunExpedientSummary>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +55,7 @@ pub struct ExpedientChecksResult {
     pub student_id: Option<i64>,
     pub checks: Vec<serde_json::Value>,
     pub rubrics: Vec<serde_json::Value>,
+    pub evaluation: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +160,13 @@ impl DeliveryRunService {
         let snapshot = vm_activity::load_project(Path::new(&project_path), &snapshot_dir)
             .await
             .map_err(ServiceError::Invalid)?;
+        let warnings = crate::project_config::configuration_warnings(
+            snapshot.configuration.rubrics_multiplier,
+            snapshot.configuration.evaluation_multiplier,
+        );
+        for warning in &warnings {
+            tracing::warn!(%warning, "project scoring configuration warning");
+        }
         project_context::activate(
             &self.pool,
             &snapshot.project_id,
@@ -372,6 +382,7 @@ impl DeliveryRunService {
             expedient_ids,
             expedients,
             error: None,
+            warnings,
         };
         let service = self.clone();
         let background_run_id = record.run_id.clone();
@@ -489,10 +500,6 @@ impl DeliveryRunService {
                     });
                     student_report["delivery_filename"] = serde_json::json!(student.delivery_filename);
                     student_report["shared_delivery_execution"] = serde_json::json!(work.students.len() > 1);
-                    student_report["evaluation"] = serde_json::json!({
-                        "status": "not_evaluated",
-                        "results": []
-                    });
                     if let Err(error) = crate::test_result_store::persist_report(&student.report_path, &student_report) {
                         tracing::error!(%error, expedient_id = %student.expedient_id, "could not persist student expedient report");
                         copy_failed = true;
@@ -520,7 +527,10 @@ impl DeliveryRunService {
                     &run_id,
                     &project.configuration.checks,
                     &project.configuration.rubrics,
+                    &project.configuration.evaluation,
                     &project.configuration.tests,
+                    project.configuration.rubrics_multiplier,
+                    project.configuration.evaluation_multiplier,
                 )
                 .await
         {
@@ -577,6 +587,7 @@ impl DeliveryRunService {
             expedient_ids,
             expedients,
             error,
+            warnings: Vec::new(),
         }))
     }
 
@@ -597,6 +608,7 @@ impl DeliveryRunService {
                 status,
                 expedient_ids: serde_json::from_str(&ids).unwrap_or_default(),
                 error,
+                warnings: Vec::new(),
             });
         }
         Ok(runs)
@@ -733,7 +745,15 @@ impl DeliveryRunService {
         }
 
         let result_rows = self
-            .evaluate_saved_run_checks(&run_id, &project.checks, &project.rubrics, &project.tests)
+            .evaluate_saved_run_checks(
+                &run_id,
+                &project.checks,
+                &project.rubrics,
+                &project.evaluation,
+                &project.tests,
+                project.rubrics_multiplier,
+                project.evaluation_multiplier,
+            )
             .await?;
         Ok(Some(RunChecksResponse {
             run_id,
@@ -747,7 +767,10 @@ impl DeliveryRunService {
         run_id: &str,
         checks: &[thot_core::ProjectCheck],
         rubrics: &[thot_core::ProjectRubric],
+        evaluation: &[thot_core::ProjectEvaluation],
         tests: &[thot_core::ProjectTest],
+        rubrics_multiplier: f64,
+        evaluation_multiplier: f64,
     ) -> Result<Vec<ExpedientChecksResult>, ServiceError> {
         let expedients = sqlx::query_as::<_, (String, Option<i64>, String)>(
             "SELECT expedient_id, student_id, report_path FROM vm_activity_expedients WHERE run_id=? ORDER BY student_id, expedient_id",
@@ -778,17 +801,30 @@ impl DeliveryRunService {
             let check_rows =
                 crate::checks::evaluate_checks(checks, tests, &report, &reports_for_run);
             report["checks"] = serde_json::json!(check_rows);
-            let rubric_rows = crate::rubrics::evaluate_rubrics(rubrics, &check_rows);
-            let evaluation_status = if rubrics.is_empty() {
+            let rubric_rows =
+                crate::rubrics::evaluate_rubrics(rubrics, &check_rows, rubrics_multiplier);
+            let evaluation_rows =
+                crate::evaluation::evaluate_items(evaluation, &rubric_rows, evaluation_multiplier);
+            let evaluation_status = if rubrics.is_empty() && evaluation.is_empty() {
                 "not_evaluated"
-            } else if rubric_rows.iter().any(|row| !row["err"].is_null()) {
+            } else if rubric_rows.iter().any(|row| !row["err"].is_null())
+                || evaluation_rows.iter().any(|row| !row["err"].is_null())
+            {
                 "completed_with_errors"
             } else {
                 "evaluated"
             };
+            let warnings = crate::project_config::configuration_warnings(
+                rubrics_multiplier,
+                evaluation_multiplier,
+            );
+            report["rubrics"] = serde_json::json!(rubric_rows);
             report["evaluation"] = serde_json::json!({
                 "status": evaluation_status,
-                "results": rubric_rows,
+                "results": evaluation_rows,
+                "rubrics_multiplier": rubrics_multiplier,
+                "evaluation_multiplier": evaluation_multiplier,
+                "warnings": warnings,
             });
             crate::test_result_store::persist_report(&report_path, &report).map_err(|error| {
                 ServiceError::Internal(format!(
@@ -800,6 +836,7 @@ impl DeliveryRunService {
                 student_id,
                 checks: check_rows,
                 rubrics: rubric_rows,
+                evaluation: evaluation_rows,
             });
         }
         Ok(result_rows)

@@ -291,11 +291,12 @@ fn print_expedient_tables(response: &Value) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn expedient_matrix_keys() -> [(&'static str, &'static str); 3] {
+fn expedient_matrix_keys() -> [(&'static str, &'static str); 4] {
     [
         ("expedient_x_test", "expedient_x_test"),
         ("expedient_x_check", "expedient_x_check"),
         ("expedient_x_rubric", "expedient_x_rubric"),
+        ("expedient_x_evaluation", "expedient_x_evaluation"),
     ]
 }
 

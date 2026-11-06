@@ -1,6 +1,6 @@
-# Implemented tests, checks, and rubrics
+# Implemented tests, checks, rubrics, and evaluation
 
-This reference lists the test adapters and evaluation methods currently implemented by the engine. Project files configure tests under `tests`, checks under `checks`, and score aggregations under `rubrics` in `configuration.yaml`.
+This reference lists the test adapters and evaluation methods currently implemented by the engine. Project files configure tests under `tests`, checks under `checks`, rubric aggregations under `rubrics`, and final evaluation aggregations under `evaluation` in `configuration.yaml`.
 
 | Kind | Reference or methods | Purpose |
 |---|---|---|
@@ -13,6 +13,7 @@ This reference lists the test adapters and evaluation methods currently implemen
 | Test | `extern/<path>` | Runs a project-provided Python, shell, or executable test program. |
 | Check | `pass`, `regex_match`, `regex_extract`, `yaml_match`, `yaml_extract`, `stats/regex_extract`, `stats/yaml_extract` | Evaluates test results into numeric 0/1 values. |
 | Rubric | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum` | Aggregates configured check results into a numeric score. |
+| Evaluation | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum` | Aggregates rubric marks into final marks for a high-level learning outcome such as a Spanish FP RA. |
 
 ## Configuration and result conventions
 
@@ -22,7 +23,7 @@ Test results record `test_id`, `test_reference`, `test_result_id`, `status`, `ex
 
 Configured parameters are scalar values unless a test describes a list. The engine passes project-provided test parameters as `key=value` arguments to external scripts. Use `timeout` at the test level to override the project's global timeout.
 
-Any test may set `filter_grep` to a regular expression, or `filter_jsonpath` to a JSONPath expression for JSON/YAML stdout. Each accepts one expression or a list; either may also be a mapping from output labels to expressions. Every grep expression scans all lines in the stdout entering the grep stage; list matches are combined once in original order. In a labeled grep mapping, each regex independently selects matching lines: one match becomes a string and multiple matches become a list. Every JSONPath expression queries the complete original stdout document; list results are combined in expression order. A labeled mapping produces a YAML object with each label as a key; a label selecting one value gets that value, while multiple matches become a list. A labeled expression that selects no lines or values causes a filter error. If both filters are set, JSONPath runs first and grep scans the complete resulting YAML text. Filter parameters are handled by the engine and are not passed to the test implementation. The expedient contains filtered stdout; each test's `stdout.txt` and `stderr.txt` artifacts retain the original process output. If a runtime filter cannot parse or select from stdout, the test result becomes an error and explains the failure in `stderr` and `diagnostics`; malformed filter expressions are rejected when the project is loaded.
+Any test may set `filter_grep` to a regular expression, or `filter_jsonpath` to a JSONPath expression for JSON/YAML stdout. Each accepts one expression or a list; either may also be a mapping from output labels to expressions. Use a string or list when you want unlabeled raw filter output; use a mapping only when you want labels. An unlabeled JSONPath expression emits its selected value directly, and a list emits selected values as a YAML list. An unlabeled grep expression emits the matching lines, with a list of expressions combining matching lines once in original order. In a labeled grep mapping, each regex independently selects matching lines: one match becomes a string and multiple matches become a list. Every JSONPath expression queries the complete original stdout document; list results are combined in expression order. A labeled mapping produces a YAML object with each label as a key; a label selecting one value gets that value, while multiple matches become a list. A labeled expression that selects no lines or values causes a filter error. If both filters are set, JSONPath runs first and grep scans the complete resulting YAML text. Filter parameters are handled by the engine and are not passed to the test implementation. The expedient contains filtered stdout; each test's `stdout.txt` and `stderr.txt` artifacts retain the original process output. If a runtime filter cannot parse or select from stdout, the test result becomes an error and explains the failure in `stderr` and `diagnostics`; malformed filter expressions are rejected when the project is loaded.
 
 For example, a labeled mapping keeps the meaning of selected values:
 
@@ -46,6 +47,16 @@ parameters:
 ```
 
 The resulting YAML stdout contains `os_release` and `kernel` keys, each holding its matching line or a list when a pattern matches several lines.
+
+To show raw, unlabeled results instead, use a string or list:
+
+```yaml
+parameters:
+  filter_jsonpath: $.linux_root_filesystem.filesystem_size_bytes
+  filter_grep: '^NAME='
+```
+
+A filter list also stays unlabeled. For example, `filter_jsonpath: [$.hostname, $.kernel]` emits the selected values as a YAML list, and a list of grep expressions emits the union of matching lines.
 
 ## Tests
 
@@ -110,7 +121,7 @@ Example regex match check:
 
 ## Rubrics
 
-Rubrics are configured in the root `rubrics` list. Each rubric has a unique `name`, optional `description`, an ordered list of check names (`checks` or the alias `checks_list`), a `calculation`, and optional `parameters`. A rubric aggregates the referenced check rows from one student's expedient and stores its numeric result and input values under `evaluation.results`.
+Rubrics are configured in the root `rubrics` list. Each rubric has a unique `name`, optional `description`, an ordered list of check names (`checks` or the alias `checks_list`), a `calculation`, and optional `parameters`. A rubric aggregates the referenced check rows and stores its numeric result and scaled inputs in the expedient's top-level `rubrics` list. `rubrics_multiplier` (default `1`) scales each 0/1 check value before rubric calculation, so rubrics can be marked over 10, 100, or another positive finite scale. The check rows themselves remain 0/1.
 
 | Calculation | Parameters | Definition |
 |---|---|---|
@@ -123,8 +134,28 @@ Rubrics are configured in the root `rubrics` list. Each rubric has a unique `nam
 
 Check results, including zero results that have an `err`, are the numeric inputs to rubrics. Rubrics are recalculated whenever checks are evaluated, including with `thot run checks [run-id]`.
 
+Evaluation items are configured under the root `evaluation` list. Each item has a unique `name`, optional `description`, an ordered `rubrics` list (or alias `rubrics_list`), a `calculation`, and optional `parameters`. They support the same aggregations and `weighted_avg` weights as rubrics, but use rubric results as inputs. The resulting final marks are saved under `evaluation.results`. `evaluation_multiplier` (default `1`) scales each calculated evaluation item. If both multipliers differ from `1`, run creation returns a warning and the expedient records it: rubric marks are scaled first, then evaluation marks are scaled again. Multipliers must be finite positive numbers.
+
+```yaml
+rubrics_multiplier: 10
+evaluation_multiplier: 1
+rubrics:
+  - name: virtualization
+    checks: [ova_imported, vm_started]
+    calculation: avg
+evaluation:
+  - name: RA1
+    description: Virtual machine deployment and operation
+    rubrics: [virtualization, system_information]
+    calculation: weighted_avg
+    parameters:
+      weights: [0.7, 0.3]
+```
+
+Here each check contributes 0 or 10 to its rubric, while the final `RA1` mark remains on the same scale because `evaluation_multiplier` is 1.
+
 ## Reports
 
 `thot report test_stats [RUN_ID]`, `checks_stats`, and `rubric_stats` report per-item statistics across student expedients; without a run ID, they use the newest run. Test and check statistics include passed, failed, error, skipped, pending, and running counts where applicable, success rate, and average, median, p95, and maximum execution time. Rubric statistics include calculated/error counts, average and median marks, p10/p90, min/max, standard deviation, and calculation times. The reports flag tests with no successful expedients, all-pass results, high skip rates, or execution near/over 30 seconds or the configured timeout; they flag checks with no passes, all-pass outcomes, errors, or slow execution; and rubrics with calculation errors or identical marks.
 
-`thot report expedients [RUN_ID]` prints three matrices: `expedient_x_test`, `expedient_x_check`, and `expedient_x_rubric`. Test/check cells show `Ok`, `X`, `R`, or blank; rubric marks are rounded to three decimal places. Report endpoints return JSON, while the CLI supports terminal tables and `--csv`, `--yaml`, or `--json` output.
+`thot report expedients [RUN_ID]` prints four matrices: `expedient_x_test`, `expedient_x_check`, `expedient_x_rubric`, and `expedient_x_evaluation`. Test/check cells show `Ok`, `X`, `R`, or blank; rubric marks are rounded to three decimal places. Report endpoints return JSON, while the CLI supports terminal tables and `--csv`, `--yaml`, or `--json` output.

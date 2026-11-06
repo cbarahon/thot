@@ -44,6 +44,17 @@ pub async fn execute_delivery(
         },
         "test_results": [],
         "checks": [],
+        "rubrics": [],
+        "evaluation": {
+            "status": "not_evaluated",
+            "results": [],
+            "rubrics_multiplier": project.configuration.rubrics_multiplier,
+            "evaluation_multiplier": project.configuration.evaluation_multiplier,
+            "warnings": crate::project_config::configuration_warnings(
+                project.configuration.rubrics_multiplier,
+                project.configuration.evaluation_multiplier
+            )
+        },
         "cleanup": {"status":"not_run", "details":[]},
         "overall_status": "running",
         "started_at": now,

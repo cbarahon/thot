@@ -9,7 +9,7 @@ pub const LABELED_JSONPATH_FILTER_PREFIX: &str = "\0THOT_JSONPATH_LABELS_V1\0";
 pub const LABELED_GREP_FILTER_PREFIX: &str = "\0THOT_GREP_LABELS_V1\0";
 
 /// Project configuration stored as configuration.yaml in a .thot.zip/.thot.tgz archive.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VMActivityProject {
     pub activity_name: String,
     pub delivery_folder: String,
@@ -20,6 +20,16 @@ pub struct VMActivityProject {
     pub checks: Vec<ProjectCheck>,
     #[serde(default)]
     pub rubrics: Vec<ProjectRubric>,
+    #[serde(default)]
+    pub evaluation: Vec<ProjectEvaluation>,
+    #[serde(default = "default_multiplier")]
+    pub rubrics_multiplier: f64,
+    #[serde(default = "default_multiplier")]
+    pub evaluation_multiplier: f64,
+}
+
+fn default_multiplier() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,6 +70,19 @@ pub struct ProjectRubric {
     pub description: Option<String>,
     #[serde(rename = "checks", alias = "checks_list")]
     pub checks: Vec<String>,
+    pub calculation: String,
+    #[serde(default)]
+    pub parameters: ParameterInput,
+}
+
+/// A configured evaluation item aggregates named rubric outcomes into a final mark.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectEvaluation {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(rename = "rubrics", alias = "rubrics_list")]
+    pub rubrics: Vec<String>,
     pub calculation: String,
     #[serde(default)]
     pub parameters: ParameterInput,

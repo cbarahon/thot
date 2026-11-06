@@ -31,12 +31,16 @@ pub fn supported_calculations() -> &'static [&'static str] {
 }
 
 /// Evaluate each rubric against the check rows from one student's expedient.
-pub fn evaluate_rubrics(rubrics: &[ProjectRubric], check_rows: &[Value]) -> Vec<Value> {
+pub fn evaluate_rubrics(
+    rubrics: &[ProjectRubric],
+    check_rows: &[Value],
+    rubrics_multiplier: f64,
+) -> Vec<Value> {
     rubrics
         .iter()
         .map(|rubric| {
             let started = Instant::now();
-            let result = evaluate_one(rubric, check_rows);
+            let result = evaluate_one(rubric, check_rows, rubrics_multiplier);
             let (value, check_results, weights, error) = match result {
                 Ok((value, check_results, weights)) => {
                     (json!(value), check_results, weights, Value::Null)
@@ -48,6 +52,7 @@ pub fn evaluate_rubrics(rubrics: &[ProjectRubric], check_rows: &[Value]) -> Vec<
                 "description": rubric.description,
                 "calculation": rubric.calculation,
                 "checks": rubric.checks,
+                "rubrics_multiplier": rubrics_multiplier,
                 "check_results": check_results,
                 "result": value,
                 "err": error,
@@ -65,7 +70,11 @@ pub fn evaluate_rubrics(rubrics: &[ProjectRubric], check_rows: &[Value]) -> Vec<
 fn evaluate_one(
     rubric: &ProjectRubric,
     check_rows: &[Value],
+    rubrics_multiplier: f64,
 ) -> Result<(f64, Vec<Value>, Option<Vec<f64>>), String> {
+    if !rubrics_multiplier.is_finite() || rubrics_multiplier <= 0.0 {
+        return Err("rubrics_multiplier must be a finite number greater than zero".into());
+    }
     let mut values = Vec::with_capacity(rubric.checks.len());
     let mut results = Vec::with_capacity(rubric.checks.len());
     for check_name in &rubric.checks {
@@ -73,14 +82,19 @@ fn evaluate_one(
             .iter()
             .find(|row| row["name"].as_str() == Some(check_name.as_str()))
             .ok_or_else(|| format!("check result {check_name:?} is missing"))?;
-        let result = row["result"]
+        let raw_result = row["result"]
             .as_f64()
             .filter(|value| value.is_finite())
             .ok_or_else(|| format!("check result {check_name:?} is not a finite number"))?;
+        let result = raw_result * rubrics_multiplier;
+        if !result.is_finite() {
+            return Err(format!("scaled check result {check_name:?} is not finite"));
+        }
         values.push(result);
         results.push(json!({
             "name": check_name,
             "result": result,
+            "raw_result": raw_result,
             "err": row["err"],
         }));
     }
@@ -126,19 +140,23 @@ fn parse_weights(value: &str) -> Result<Vec<f64>, String> {
         .collect()
 }
 
-fn calculate(values: &[f64], calculation: &str, weights: Option<&[f64]>) -> Result<f64, String> {
+pub(crate) fn calculate(
+    values: &[f64],
+    calculation: &str,
+    weights: Option<&[f64]>,
+) -> Result<f64, String> {
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
     let result = match calculation {
         "avg" => values.iter().sum::<f64>() / values.len() as f64,
-        "max" => *sorted.last().ok_or("cannot calculate max without checks")?,
+        "max" => *sorted.last().ok_or("cannot calculate max without values")?,
         "min" => *sorted
             .first()
-            .ok_or("cannot calculate min without checks")?,
+            .ok_or("cannot calculate min without values")?,
         "median" => percentile(&sorted, 50),
         "sum" => values.iter().sum(),
         "weighted_avg" => {
-            let weights = weights.ok_or("weighted_avg rubric is missing weights")?;
+            let weights = weights.ok_or("weighted_avg calculation is missing weights")?;
             let weight_sum = weights.iter().sum::<f64>();
             if weight_sum <= 0.0 {
                 return Err("weighted_avg weights must have a positive sum".into());
@@ -153,18 +171,18 @@ fn calculate(values: &[f64], calculation: &str, weights: Option<&[f64]>) -> Resu
         value if value.starts_with('p') => {
             let percentile_rank = value[1..]
                 .parse::<u32>()
-                .map_err(|_| format!("unknown rubric calculation {calculation:?}"))?;
+                .map_err(|_| format!("unknown calculation {calculation:?}"))?;
             if !PERCENTILES.contains(&percentile_rank) {
-                return Err(format!("unknown rubric calculation {calculation:?}"));
+                return Err(format!("unknown calculation {calculation:?}"));
             }
             percentile(&sorted, percentile_rank)
         }
-        _ => return Err(format!("unknown rubric calculation {calculation:?}")),
+        _ => return Err(format!("unknown calculation {calculation:?}")),
     };
     if result.is_finite() {
         Ok(result)
     } else {
-        Err(format!("rubric calculation {calculation:?} is not finite"))
+        Err(format!("calculation {calculation:?} is not finite"))
     }
 }
 

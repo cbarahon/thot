@@ -268,11 +268,13 @@ pub(crate) async fn expedient_matrices(
     let tests = test_names(project.as_ref(), &expedients);
     let checks = check_names(project.as_ref(), &expedients);
     let rubrics = rubric_names(project.as_ref(), &expedients);
+    let evaluation = evaluation_names(project.as_ref(), &expedients);
     Ok(json!({
         "run_id": run_id,
         "expedient_x_test": test_matrix(&tests, &expedients),
         "expedient_x_check": check_matrix(&checks, &expedients, checks_in_progress),
         "expedient_x_rubric": rubric_matrix(&rubrics, &expedients, checks_in_progress),
+        "expedient_x_evaluation": evaluation_matrix(&evaluation, &expedients, checks_in_progress),
     }))
 }
 
@@ -394,6 +396,29 @@ fn rubric_names(project: Option<&VMActivityProject>, expedients: &[ExpedientData
                 .rubrics
                 .iter()
                 .map(|rubric| rubric.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    combined_names(configured, expedients, |report| {
+        rubric_results(report)
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row["name"].as_str().map(str::to_owned))
+            .collect()
+    })
+}
+
+fn evaluation_names(
+    project: Option<&VMActivityProject>,
+    expedients: &[ExpedientData],
+) -> Vec<String> {
+    let configured = project
+        .map(|project| {
+            project
+                .evaluation
+                .iter()
+                .map(|item| item.name.clone())
                 .collect()
         })
         .unwrap_or_default();
@@ -613,7 +638,7 @@ fn rubric_statistic(name: &str, expedients: &[ExpedientData], checks_in_progress
     let mut scores = Vec::new();
     let mut durations = Vec::new();
     for expedient in expedients {
-        let result = find_named_result(&expedient.report["evaluation"]["results"], name);
+        let result = find_named_result(rubric_results(&expedient.report), name);
         match result {
             Some(row) if !row["err"].is_null() => errors += 1,
             Some(row) if row["result"].as_f64().is_some() => {
@@ -766,6 +791,38 @@ fn rubric_matrix(
             let results = names
                 .iter()
                 .map(|name| {
+                    let row = find_named_result(rubric_results(&expedient.report), name);
+                    let value = row.map(rubric_matrix_marker).unwrap_or_else(|| {
+                        if checks_in_progress {
+                            "R".into()
+                        } else {
+                            String::new()
+                        }
+                    });
+                    (name.clone(), json!(value))
+                })
+                .collect::<serde_json::Map<_, _>>();
+            json!({
+                "expedient_id": expedient.expedient_id,
+                "delivery_filename": expedient.delivery_filename,
+                "values": results,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({"columns": names, "rows": rows})
+}
+
+fn evaluation_matrix(
+    names: &[String],
+    expedients: &[ExpedientData],
+    checks_in_progress: bool,
+) -> Value {
+    let rows = expedients
+        .iter()
+        .map(|expedient| {
+            let results = names
+                .iter()
+                .map(|name| {
                     let row = find_named_result(&expedient.report["evaluation"]["results"], name);
                     let value = row.map(rubric_matrix_marker).unwrap_or_else(|| {
                         if checks_in_progress {
@@ -785,6 +842,15 @@ fn rubric_matrix(
         })
         .collect::<Vec<_>>();
     json!({"columns": names, "rows": rows})
+}
+
+fn rubric_results(report: &Value) -> &Value {
+    if report["rubrics"].is_array() {
+        &report["rubrics"]
+    } else {
+        // Read expedients written before rubric results had their own top-level section.
+        &report["evaluation"]["results"]
+    }
 }
 
 fn test_matrix_marker(status: &str) -> &'static str {

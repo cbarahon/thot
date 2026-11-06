@@ -3,8 +3,8 @@ use regex::Regex;
 use serde_json_path::JsonPath;
 use std::collections::{BTreeMap, HashSet};
 use thot_core::{
-    LABELED_GREP_FILTER_PREFIX, LABELED_JSONPATH_FILTER_PREFIX, ProjectCheck, ProjectRubric,
-    ProjectTest, VMActivityProject,
+    LABELED_GREP_FILTER_PREFIX, LABELED_JSONPATH_FILTER_PREFIX, ProjectCheck, ProjectEvaluation,
+    ProjectRubric, ProjectTest, VMActivityProject,
 };
 
 pub fn parse_configuration(bytes: &[u8]) -> Result<VMActivityProject, String> {
@@ -26,6 +26,14 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
     }
     if project.timeout == 0 || project.timeout > 86_400 {
         return Err("timeout must be between 1 and 86400 seconds".into());
+    }
+    for (key, multiplier) in [
+        ("rubrics_multiplier", project.rubrics_multiplier),
+        ("evaluation_multiplier", project.evaluation_multiplier),
+    ] {
+        if !multiplier.is_finite() || multiplier <= 0.0 {
+            return Err(format!("{key} must be a finite number greater than zero"));
+        }
     }
     if project.tests.is_empty() {
         return Err("tests must contain at least one test".into());
@@ -73,7 +81,26 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
             return Err(format!("rubric name {:?} is repeated", rubric.name));
         }
     }
+    let mut evaluation_names = HashSet::new();
+    for item in &project.evaluation {
+        validate_evaluation(item, &rubric_names)?;
+        if !evaluation_names.insert(item.name.as_str()) {
+            return Err(format!("evaluation item name {:?} is repeated", item.name));
+        }
+    }
     Ok(())
+}
+
+/// Return configuration warnings that should be shown to the project owner.
+pub fn configuration_warnings(rubrics_multiplier: f64, evaluation_multiplier: f64) -> Vec<String> {
+    if rubrics_multiplier != 1.0 && evaluation_multiplier != 1.0 {
+        vec![format!(
+            "rubrics_multiplier ({}) and evaluation_multiplier ({}) are both different from 1; rubric marks are scaled first and evaluation marks are scaled again",
+            rubrics_multiplier, evaluation_multiplier
+        )]
+    } else {
+        Vec::new()
+    }
 }
 
 fn validate_rubric(rubric: &ProjectRubric, check_names: &HashSet<&str>) -> Result<(), String> {
@@ -155,6 +182,96 @@ fn validate_rubric(rubric: &ProjectRubric, check_names: &HashSet<&str>) -> Resul
         return Err(format!(
             "rubric {:?} calculation {:?} does not accept parameters",
             rubric.name, rubric.calculation
+        ));
+    }
+    Ok(())
+}
+
+fn validate_evaluation(
+    item: &ProjectEvaluation,
+    rubric_names: &HashSet<&str>,
+) -> Result<(), String> {
+    if item.name.trim().is_empty()
+        || !item
+            .name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(format!("invalid evaluation item name {:?}", item.name));
+    }
+    if item.rubrics.is_empty() {
+        return Err(format!(
+            "evaluation item {:?} must reference at least one rubric",
+            item.name
+        ));
+    }
+    for rubric in &item.rubrics {
+        if !rubric_names.contains(rubric.as_str()) {
+            return Err(format!(
+                "evaluation item {:?} references unknown rubric {:?}",
+                item.name, rubric
+            ));
+        }
+    }
+    if !crate::rubrics::supported_calculations().contains(&item.calculation.as_str()) {
+        return Err(format!(
+            "evaluation item {:?} has unknown calculation {:?}; supported calculations are {}",
+            item.name,
+            item.calculation,
+            crate::rubrics::supported_calculations().join(", ")
+        ));
+    }
+    let parameters = item.parameters.into_strings()?;
+    if item.calculation == "weighted_avg" {
+        if parameters.keys().any(|key| key != "weights") {
+            return Err(format!(
+                "weighted_avg evaluation item {:?} accepts only the weights parameter",
+                item.name
+            ));
+        }
+        let weights = parameters.get("weights").ok_or_else(|| {
+            format!(
+                "weighted_avg evaluation item {:?} requires parameter weights",
+                item.name
+            )
+        })?;
+        let weights = weights
+            .split(',')
+            .map(|weight| {
+                let value = weight.parse::<f64>().map_err(|_| {
+                    format!(
+                        "evaluation item {:?} has invalid weight {weight:?}",
+                        item.name
+                    )
+                })?;
+                if !value.is_finite() || value < 0.0 {
+                    return Err(format!(
+                        "evaluation item {:?} weights must be finite non-negative numbers",
+                        item.name
+                    ));
+                }
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if weights.len() != item.rubrics.len() {
+            return Err(format!(
+                "weighted_avg evaluation item {:?} has {} weights for {} rubrics",
+                item.name,
+                weights.len(),
+                item.rubrics.len()
+            ));
+        }
+        let total_weight = weights.iter().sum::<f64>();
+        if !total_weight.is_finite() || total_weight <= 0.0 {
+            return Err(format!(
+                "weighted_avg evaluation item {:?} weights must have a positive sum",
+                item.name
+            ));
+        }
+    } else if !parameters.is_empty() {
+        return Err(format!(
+            "evaluation item {:?} calculation {:?} does not accept parameters",
+            item.name, item.calculation
         ));
     }
     Ok(())

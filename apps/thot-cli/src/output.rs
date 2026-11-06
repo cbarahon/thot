@@ -100,6 +100,7 @@ fn result_field_order(object: &serde_json::Map<String, Value>) -> &'static [&'st
             "student",
             "test_results",
             "checks",
+            "rubrics",
             "evaluation",
         ]
     } else if object.contains_key("student_id") && object.contains_key("external_id") {
@@ -135,6 +136,19 @@ fn result_field_order(object: &serde_json::Map<String, Value>) -> &'static [&'st
             "duration_ms",
             "weights",
             "check_results",
+        ]
+    } else if object.contains_key("calculation") && object.contains_key("rubric_results") {
+        &[
+            "name",
+            "description",
+            "calculation",
+            "rubrics",
+            "result",
+            "err",
+            "date_time",
+            "duration_ms",
+            "weights",
+            "rubric_results",
         ]
     } else if object.contains_key("date_time") && object.contains_key("result") {
         &[

@@ -46,18 +46,24 @@ without assigned students are skipped. If there are no assigned pairs, the run
 completes without creating student expedients or running tests.
 
 `thot run checks [RUN_ID]` reevaluates configured checks against saved test
-results, recalculates configured rubrics, and updates each student's `checks`
-and `evaluation.results` sections. Without an ID, it selects the most recently
+results, recalculates configured rubrics and evaluation items, then updates each
+student's `checks`, `rubrics`, and `evaluation.results` sections. Without an ID, it selects the most recently
 created finished run. When run from the same unpacked project directory used
 by that run, it reads that directory's current `configuration.yaml`; otherwise
 it uses the run's saved configuration.
 It does not start or repeat tests. Check results replace the previous `checks`
-section, and rubric scores replace the previous evaluation results.
+section, rubric results and final evaluation marks replace their previous sections.
+
+`rubrics_multiplier` and `evaluation_multiplier` in `configuration.yaml` default
+to 1 and must be positive finite numbers. The first scales check values before
+rubric calculations; the second scales each final evaluation item. If both are
+set to values other than 1, run creation returns a warning because the scales
+compound.
 
 Successful run and expedient responses are printed as human-readable YAML,
-with stdout/stderr shown as literal blocks and test, check, and rubric fields
+with stdout/stderr shown as literal blocks and test, check, rubric, and evaluation fields
 ordered for scanning. Expedients show general run/delivery details, student
-data, tests, checks, then rubric results. Visible `\n` and `\t` sequences in these output fields
+data, tests, checks, rubric results, then final evaluation marks. Visible `\n` and `\t` sequences in these output fields
 are rendered as line breaks and tabs. The HTTP API continues to use JSON.
 Student commands also print structured output as YAML. The explicit
 `get students csv` form remains CSV.
@@ -86,7 +92,7 @@ two-line headers, and long values truncated as needed. Select `--csv`,
 success/failure or score distributions, pending/running counts, average and
 percentile execution times, and diagnostic signals for all expedients in the
 selected run. These commands default to the newest run.
-`thot report expedients [RUN_ID]` shows test, check, and rubric matrices; test/check cells
+`thot report expedients [RUN_ID]` shows test, check, rubric, and final evaluation matrices; test/check cells
 use `Ok`, `X`, `R`, or blank, and rubric marks are rounded to at most three
 decimal places. Matrix and statistics reports accept the same export flags.
 
