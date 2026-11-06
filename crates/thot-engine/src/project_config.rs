@@ -697,6 +697,19 @@ fn validate_test(test: &ProjectTest, global_timeout: u64) -> Result<(), String> 
                         .map_err(|error| format!("filter_grep label {label:?}: {error}"))?;
                 }
             }
+            FilterGrep::Items(items) => {
+                for item in items {
+                    match item {
+                        FilterExpression::Raw(expression) => {
+                            validate_grep_filter(&test.name, &expression)?;
+                        }
+                        FilterExpression::Labeled { label, expression } => {
+                            validate_grep_filter(&test.name, &expression)
+                                .map_err(|error| format!("filter_grep label {label:?}: {error}"))?;
+                        }
+                    }
+                }
+            }
         }
     }
     if let Some(encoded) = parameters.get("filter_jsonpath") {
@@ -710,6 +723,20 @@ fn validate_test(test: &ProjectTest, global_timeout: u64) -> Result<(), String> 
                 for (label, expression) in expressions {
                     validate_jsonpath_filter(&test.name, &expression)
                         .map_err(|error| format!("filter_jsonpath label {label:?}: {error}"))?;
+                }
+            }
+            FilterJsonPath::Items(items) => {
+                for item in items {
+                    match item {
+                        FilterExpression::Raw(expression) => {
+                            validate_jsonpath_filter(&test.name, &expression)?;
+                        }
+                        FilterExpression::Labeled { label, expression } => {
+                            validate_jsonpath_filter(&test.name, &expression).map_err(|error| {
+                                format!("filter_jsonpath label {label:?}: {error}")
+                            })?;
+                        }
+                    }
                 }
             }
         }
@@ -726,16 +753,41 @@ pub(crate) fn filter_expressions(encoded: &str) -> impl Iterator<Item = &str> {
 pub(crate) enum FilterGrep {
     Expressions(Vec<String>),
     Labeled(BTreeMap<String, String>),
+    Items(Vec<FilterExpression>),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum FilterExpression {
+    Raw(String),
+    Labeled { label: String, expression: String },
 }
 
 pub(crate) fn parse_filter_grep(encoded: &str) -> Result<FilterGrep, String> {
     if let Some(json) = encoded.strip_prefix(LABELED_GREP_FILTER_PREFIX) {
-        let expressions: BTreeMap<String, String> = serde_json::from_str(json)
+        let encoded: serde_json::Value = serde_json::from_str(json)
             .map_err(|error| format!("invalid labeled filter_grep mapping: {error}"))?;
-        if expressions.is_empty() {
-            return Err("filter_grep mapping must not be empty".into());
-        }
-        return Ok(FilterGrep::Labeled(expressions));
+        return match encoded {
+            serde_json::Value::Object(values) => {
+                let expressions = values
+                    .into_iter()
+                    .map(|(label, expression)| match expression {
+                        serde_json::Value::String(expression) => Ok((label, expression)),
+                        _ => Err(format!(
+                            "filter_grep label {label:?} must map to a string expression"
+                        )),
+                    })
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+                if expressions.is_empty() {
+                    return Err("filter_grep mapping must not be empty".into());
+                }
+                Ok(FilterGrep::Labeled(expressions))
+            }
+            serde_json::Value::Array(values) => Ok(FilterGrep::Items(parse_filter_items(
+                values,
+                "filter_grep",
+            )?)),
+            _ => Err("labeled filter_grep must encode a mapping or filter list".into()),
+        };
     }
     Ok(FilterGrep::Expressions(
         filter_expressions(encoded).map(str::to_owned).collect(),
@@ -758,20 +810,68 @@ fn validate_grep_filter(test_name: &str, expression: &str) -> Result<(), String>
 pub(crate) enum FilterJsonPath {
     Expressions(Vec<String>),
     Labeled(BTreeMap<String, String>),
+    Items(Vec<FilterExpression>),
 }
 
 pub(crate) fn parse_filter_jsonpath(encoded: &str) -> Result<FilterJsonPath, String> {
     if let Some(json) = encoded.strip_prefix(LABELED_JSONPATH_FILTER_PREFIX) {
-        let expressions: BTreeMap<String, String> = serde_json::from_str(json)
+        let encoded: serde_json::Value = serde_json::from_str(json)
             .map_err(|error| format!("invalid labeled filter_jsonpath mapping: {error}"))?;
-        if expressions.is_empty() {
-            return Err("filter_jsonpath mapping must not be empty".into());
-        }
-        return Ok(FilterJsonPath::Labeled(expressions));
+        return match encoded {
+            serde_json::Value::Object(values) => {
+                let expressions = values
+                    .into_iter()
+                    .map(|(label, expression)| match expression {
+                        serde_json::Value::String(expression) => Ok((label, expression)),
+                        _ => Err(format!(
+                            "filter_jsonpath label {label:?} must map to a string expression"
+                        )),
+                    })
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+                if expressions.is_empty() {
+                    return Err("filter_jsonpath mapping must not be empty".into());
+                }
+                Ok(FilterJsonPath::Labeled(expressions))
+            }
+            serde_json::Value::Array(values) => Ok(FilterJsonPath::Items(parse_filter_items(
+                values,
+                "filter_jsonpath",
+            )?)),
+            _ => Err("labeled filter_jsonpath must encode a mapping or filter list".into()),
+        };
     }
     Ok(FilterJsonPath::Expressions(
         filter_expressions(encoded).map(str::to_owned).collect(),
     ))
+}
+
+fn parse_filter_items(
+    values: Vec<serde_json::Value>,
+    parameter: &str,
+) -> Result<Vec<FilterExpression>, String> {
+    if values.is_empty() {
+        return Err(format!("{parameter} filter list must not be empty"));
+    }
+    values
+        .into_iter()
+        .map(|value| match value {
+            serde_json::Value::String(expression) => Ok(FilterExpression::Raw(expression)),
+            serde_json::Value::Object(object) if object.len() == 1 => {
+                let (label, expression) = object.into_iter().next().expect("one entry");
+                match expression {
+                    serde_json::Value::String(expression) => {
+                        Ok(FilterExpression::Labeled { label, expression })
+                    }
+                    _ => Err(format!(
+                        "{parameter} label {label:?} must map to a string expression"
+                    )),
+                }
+            }
+            _ => Err(format!(
+                "{parameter} filter list entries must be strings or one-label mappings"
+            )),
+        })
+        .collect()
 }
 
 fn validate_jsonpath_filter(test_name: &str, expression: &str) -> Result<(), String> {

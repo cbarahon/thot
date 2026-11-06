@@ -153,23 +153,82 @@ impl ParameterInput {
                 Value::Array(values)
                     if matches!(key.as_str(), "filter_grep" | "filter_jsonpath") =>
                 {
-                    let expressions = values
-                        .iter()
-                        .map(|value| match value {
+                    if values.is_empty() {
+                        return Err(format!("parameter {key:?} list must not be empty"));
+                    }
+                    let mut labels = BTreeMap::<String, String>::new();
+                    let mut sequence = Vec::with_capacity(values.len());
+                    let mut has_raw = false;
+                    let mut has_labeled = false;
+                    for value in values {
+                        match value {
                             Value::String(expression)
                                 if !expression.trim().is_empty() && !expression.contains('\0') =>
                             {
-                                Ok(expression.clone())
+                                has_raw = true;
+                                sequence.push(Value::String(expression.clone()));
                             }
-                            _ => Err(format!(
-                                "parameter {key:?} list entries must be non-empty strings without NUL characters"
-                            )),
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    if expressions.is_empty() {
-                        return Err(format!("parameter {key:?} list must not be empty"));
+                            Value::Object(entry) if entry.len() == 1 => {
+                                let (label, expression) = entry.iter().next().expect("one entry");
+                                if label.trim().is_empty() || label.contains('\0') {
+                                    return Err(format!(
+                                        "{key} labels must be non-empty strings without NUL characters"
+                                    ));
+                                }
+                                let Value::String(expression) = expression else {
+                                    return Err(format!(
+                                        "{key} label {label:?} must map to a non-empty expression string"
+                                    ));
+                                };
+                                if expression.trim().is_empty() || expression.contains('\0') {
+                                    return Err(format!(
+                                        "{key} label {label:?} must map to a non-empty expression string without NUL characters"
+                                    ));
+                                }
+                                if labels.insert(label.clone(), expression.clone()).is_some() {
+                                    return Err(format!("{key} label {label:?} is repeated"));
+                                }
+                                has_labeled = true;
+                                sequence.push(value.clone());
+                            }
+                            Value::Object(_) => {
+                                return Err(format!(
+                                    "parameter {key:?} labeled list entries must contain exactly one label and expression"
+                                ));
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "parameter {key:?} list entries must be expressions or one-label mappings"
+                                ));
+                            }
+                        }
                     }
-                    expressions.join("\0")
+                    if has_labeled && !has_raw {
+                        let encoded = serde_json::to_string(&labels)
+                            .map_err(|error| format!("cannot encode {key} mapping: {error}"))?;
+                        let prefix = if key == "filter_grep" {
+                            LABELED_GREP_FILTER_PREFIX
+                        } else {
+                            LABELED_JSONPATH_FILTER_PREFIX
+                        };
+                        format!("{prefix}{encoded}")
+                    } else if has_labeled {
+                        let encoded = serde_json::to_string(&sequence)
+                            .map_err(|error| format!("cannot encode {key} filter list: {error}"))?;
+                        let prefix = if key == "filter_grep" {
+                            LABELED_GREP_FILTER_PREFIX
+                        } else {
+                            LABELED_JSONPATH_FILTER_PREFIX
+                        };
+                        format!("{prefix}{encoded}")
+                    } else {
+                        values
+                            .iter()
+                            .map(Value::as_str)
+                            .collect::<Option<Vec<_>>>()
+                            .expect("validated string filters")
+                            .join("\0")
+                    }
                 }
                 Value::Object(values)
                     if matches!(key.as_str(), "filter_grep" | "filter_jsonpath") =>

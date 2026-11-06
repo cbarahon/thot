@@ -48,6 +48,16 @@ parameters:
 
 The resulting YAML stdout contains `os_release` and `kernel` keys, each holding its matching line or a list when a pattern matches several lines.
 
+When `parameters` uses the sequence-of-mappings form, labeled filters can also be written as a list of one-label mappings, matching the project's other parameter style:
+
+```yaml
+parameters:
+  - filter_grep:
+      - 'Disk info': 'vmdisk'
+      - 'Memory (Mb)': 'memory'
+      - 'NAT rule': 'Forwarding'
+```
+
 To show raw, unlabeled results instead, use a string or list:
 
 ```yaml
@@ -57,6 +67,8 @@ parameters:
 ```
 
 A filter list also stays unlabeled. For example, `filter_jsonpath: [$.hostname, $.kernel]` emits the selected values as a YAML list, and a list of grep expressions emits the union of matching lines.
+
+Labeled and unlabeled entries may be mixed in one filter list. Mixed lists preserve entry order and emit a YAML list: labeled entries appear as one-key mappings, and unlabeled entries appear as the raw filter result.
 
 ## Tests
 
