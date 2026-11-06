@@ -1,8 +1,11 @@
 //! Purpose: Parses and validates the root configuration.yaml project test model.
 use regex::Regex;
 use serde_json_path::JsonPath;
-use std::collections::HashSet;
-use thot_core::{ProjectCheck, ProjectRubric, ProjectTest, VMActivityProject};
+use std::collections::{BTreeMap, HashSet};
+use thot_core::{
+    LABELED_GREP_FILTER_PREFIX, LABELED_JSONPATH_FILTER_PREFIX, ProjectCheck, ProjectRubric,
+    ProjectTest, VMActivityProject,
+};
 
 pub fn parse_configuration(bytes: &[u8]) -> Result<VMActivityProject, String> {
     let project: VMActivityProject =
@@ -565,35 +568,33 @@ fn validate_test(test: &ProjectTest, global_timeout: u64) -> Result<(), String> 
     }
     let parameters = test.parameters.into_strings()?;
     if let Some(encoded) = parameters.get("filter_grep") {
-        for expression in filter_expressions(encoded) {
-            if expression.trim().is_empty() {
-                return Err(format!(
-                    "test {:?} filter_grep expressions must not be empty",
-                    test.name
-                ));
+        match parse_filter_grep(encoded)? {
+            FilterGrep::Expressions(expressions) => {
+                for expression in expressions {
+                    validate_grep_filter(&test.name, &expression)?;
+                }
             }
-            Regex::new(expression).map_err(|error| {
-                format!(
-                    "test {:?} has an invalid filter_grep expression {expression:?}: {error}",
-                    test.name
-                )
-            })?;
+            FilterGrep::Labeled(expressions) => {
+                for (label, expression) in expressions {
+                    validate_grep_filter(&test.name, &expression)
+                        .map_err(|error| format!("filter_grep label {label:?}: {error}"))?;
+                }
+            }
         }
     }
     if let Some(encoded) = parameters.get("filter_jsonpath") {
-        for expression in filter_expressions(encoded) {
-            if expression.trim().is_empty() {
-                return Err(format!(
-                    "test {:?} filter_jsonpath expressions must not be empty",
-                    test.name
-                ));
+        match parse_filter_jsonpath(encoded)? {
+            FilterJsonPath::Expressions(expressions) => {
+                for expression in expressions {
+                    validate_jsonpath_filter(&test.name, &expression)?;
+                }
             }
-            JsonPath::parse(expression).map_err(|error| {
-                format!(
-                    "test {:?} has an invalid filter_jsonpath expression {expression:?}: {error}",
-                    test.name
-                )
-            })?;
+            FilterJsonPath::Labeled(expressions) => {
+                for (label, expression) in expressions {
+                    validate_jsonpath_filter(&test.name, &expression)
+                        .map_err(|error| format!("filter_jsonpath label {label:?}: {error}"))?;
+                }
+            }
         }
     }
     validate_test_reference(&test.test_ref)
@@ -602,6 +603,72 @@ fn validate_test(test: &ProjectTest, global_timeout: u64) -> Result<(), String> 
 
 pub(crate) fn filter_expressions(encoded: &str) -> impl Iterator<Item = &str> {
     encoded.split('\0')
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum FilterGrep {
+    Expressions(Vec<String>),
+    Labeled(BTreeMap<String, String>),
+}
+
+pub(crate) fn parse_filter_grep(encoded: &str) -> Result<FilterGrep, String> {
+    if let Some(json) = encoded.strip_prefix(LABELED_GREP_FILTER_PREFIX) {
+        let expressions: BTreeMap<String, String> = serde_json::from_str(json)
+            .map_err(|error| format!("invalid labeled filter_grep mapping: {error}"))?;
+        if expressions.is_empty() {
+            return Err("filter_grep mapping must not be empty".into());
+        }
+        return Ok(FilterGrep::Labeled(expressions));
+    }
+    Ok(FilterGrep::Expressions(
+        filter_expressions(encoded).map(str::to_owned).collect(),
+    ))
+}
+
+fn validate_grep_filter(test_name: &str, expression: &str) -> Result<(), String> {
+    if expression.trim().is_empty() {
+        return Err(format!(
+            "test {test_name:?} filter_grep expressions must not be empty"
+        ));
+    }
+    Regex::new(expression).map_err(|error| {
+        format!("test {test_name:?} has an invalid filter_grep expression {expression:?}: {error}")
+    })?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum FilterJsonPath {
+    Expressions(Vec<String>),
+    Labeled(BTreeMap<String, String>),
+}
+
+pub(crate) fn parse_filter_jsonpath(encoded: &str) -> Result<FilterJsonPath, String> {
+    if let Some(json) = encoded.strip_prefix(LABELED_JSONPATH_FILTER_PREFIX) {
+        let expressions: BTreeMap<String, String> = serde_json::from_str(json)
+            .map_err(|error| format!("invalid labeled filter_jsonpath mapping: {error}"))?;
+        if expressions.is_empty() {
+            return Err("filter_jsonpath mapping must not be empty".into());
+        }
+        return Ok(FilterJsonPath::Labeled(expressions));
+    }
+    Ok(FilterJsonPath::Expressions(
+        filter_expressions(encoded).map(str::to_owned).collect(),
+    ))
+}
+
+fn validate_jsonpath_filter(test_name: &str, expression: &str) -> Result<(), String> {
+    if expression.trim().is_empty() {
+        return Err(format!(
+            "test {test_name:?} filter_jsonpath expressions must not be empty"
+        ));
+    }
+    JsonPath::parse(expression).map_err(|error| {
+        format!(
+            "test {test_name:?} has an invalid filter_jsonpath expression {expression:?}: {error}"
+        )
+    })?;
+    Ok(())
 }
 
 fn validate_test_reference(reference: &str) -> Result<(), String> {

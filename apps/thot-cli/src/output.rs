@@ -73,7 +73,40 @@ fn yaml_value(
 }
 
 fn result_field_order(object: &serde_json::Map<String, Value>) -> &'static [&'static str] {
-    if object.contains_key("test_result_id") || object.contains_key("test_reference") {
+    if object.contains_key("schema_version")
+        && object.contains_key("activity_name")
+        && object.contains_key("delivery_id")
+        && object.contains_key("expedient_id")
+    {
+        &[
+            "schema_version",
+            "activity_name",
+            "project_id",
+            "run_id",
+            "expedient_id",
+            "delivery_id",
+            "delivery_filename",
+            "shared_delivery_execution",
+            "started_at",
+            "finished_at",
+            "duration_ms",
+            "overall_status",
+            "execution_context",
+            "source",
+            "setup_error",
+            "orchestration_error",
+            "persistence_error",
+            "cleanup",
+            "student",
+            "test_results",
+            "checks",
+            "evaluation",
+        ]
+    } else if object.contains_key("student_id") && object.contains_key("external_id") {
+        &["student_id", "name", "surname", "email", "external_id"]
+    } else if object.contains_key("status") && object.contains_key("results") {
+        &["status", "results"]
+    } else if object.contains_key("test_result_id") || object.contains_key("test_reference") {
         &[
             "test_id",
             "test_reference",

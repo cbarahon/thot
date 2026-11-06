@@ -22,9 +22,30 @@ Test results record `test_id`, `test_reference`, `test_result_id`, `status`, `ex
 
 Configured parameters are scalar values unless a test describes a list. The engine passes project-provided test parameters as `key=value` arguments to external scripts. Use `timeout` at the test level to override the project's global timeout.
 
-Any test may set `filter_grep` to a regular expression, or `filter_jsonpath` to a JSONPath expression for JSON/YAML stdout. Either parameter accepts one expression or a list. Every grep expression scans all lines in the stdout entering the grep stage; matching lines are combined once in original order. Every JSONPath expression queries the complete original stdout document; selected values are combined in expression order. If both filters are set, JSONPath runs first and grep scans the complete resulting YAML text. Filter parameters are handled by the engine and are not passed to the test implementation. The expedient contains filtered stdout; each test's `stdout.txt` and `stderr.txt` artifacts retain the original process output. If a runtime filter cannot parse or select from stdout, the test result becomes an error and explains the failure in `stderr` and `diagnostics`; malformed filter expressions are rejected when the project is loaded.
+Any test may set `filter_grep` to a regular expression, or `filter_jsonpath` to a JSONPath expression for JSON/YAML stdout. Each accepts one expression or a list; either may also be a mapping from output labels to expressions. Every grep expression scans all lines in the stdout entering the grep stage; list matches are combined once in original order. In a labeled grep mapping, each regex independently selects matching lines: one match becomes a string and multiple matches become a list. Every JSONPath expression queries the complete original stdout document; list results are combined in expression order. A labeled mapping produces a YAML object with each label as a key; a label selecting one value gets that value, while multiple matches become a list. A labeled expression that selects no lines or values causes a filter error. If both filters are set, JSONPath runs first and grep scans the complete resulting YAML text. Filter parameters are handled by the engine and are not passed to the test implementation. The expedient contains filtered stdout; each test's `stdout.txt` and `stderr.txt` artifacts retain the original process output. If a runtime filter cannot parse or select from stdout, the test result becomes an error and explains the failure in `stderr` and `diagnostics`; malformed filter expressions are rejected when the project is loaded.
 
-For example, `filter_jsonpath: [$.hostname, $.kernel]` records both selected fields, while a list of `filter_grep` patterns retains lines matching any of them.
+For example, a labeled mapping keeps the meaning of selected values:
+
+```yaml
+parameters:
+  filter_jsonpath:
+    filesystem_size_bytes: $.linux_root_filesystem.filesystem_size_bytes
+    distribution: $.operating_system.distro
+    tvadmin: "$.users[?(@.username == 'tvadmin')]"
+```
+
+Alternatively, `filter_jsonpath: [$.hostname, $.kernel]` combines selected values into a list, while a list of `filter_grep` patterns retains lines matching any of them.
+
+Use a labeled grep mapping to keep matched output lines identifiable:
+
+```yaml
+parameters:
+  filter_grep:
+    os_release: '^NAME='
+    kernel: '^Linux version '
+```
+
+The resulting YAML stdout contains `os_release` and `kernel` keys, each holding its matching line or a list when a pattern matches several lines.
 
 ## Tests
 

@@ -56,7 +56,8 @@ section, and rubric scores replace the previous evaluation results.
 
 Successful run and expedient responses are printed as human-readable YAML,
 with stdout/stderr shown as literal blocks and test, check, and rubric fields
-ordered for scanning. Visible `\n` and `\t` sequences in these output fields
+ordered for scanning. Expedients show general run/delivery details, student
+data, tests, checks, then rubric results. Visible `\n` and `\t` sequences in these output fields
 are rendered as line breaks and tabs. The HTTP API continues to use JSON.
 Student commands also print structured output as YAML. The explicit
 `get students csv` form remains CSV.

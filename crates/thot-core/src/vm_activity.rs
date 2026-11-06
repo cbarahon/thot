@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Internal marker used to pass labeled JSONPath filters through scalar test parameters.
+pub const LABELED_JSONPATH_FILTER_PREFIX: &str = "\0THOT_JSONPATH_LABELS_V1\0";
+/// Internal marker used to pass labeled grep filters through scalar test parameters.
+pub const LABELED_GREP_FILTER_PREFIX: &str = "\0THOT_GREP_LABELS_V1\0";
+
 /// Project configuration stored as configuration.yaml in a .thot.zip/.thot.tgz archive.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VMActivityProject {
@@ -142,6 +147,37 @@ impl ParameterInput {
                         return Err(format!("parameter {key:?} list must not be empty"));
                     }
                     expressions.join("\0")
+                }
+                Value::Object(values)
+                    if matches!(key.as_str(), "filter_grep" | "filter_jsonpath") =>
+                {
+                    if values.is_empty() {
+                        return Err(format!("parameter {key:?} mapping must not be empty"));
+                    }
+                    for (label, value) in values {
+                        if label.trim().is_empty() || label.contains('\0') {
+                            return Err(format!(
+                                "{key} labels must be non-empty strings without NUL characters"
+                            ));
+                        }
+                        match value {
+                            Value::String(expression)
+                                if !expression.trim().is_empty() && !expression.contains('\0') => {}
+                            _ => {
+                                return Err(format!(
+                                    "{key} label {label:?} must map to a non-empty expression string"
+                                ));
+                            }
+                        }
+                    }
+                    let encoded = serde_json::to_string(values)
+                        .map_err(|error| format!("cannot encode {key} mapping: {error}"))?;
+                    let prefix = if key == "filter_grep" {
+                        LABELED_GREP_FILTER_PREFIX
+                    } else {
+                        LABELED_JSONPATH_FILTER_PREFIX
+                    };
+                    format!("{prefix}{encoded}")
                 }
                 Value::Array(_) | Value::Object(_) => {
                     return Err(format!("parameter {key:?} must be a scalar"));

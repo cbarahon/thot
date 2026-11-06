@@ -29,16 +29,14 @@ pub async fn execute_project_tests(
 
     for definition in &project.tests {
         let mut base_parameters = definition.parameters.into_strings()?;
-        let filter_grep = base_parameters.remove("filter_grep").map(|encoded| {
-            crate::project_config::filter_expressions(&encoded)
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        });
-        let filter_jsonpath = base_parameters.remove("filter_jsonpath").map(|encoded| {
-            crate::project_config::filter_expressions(&encoded)
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        });
+        let filter_grep = base_parameters
+            .remove("filter_grep")
+            .map(|encoded| crate::project_config::parse_filter_grep(&encoded))
+            .transpose()?;
+        let filter_jsonpath = base_parameters
+            .remove("filter_jsonpath")
+            .map(|encoded| crate::project_config::parse_filter_jsonpath(&encoded))
+            .transpose()?;
         let repeats = definition.repeat;
         let mut all_passed = true;
         for index in 0..repeats {
@@ -132,11 +130,9 @@ pub async fn execute_project_tests(
             test_result_store::persist_output(&record_dir, &raw_stdout, &raw_stderr)
                 .map_err(|e| format!("cannot persist test output: {e}"))?;
             if outcome.status != TestStatus::Skipped {
-                if let Err(error) = filter_stdout(
-                    &mut outcome,
-                    filter_grep.as_deref(),
-                    filter_jsonpath.as_deref(),
-                ) {
+                if let Err(error) =
+                    filter_stdout(&mut outcome, filter_grep.as_ref(), filter_jsonpath.as_ref())
+                {
                     outcome.status = TestStatus::Error;
                     outcome.stdout.clear();
                     if !outcome.stderr.is_empty() && !outcome.stderr.ends_with('\n') {
@@ -195,49 +191,110 @@ pub async fn execute_project_tests(
 
 fn filter_stdout(
     outcome: &mut TestOutcome,
-    filter_grep: Option<&[String]>,
-    filter_jsonpath: Option<&[String]>,
+    filter_grep: Option<&crate::project_config::FilterGrep>,
+    filter_jsonpath: Option<&crate::project_config::FilterJsonPath>,
 ) -> Result<(), String> {
-    if let Some(expressions) = filter_jsonpath {
+    if let Some(filter) = filter_jsonpath {
         let document =
             crate::checks::parse_document(&Value::String(outcome.stdout.clone()), "stdout")?;
-        let mut selected = Vec::new();
-        for expression in expressions {
-            let path = JsonPath::parse(expression).map_err(|error| {
-                format!("invalid filter_jsonpath expression {expression:?}: {error}")
-            })?;
-            selected.extend(path.query(&document).all().into_iter().cloned());
-        }
-        let filtered = match selected.len() {
-            0 => {
-                return Err(format!(
-                    "filter_jsonpath expressions {expressions:?} selected no values"
-                ));
+        let filtered = match filter {
+            crate::project_config::FilterJsonPath::Expressions(expressions) => {
+                let mut selected = Vec::new();
+                for expression in expressions {
+                    let path = JsonPath::parse(expression).map_err(|error| {
+                        format!("invalid filter_jsonpath expression {expression:?}: {error}")
+                    })?;
+                    selected.extend(path.query(&document).all().into_iter().cloned());
+                }
+                match selected.len() {
+                    0 => {
+                        return Err(format!(
+                            "filter_jsonpath expressions {expressions:?} selected no values"
+                        ));
+                    }
+                    1 => selected.into_iter().next().expect("one selected value"),
+                    _ => Value::Array(selected),
+                }
             }
-            1 => selected.into_iter().next().expect("one selected value"),
-            _ => Value::Array(selected),
+            crate::project_config::FilterJsonPath::Labeled(expressions) => {
+                let mut selected = serde_json::Map::new();
+                for (label, expression) in expressions {
+                    let path = JsonPath::parse(expression).map_err(|error| {
+                        format!("invalid filter_jsonpath expression for label {label:?}: {error}")
+                    })?;
+                    let values = path
+                        .query(&document)
+                        .all()
+                        .into_iter()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let value = match values.len() {
+                        0 => {
+                            return Err(format!(
+                                "filter_jsonpath label {label:?} selected no values with {expression:?}"
+                            ));
+                        }
+                        1 => values.into_iter().next().expect("one selected value"),
+                        _ => Value::Array(values),
+                    };
+                    selected.insert(label.clone(), value);
+                }
+                Value::Object(selected)
+            }
         };
         outcome.stdout = serde_yaml::to_string(&filtered)
             .map_err(|error| format!("cannot serialize filter_jsonpath result as YAML: {error}"))?;
     }
-    if let Some(expressions) = filter_grep {
-        let regexes = expressions
-            .iter()
-            .map(|expression| {
-                Regex::new(expression).map_err(|error| {
-                    format!("invalid filter_grep expression {expression:?}: {error}")
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        outcome.stdout = outcome
-            .stdout
-            .split_inclusive('\n')
-            .filter(|line| {
-                regexes
+    if let Some(filter) = filter_grep {
+        match filter {
+            crate::project_config::FilterGrep::Expressions(expressions) => {
+                let regexes = expressions
                     .iter()
-                    .any(|regex| regex.is_match(line.trim_end_matches(['\r', '\n'])))
-            })
-            .collect();
+                    .map(|expression| {
+                        Regex::new(expression).map_err(|error| {
+                            format!("invalid filter_grep expression {expression:?}: {error}")
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                outcome.stdout = outcome
+                    .stdout
+                    .split_inclusive('\n')
+                    .filter(|line| {
+                        regexes
+                            .iter()
+                            .any(|regex| regex.is_match(line.trim_end_matches(['\r', '\n'])))
+                    })
+                    .collect();
+            }
+            crate::project_config::FilterGrep::Labeled(expressions) => {
+                let mut selected = serde_json::Map::new();
+                for (label, expression) in expressions {
+                    let regex = Regex::new(expression).map_err(|error| {
+                        format!("invalid filter_grep expression for label {label:?}: {error}")
+                    })?;
+                    let lines = outcome
+                        .stdout
+                        .lines()
+                        .filter(|line| regex.is_match(line))
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    let value = match lines.len() {
+                        0 => {
+                            return Err(format!(
+                                "filter_grep label {label:?} selected no lines with {expression:?}"
+                            ));
+                        }
+                        1 => Value::String(lines.into_iter().next().expect("one selected line")),
+                        _ => Value::Array(lines.into_iter().map(Value::String).collect()),
+                    };
+                    selected.insert(label.clone(), value);
+                }
+                outcome.stdout =
+                    serde_yaml::to_string(&Value::Object(selected)).map_err(|error| {
+                        format!("cannot serialize labeled filter_grep result as YAML: {error}")
+                    })?;
+            }
+        }
     }
     Ok(())
 }

@@ -77,7 +77,8 @@ pub mod vm_activity;
 pub use deliveries::DeliveryIdentity as Delivery;
 pub use test_results::TestResult as NormalizedTestResult;
 pub use vm_activity::{
-    ParameterInput, ProjectCheck, ProjectRubric, ProjectTest, VMActivity, VMActivityProject,
+    LABELED_GREP_FILTER_PREFIX, LABELED_JSONPATH_FILTER_PREFIX, ParameterInput, ProjectCheck,
+    ProjectRubric, ProjectTest, VMActivity, VMActivityProject,
 };
 
 /// Request accepted by the POC run-creation endpoint.
