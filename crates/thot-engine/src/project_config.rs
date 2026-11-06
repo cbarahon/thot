@@ -563,8 +563,45 @@ fn validate_test(test: &ProjectTest, global_timeout: u64) -> Result<(), String> 
     if test.requirements.iter().any(|item| item == &test.name) {
         return Err(format!("test {:?} cannot require itself", test.name));
     }
+    let parameters = test.parameters.into_strings()?;
+    if let Some(encoded) = parameters.get("filter_grep") {
+        for expression in filter_expressions(encoded) {
+            if expression.trim().is_empty() {
+                return Err(format!(
+                    "test {:?} filter_grep expressions must not be empty",
+                    test.name
+                ));
+            }
+            Regex::new(expression).map_err(|error| {
+                format!(
+                    "test {:?} has an invalid filter_grep expression {expression:?}: {error}",
+                    test.name
+                )
+            })?;
+        }
+    }
+    if let Some(encoded) = parameters.get("filter_jsonpath") {
+        for expression in filter_expressions(encoded) {
+            if expression.trim().is_empty() {
+                return Err(format!(
+                    "test {:?} filter_jsonpath expressions must not be empty",
+                    test.name
+                ));
+            }
+            JsonPath::parse(expression).map_err(|error| {
+                format!(
+                    "test {:?} has an invalid filter_jsonpath expression {expression:?}: {error}",
+                    test.name
+                )
+            })?;
+        }
+    }
     validate_test_reference(&test.test_ref)
         .map_err(|reason| format!("test {:?}: {reason}", test.name))
+}
+
+pub(crate) fn filter_expressions(encoded: &str) -> impl Iterator<Item = &str> {
+    encoded.split('\0')
 }
 
 fn validate_test_reference(reference: &str) -> Result<(), String> {

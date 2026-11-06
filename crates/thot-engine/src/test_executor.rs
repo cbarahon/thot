@@ -1,6 +1,8 @@
 //! Purpose: Executes configured tests in order with prerequisites, repeats, and result persistence.
 use chrono::Utc;
+use regex::Regex;
 use serde_json::{Value, json};
+use serde_json_path::JsonPath;
 use std::{collections::HashMap, path::Path, time::Instant};
 use thot_core::{VMActivityProject, test_results::TestStatus};
 
@@ -26,7 +28,17 @@ pub async fn execute_project_tests(
     let mut vm_isolation_error: Option<String> = None;
 
     for definition in &project.tests {
-        let base_parameters = definition.parameters.into_strings()?;
+        let mut base_parameters = definition.parameters.into_strings()?;
+        let filter_grep = base_parameters.remove("filter_grep").map(|encoded| {
+            crate::project_config::filter_expressions(&encoded)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        });
+        let filter_jsonpath = base_parameters.remove("filter_jsonpath").map(|encoded| {
+            crate::project_config::filter_expressions(&encoded)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        });
         let repeats = definition.repeat;
         let mut all_passed = true;
         for index in 0..repeats {
@@ -51,7 +63,7 @@ pub async fn execute_project_tests(
             let (record_dir, artifacts_dir) =
                 test_result_store::paths_for_test(report_dir, &input.filename, &test_name)
                     .map_err(|e| format!("cannot create test record directory: {e}"))?;
-            let outcome = if let Some(requirement) = unmet {
+            let mut outcome = if let Some(requirement) = unmet {
                 TestOutcome::skipped(format!(
                     "required test {requirement:?} did not pass all repetitions"
                 ))
@@ -102,8 +114,6 @@ pub async fn execute_project_tests(
                     }
                 }
             }
-            let passed = outcome.status == TestStatus::Passed;
-            all_passed &= passed;
             let ended = Utc::now();
             let result_id = format!("result-{}", uuid::Uuid::new_v4().simple());
             let evidence = outcome
@@ -117,6 +127,28 @@ pub async fn execute_project_tests(
                         .into_owned()
                 })
                 .collect::<Vec<_>>();
+            let raw_stdout = outcome.stdout.clone();
+            let raw_stderr = outcome.stderr.clone();
+            test_result_store::persist_output(&record_dir, &raw_stdout, &raw_stderr)
+                .map_err(|e| format!("cannot persist test output: {e}"))?;
+            if outcome.status != TestStatus::Skipped {
+                if let Err(error) = filter_stdout(
+                    &mut outcome,
+                    filter_grep.as_deref(),
+                    filter_jsonpath.as_deref(),
+                ) {
+                    outcome.status = TestStatus::Error;
+                    outcome.stdout.clear();
+                    if !outcome.stderr.is_empty() && !outcome.stderr.ends_with('\n') {
+                        outcome.stderr.push('\n');
+                    }
+                    outcome
+                        .stderr
+                        .push_str(&format!("stdout filter failed: {error}"));
+                    outcome.diagnostics = format!("stdout filter failed: {error}");
+                }
+            }
+            all_passed &= outcome.status == TestStatus::Passed;
             let row = json!({
                 "test_result_id": result_id,
                 "test_id": test_name,
@@ -129,15 +161,8 @@ pub async fn execute_project_tests(
                 "stdout": outcome.stdout,
                 "stderr": outcome.stderr,
                 "diagnostics": outcome.diagnostics,
-                "observation": outcome.observation,
                 "evidence": evidence
             });
-            test_result_store::persist_output(
-                &record_dir,
-                row["stdout"].as_str().unwrap_or(""),
-                row["stderr"].as_str().unwrap_or(""),
-            )
-            .map_err(|e| format!("cannot persist test output: {e}"))?;
             report["test_results"]
                 .as_array_mut()
                 .ok_or("expedient has no test_results array")?
@@ -164,6 +189,55 @@ pub async fn execute_project_tests(
                 .map_err(|e| format!("cannot persist expedient after test {test_name}: {e}"))?;
         }
         prior.insert(definition.name.clone(), vec![all_passed]);
+    }
+    Ok(())
+}
+
+fn filter_stdout(
+    outcome: &mut TestOutcome,
+    filter_grep: Option<&[String]>,
+    filter_jsonpath: Option<&[String]>,
+) -> Result<(), String> {
+    if let Some(expressions) = filter_jsonpath {
+        let document =
+            crate::checks::parse_document(&Value::String(outcome.stdout.clone()), "stdout")?;
+        let mut selected = Vec::new();
+        for expression in expressions {
+            let path = JsonPath::parse(expression).map_err(|error| {
+                format!("invalid filter_jsonpath expression {expression:?}: {error}")
+            })?;
+            selected.extend(path.query(&document).all().into_iter().cloned());
+        }
+        let filtered = match selected.len() {
+            0 => {
+                return Err(format!(
+                    "filter_jsonpath expressions {expressions:?} selected no values"
+                ));
+            }
+            1 => selected.into_iter().next().expect("one selected value"),
+            _ => Value::Array(selected),
+        };
+        outcome.stdout = serde_yaml::to_string(&filtered)
+            .map_err(|error| format!("cannot serialize filter_jsonpath result as YAML: {error}"))?;
+    }
+    if let Some(expressions) = filter_grep {
+        let regexes = expressions
+            .iter()
+            .map(|expression| {
+                Regex::new(expression).map_err(|error| {
+                    format!("invalid filter_grep expression {expression:?}: {error}")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        outcome.stdout = outcome
+            .stdout
+            .split_inclusive('\n')
+            .filter(|line| {
+                regexes
+                    .iter()
+                    .any(|regex| regex.is_match(line.trim_end_matches(['\r', '\n'])))
+            })
+            .collect();
     }
     Ok(())
 }

@@ -83,6 +83,12 @@ impl ParameterInput {
         let mut result = BTreeMap::new();
         for (key, value) in entries {
             let text = match value {
+                Value::String(value)
+                    if matches!(key.as_str(), "filter_grep" | "filter_jsonpath")
+                        && value.contains('\0') =>
+                {
+                    return Err(format!("parameter {key:?} must not contain NUL characters"));
+                }
                 Value::String(value) => value.clone(),
                 Value::Number(value) => value.to_string(),
                 Value::Bool(value) => value.to_string(),
@@ -115,6 +121,27 @@ impl ParameterInput {
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     weights.join(",")
+                }
+                Value::Array(values)
+                    if matches!(key.as_str(), "filter_grep" | "filter_jsonpath") =>
+                {
+                    let expressions = values
+                        .iter()
+                        .map(|value| match value {
+                            Value::String(expression)
+                                if !expression.trim().is_empty() && !expression.contains('\0') =>
+                            {
+                                Ok(expression.clone())
+                            }
+                            _ => Err(format!(
+                                "parameter {key:?} list entries must be non-empty strings without NUL characters"
+                            )),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if expressions.is_empty() {
+                        return Err(format!("parameter {key:?} list must not be empty"));
+                    }
+                    expressions.join("\0")
                 }
                 Value::Array(_) | Value::Object(_) => {
                     return Err(format!("parameter {key:?} must be a scalar"));

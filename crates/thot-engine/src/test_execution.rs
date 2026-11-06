@@ -30,6 +30,7 @@ pub struct TestOutcome {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub diagnostics: String,
+    /// Adapter metadata used by the executor but omitted from persisted test result rows.
     pub observation: serde_json::Value,
     pub evidence: Vec<String>,
 }

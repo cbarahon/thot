@@ -1,7 +1,6 @@
 //! Purpose: Defines normalized test statuses and result data shared by runners and reports.
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestResult {
@@ -15,7 +14,6 @@ pub struct TestResult {
     pub end_time: DateTime<Utc>,
     pub duration: f64,
     pub diagnostics: String,
-    pub observation: HashMap<String, serde_json::Value>,
     pub evidence: Vec<String>,
     #[serde(default)]
     pub stdout: String,

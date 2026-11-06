@@ -55,8 +55,10 @@ It does not start or repeat tests. Check results replace the previous `checks`
 section, and rubric scores replace the previous evaluation results.
 
 Successful run and expedient responses are printed as human-readable YAML,
-including multiline `stdout` and `stderr` fields. The HTTP API continues to use
-JSON. Student commands also print structured output as YAML. The explicit
+with stdout/stderr shown as literal blocks and test, check, and rubric fields
+ordered for scanning. Visible `\n` and `\t` sequences in these output fields
+are rendered as line breaks and tabs. The HTTP API continues to use JSON.
+Student commands also print structured output as YAML. The explicit
 `get students csv` form remains CSV.
 
 `thot run status` without an ID requires exactly one queued, running, or

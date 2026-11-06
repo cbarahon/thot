@@ -9,6 +9,10 @@ tests:
       - vm_name: linux_competition
       - vbox_group: /linux_competition
       - vm_path: ./vms
+      - filter_grep:
+          - '(?m)^memory='
+          - '^  vmdisk1\t'
+          - '^Forwarding\('
   - name: start_time
     test: extern/tests/vm_start_time.py
     timeout: 480
@@ -85,21 +89,21 @@ checks:
       - value: 2600000000
   - name: ram_size_ok
     description: The imported VM has at most 260 MB of configured RAM.
-    check: yaml_extract
+    check: regex_extract
     test: import_ova
-    property: observation
+    property: stdout
     parameters:
-      - JSONPath: $.vm_configuration.memory
+      - regex: 'memory=([0-9]+)'
       - data_type: number
       - condition: '<='
       - value: 260
   - name: ram_size_small
     description: The imported VM has at most 512 MB of configured RAM.
-    check: yaml_extract
+    check: regex_extract
     test: import_ova
-    property: observation
+    property: stdout
     parameters:
-      - JSONPath: $.vm_configuration.memory
+      - regex: 'memory=([0-9]+)'
       - data_type: number
       - condition: '<='
       - value: 525

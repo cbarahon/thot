@@ -614,7 +614,7 @@ pub async fn execute_delivery(
         "SSH-001",
         "CLEAN-001",
     ] {
-        report["test_results"].as_array_mut().unwrap().push(json!({"test_result_id":ids[test],"test_id":test,"status":"not_run","start_time":null,"end_time":null,"duration_ms":null,"diagnostics":null,"observation":{},"evidence":[]}));
+        report["test_results"].as_array_mut().unwrap().push(json!({"test_result_id":ids[test],"test_id":test,"status":"not_run","start_time":null,"end_time":null,"duration_ms":null,"diagnostics":null,"evidence":[]}));
     }
     let vm_name = format!(
         "thot-{}-{}",
@@ -2058,7 +2058,6 @@ fn set_result(
                 }
             }
             result["evidence"] = json!(evidence);
-            result["observation"] = observation;
             if let Some(error) = error {
                 result["diagnostics"] = json!(error);
             }
