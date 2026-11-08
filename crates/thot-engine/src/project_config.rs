@@ -41,6 +41,7 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
 
     let mut names = HashSet::new();
     let mut prior_names = HashSet::new();
+    let mut prior_repeats = BTreeMap::new();
     for test in &project.tests {
         validate_test(test, project.timeout)?;
         if !names.insert(test.name.as_str()) {
@@ -65,7 +66,11 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
         ) {
             validate_stats_test(test, &test_parameters, &prior_names)?;
         }
+        if matches!(test.test_ref.as_str(), "aggr/select" | "aggr/join") {
+            validate_aggr_test(test, &test_parameters, &prior_names, &prior_repeats)?;
+        }
         prior_names.insert(test.name.as_str());
+        prior_repeats.insert(test.name.as_str(), test.repeat);
     }
     let mut check_names = HashSet::new();
     for check in &project.checks {
@@ -354,6 +359,146 @@ fn validate_stats_test(
     Ok(())
 }
 
+fn validate_aggr_test(
+    test: &ProjectTest,
+    parameters: &BTreeMap<String, String>,
+    prior_tests: &HashSet<&str>,
+    prior_repeats: &BTreeMap<&str, usize>,
+) -> Result<(), String> {
+    let selectors = parameters
+        .get("tests")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("aggregation test {:?} requires parameter tests", test.name))?;
+    let selected = selectors
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Err(format!(
+            "aggregation test {:?} must select at least one earlier test",
+            test.name
+        ));
+    }
+    for selector in &selected {
+        let valid_repetition = selector
+            .rsplit_once('_')
+            .filter(|(_, suffix)| {
+                suffix.len() >= 2 && suffix.bytes().all(|byte| byte.is_ascii_digit())
+            })
+            .and_then(|(base, suffix)| suffix.parse::<usize>().ok().map(|index| (base, index)))
+            .is_some_and(|(base, index)| {
+                index > 0
+                    && prior_repeats
+                        .get(base)
+                        .is_some_and(|repeat| index <= *repeat)
+            });
+        if !prior_tests.contains(selector) && !valid_repetition {
+            return Err(format!(
+                "aggregation test {:?} selects {:?}, which must name an earlier configured test",
+                test.name, selector
+            ));
+        }
+    }
+
+    let allowed: &[&str] = if test.test_ref == "aggr/select" {
+        &["tests", "property", "condition", "value"]
+    } else {
+        &[
+            "tests",
+            "filter_property",
+            "filter_condition",
+            "filter_value",
+        ]
+    };
+    if let Some(unknown) = parameters
+        .keys()
+        .find(|key| !allowed.contains(&key.as_str()))
+    {
+        return Err(format!(
+            "aggregation test {:?} does not support parameter {:?}",
+            test.name, unknown
+        ));
+    }
+
+    if test.test_ref == "aggr/select" {
+        let property = parameters
+            .get("property")
+            .map(String::as_str)
+            .unwrap_or("status");
+        let condition = parameters
+            .get("condition")
+            .map(String::as_str)
+            .unwrap_or("==");
+        if property.trim().is_empty() || property.split('.').any(str::is_empty) {
+            return Err(format!(
+                "aggregation test {:?} property must use non-empty dot-separated path components",
+                test.name
+            ));
+        }
+        crate::checks::validate_condition_syntax(condition, Some("text"))
+            .map_err(|error| format!("aggregation test {:?}: {error}", test.name))?;
+        if !is_predicate_condition(condition)
+            && parameters
+                .get("value")
+                .is_none_or(|value| value.trim().is_empty())
+            && !(property == "status" && condition == "==")
+        {
+            return Err(format!(
+                "aggregation test {:?} requires parameter value for condition {:?}",
+                test.name, condition
+            ));
+        }
+    } else {
+        let has_filter = ["filter_property", "filter_condition", "filter_value"]
+            .iter()
+            .any(|key| parameters.contains_key(*key));
+        if has_filter {
+            let property = parameters
+                .get("filter_property")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "aggregation test {:?} filtering requires filter_property",
+                        test.name
+                    )
+                })?;
+            if property.split('.').any(str::is_empty) {
+                return Err(format!(
+                    "aggregation test {:?} filter_property must use non-empty dot-separated path components",
+                    test.name
+                ));
+            }
+            let condition = parameters
+                .get("filter_condition")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "aggregation test {:?} filtering requires filter_condition",
+                        test.name
+                    )
+                })?;
+            crate::checks::validate_condition_syntax(condition, Some("text"))
+                .map_err(|error| format!("aggregation test {:?}: {error}", test.name))?;
+            if !is_predicate_condition(condition)
+                && parameters
+                    .get("filter_value")
+                    .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(format!(
+                    "aggregation test {:?} requires filter_value for condition {:?}",
+                    test.name, condition
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_predicate_condition(condition: &str) -> bool {
+    condition.starts_with("r'") || condition.starts_with("json'")
+}
+
 fn validate_check(
     check: &ProjectCheck,
     tests: &[ProjectTest],
@@ -545,15 +690,8 @@ fn validate_stat_parameters(
         .get("condition")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("check {:?} requires parameter condition", check.name))?;
-    let valid_condition = matches!(condition.as_str(), "<" | "<=" | ">" | ">=" | "==" | "!=")
-        || (condition == "contains" && data_type == "text");
-    if !valid_condition {
-        return Err(format!(
-            "check {:?} condition must be <, <=, >, >=, ==, !=, or contains for text",
-            check.name
-        ));
-    }
-    Ok(())
+    crate::checks::validate_condition_syntax(condition, Some(data_type))
+        .map_err(|error| format!("check {:?}: {error}", check.name))
 }
 
 fn validate_extract_property(check: &ProjectCheck, check_type: &str) -> Result<(), String> {
@@ -578,21 +716,6 @@ fn validate_comparison_parameters(
     parameters: &std::collections::BTreeMap<String, String>,
     check_type: &str,
 ) -> Result<(), String> {
-    let data_type = parameters
-        .get("data_type")
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            format!(
-                "check {:?} using {check_type} requires parameter data_type",
-                check.name
-            )
-        })?;
-    if !matches!(data_type.as_str(), "number" | "text" | "date" | "datetime") {
-        return Err(format!(
-            "check {:?} data_type must be number, text, date, or datetime",
-            check.name
-        ));
-    }
     let condition = parameters
         .get("condition")
         .filter(|value| !value.is_empty())
@@ -602,23 +725,35 @@ fn validate_comparison_parameters(
                 check.name
             )
         })?;
-    let valid_condition = matches!(condition.as_str(), "<" | "<=" | ">" | ">=" | "==" | "!=")
-        || (condition == "contains" && data_type == "text");
-    if !valid_condition {
+    let data_type = parameters
+        .get("data_type")
+        .filter(|value| !value.is_empty());
+    if let Some(data_type) = data_type
+        && !matches!(data_type.as_str(), "number" | "text" | "date" | "datetime")
+    {
         return Err(format!(
-            "check {:?} condition must be <, <=, >, >=, ==, !=, or contains for text",
+            "check {:?} data_type must be number, text, date, or datetime",
             check.name
         ));
     }
-    let value = parameters
-        .get("value")
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            format!(
-                "check {:?} using {check_type} requires parameter value",
-                check.name
-            )
-        })?;
+    crate::checks::validate_condition_syntax(condition, data_type.map(String::as_str))
+        .map_err(|error| format!("check {:?}: {error}", check.name))?;
+    if !is_predicate_condition(condition) && data_type.is_none() {
+        return Err(format!(
+            "check {:?} using {check_type} requires parameter data_type",
+            check.name
+        ));
+    }
+    let value = parameters.get("value").filter(|value| !value.is_empty());
+    if !is_predicate_condition(condition) && value.is_none() {
+        return Err(format!(
+            "check {:?} using {check_type} requires parameter value",
+            check.name
+        ));
+    }
+    let (Some(data_type), Some(value)) = (data_type, value) else {
+        return Ok(());
+    };
     match data_type.as_str() {
         "number" => {
             let parsed = value

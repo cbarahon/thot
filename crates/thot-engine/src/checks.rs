@@ -122,9 +122,9 @@ fn yaml_extract_check(
         .ok_or("yaml_extract check is missing parameter \"JSONPath\"")?;
     let path = JsonPath::parse(expression)
         .map_err(|error| format!("invalid yaml_extract JSONPath: {error}"))?;
-    let data_type = required_parameter(parameters, "data_type")?;
     let condition = required_parameter(parameters, "condition")?;
-    let expected = required_parameter(parameters, "value")?;
+    let data_type = parameters.get("data_type").map(String::as_str);
+    let expected = parameters.get("value").map(String::as_str);
 
     let results = report["test_results"]
         .as_array()
@@ -152,7 +152,7 @@ fn yaml_extract_check(
                 "yaml_extract JSONPath {expression:?} selected a non-scalar value"
             ));
         };
-        if !compare_captured(&captured, expected, data_type, condition)? {
+        if !evaluate_condition(&Value::String(captured), expected, data_type, condition)? {
             return Ok(0);
         }
     }
@@ -227,9 +227,9 @@ fn regex_extract_check(
         .as_deref()
         .ok_or("regex_extract check has no property")?;
     let regex_text = required_parameter(parameters, "regex")?;
-    let data_type = required_parameter(parameters, "data_type")?;
     let condition = required_parameter(parameters, "condition")?;
-    let expected = required_parameter(parameters, "value")?;
+    let data_type = parameters.get("data_type").map(String::as_str);
+    let expected = parameters.get("value").map(String::as_str);
     let regex = Regex::new(regex_text).map_err(|error| format!("invalid regex: {error}"))?;
     if regex.captures_len() < 2 {
         return Err("regex_extract expression must contain a capture group".into());
@@ -263,7 +263,12 @@ fn regex_extract_check(
         let Some(captured) = captures.get(1) else {
             return Err("regex_extract expression did not produce capture group 1".into());
         };
-        if !compare_captured(captured.as_str(), expected, data_type, condition)? {
+        if !evaluate_condition(
+            &Value::String(captured.as_str().to_owned()),
+            expected,
+            data_type,
+            condition,
+        )? {
             return Ok(0);
         }
     }
@@ -317,6 +322,106 @@ pub(crate) fn property_text(value: &Value) -> Option<String> {
 }
 
 pub(crate) fn compare_captured(
+    captured: &str,
+    expected: &str,
+    data_type: &str,
+    condition: &str,
+) -> Result<bool, String> {
+    evaluate_condition(
+        &Value::String(captured.to_owned()),
+        Some(expected),
+        Some(data_type),
+        condition,
+    )
+}
+
+/// Apply a comparison or a predicate condition to a value from a test result.
+pub(crate) fn evaluate_condition(
+    candidate: &Value,
+    expected: Option<&str>,
+    data_type: Option<&str>,
+    condition: &str,
+) -> Result<bool, String> {
+    if let Some(expression) = condition_expression(condition, "r'") {
+        let regex =
+            Regex::new(expression).map_err(|error| format!("invalid condition regex: {error}"))?;
+        let candidate = property_text(candidate).unwrap_or_else(|| {
+            serde_yaml::to_string(candidate).unwrap_or_else(|_| candidate.to_string())
+        });
+        return Ok(regex.is_match(&candidate));
+    }
+    if let Some(expression) = condition_expression(condition, "json'") {
+        let document = parse_document(candidate, "condition candidate")?;
+        let path = JsonPath::parse(expression)
+            .map_err(|error| format!("invalid condition JSONPath: {error}"))?;
+        return Ok(!path.query(&document).all().is_empty());
+    }
+    let expected =
+        expected.ok_or_else(|| format!("condition {condition:?} requires a comparison value"))?;
+    let captured =
+        property_text(candidate).ok_or("comparison condition requires a scalar candidate value")?;
+    let inferred_type;
+    let data_type = match data_type {
+        Some(data_type) => data_type,
+        None if condition == "contains" => "text",
+        None => {
+            inferred_type = infer_data_type(&captured, expected);
+            inferred_type
+        }
+    };
+    compare_scalar(&captured, expected, data_type, condition)
+}
+
+fn infer_data_type(candidate: &str, expected: &str) -> &'static str {
+    if candidate
+        .parse::<f64>()
+        .is_ok_and(|value| value.is_finite())
+        && expected.parse::<f64>().is_ok_and(|value| value.is_finite())
+    {
+        "number"
+    } else if NaiveDate::parse_from_str(candidate, "%Y-%m-%d").is_ok()
+        && NaiveDate::parse_from_str(expected, "%Y-%m-%d").is_ok()
+    {
+        "date"
+    } else if DateTime::parse_from_rfc3339(candidate).is_ok()
+        && DateTime::parse_from_rfc3339(expected).is_ok()
+    {
+        "datetime"
+    } else {
+        "text"
+    }
+}
+
+pub(crate) fn validate_condition_syntax(
+    condition: &str,
+    data_type: Option<&str>,
+) -> Result<(), String> {
+    if condition_expression(condition, "r'").is_some() {
+        let expression = condition_expression(condition, "r'").unwrap_or_default();
+        Regex::new(expression).map_err(|error| format!("invalid condition regex: {error}"))?;
+        return Ok(());
+    }
+    if let Some(expression) = condition_expression(condition, "json'") {
+        JsonPath::parse(expression)
+            .map_err(|error| format!("invalid condition JSONPath: {error}"))?;
+        return Ok(());
+    }
+    if matches!(condition, "<" | "<=" | ">" | ">=" | "==" | "!=") {
+        return Ok(());
+    }
+    if condition == "contains" && data_type == Some("text") {
+        return Ok(());
+    }
+    Err("condition must be <, <=, >, >=, ==, !=, contains for text, r'<regex>', or json'<JSONPath>'".into())
+}
+
+fn condition_expression<'a>(condition: &'a str, prefix: &str) -> Option<&'a str> {
+    condition
+        .strip_prefix(prefix)
+        .and_then(|expression| expression.strip_suffix('\''))
+}
+
+fn compare_scalar(
     captured: &str,
     expected: &str,
     data_type: &str,

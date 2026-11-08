@@ -1,4 +1,5 @@
 //! Purpose: Dispatches configured test references to external, SSH, or VirtualBox adapters.
+pub mod aggr;
 #[path = "extern.rs"]
 pub mod extern_tests;
 pub mod libguestfs;
@@ -15,6 +16,9 @@ pub async fn dispatch(invocation: &TestInvocation) -> TestOutcome {
     }
     if invocation.test_reference.starts_with("stats/") {
         return stats::run(invocation).await;
+    }
+    if invocation.test_reference.starts_with("aggr/") {
+        return aggr::run(invocation).await;
     }
     if invocation.test_reference == "network/nmap" {
         return network::run(invocation).await;
