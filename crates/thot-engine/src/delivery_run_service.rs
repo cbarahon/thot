@@ -488,6 +488,10 @@ impl DeliveryRunService {
                 &project.configuration,
                 &project.extracted_root,
                 &external_ids,
+                assigned_students[0]
+                    .delivery_filename
+                    .as_deref()
+                    .unwrap_or_default(),
             ) {
                 Ok(tests) => tests,
                 Err(error) => {

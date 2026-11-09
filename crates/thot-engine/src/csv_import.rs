@@ -12,11 +12,12 @@ pub(crate) struct CsvTable {
     headers: Vec<String>,
     indexes: HashMap<String, usize>,
     rows: Vec<CsvRow>,
+    identity_column: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CsvRow {
-    pub external_id: String,
+    pub key: String,
     pub values: Vec<String>,
 }
 
@@ -25,8 +26,25 @@ impl CsvTable {
         self.indexes.get(&normalize_header(name)).copied()
     }
 
-    pub(crate) fn row_for_external_id(&self, external_id: &str) -> Option<&CsvRow> {
-        self.rows.iter().find(|row| row.external_id == external_id)
+    pub(crate) fn row_for_identity(
+        &self,
+        external_id: &str,
+        delivery_name: Option<&str>,
+    ) -> Option<&CsvRow> {
+        let key = match self.identity_column.as_str() {
+            "external_id" => external_id,
+            "delivery_name" => delivery_name?,
+            _ => return None,
+        };
+        self.rows.iter().find(|row| row.key == key)
+    }
+
+    fn identity_value<'a>(&self, external_id: &'a str, delivery_name: Option<&'a str>) -> &'a str {
+        if self.identity_column == "delivery_name" {
+            delivery_name.unwrap_or_default()
+        } else {
+            external_id
+        }
     }
 }
 
@@ -64,7 +82,8 @@ pub(crate) fn validate_project_files(
             let parameters = test.parameters.into_strings()?;
             let filepath = required_filepath(&parameters, "CSV test")?;
             let table = read_project_csv(project_root, filepath)?;
-            require_columns(&table, &["external_id", "stdout", "exit_code"], "CSV test")?;
+            require_identity(&table, "CSV test")?;
+            require_columns(&table, &["stdout", "exit_code"], "CSV test")?;
             for (row_number, row) in table.rows.iter().enumerate() {
                 let index = table.index("exit_code").expect("validated required column");
                 row.values[index].trim().parse::<i32>().map_err(|_| {
@@ -183,11 +202,11 @@ fn mark_table_columns(
 ) -> Result<Vec<String>, String> {
     let filepath = required_filepath(&parameters, label)?;
     let table = read_project_csv(project_root, filepath)?;
-    require_external_id(&table, label)?;
+    require_identity(&table, label)?;
     let result_columns = table
         .headers
         .iter()
-        .filter(|header| normalize_header(header) != "external_id")
+        .filter(|header| normalize_header(header) != table.identity_column)
         .collect::<Vec<_>>();
     if result_columns.is_empty() {
         return Err(format!(
@@ -211,12 +230,14 @@ pub(crate) fn imported_test_result(
     project_root: &Path,
     test: &ProjectTest,
     external_id: &str,
+    delivery_name: Option<&str>,
 ) -> Result<Option<ImportedProcessResult>, String> {
     let parameters = test.parameters.into_strings()?;
     let filepath = required_filepath(&parameters, "CSV test")?;
     let table = read_project_csv(project_root, filepath)?;
-    require_columns(&table, &["external_id", "stdout", "exit_code"], "CSV test")?;
-    let Some(row) = table.row_for_external_id(external_id) else {
+    require_identity(&table, "CSV test")?;
+    require_columns(&table, &["stdout", "exit_code"], "CSV test")?;
+    let Some(row) = table.row_for_identity(external_id, delivery_name) else {
         return Ok(None);
     };
     let stdout = row.values[table.index("stdout").expect("validated column")].clone();
@@ -228,7 +249,11 @@ pub(crate) fn imported_test_result(
         .trim()
         .parse::<i32>()
         .map_err(|_| {
-            format!("CSV test row for external_id {external_id:?} has invalid exit_code")
+            format!(
+                "CSV test row for {} {:?} has invalid exit_code",
+                table.identity_column,
+                table.identity_value(external_id, delivery_name)
+            )
         })?;
     Ok(Some(ImportedProcessResult {
         stdout,
@@ -248,21 +273,30 @@ pub(crate) fn external_ids_covered_by_import(
     project_root: &Path,
     test: &ProjectTest,
     external_ids: &[String],
+    delivery_name: &str,
 ) -> Result<bool, String> {
     let parameters = test.parameters.into_strings()?;
     let filepath = required_filepath(&parameters, "CSV test")?;
     let table = read_project_csv(project_root, filepath)?;
-    require_columns(&table, &["external_id", "stdout", "exit_code"], "CSV test")?;
-    Ok(!external_ids.is_empty()
-        && external_ids
-            .iter()
-            .all(|external_id| table.row_for_external_id(external_id).is_some()))
+    require_identity(&table, "CSV test")?;
+    require_columns(&table, &["stdout", "exit_code"], "CSV test")?;
+    Ok(match table.identity_column.as_str() {
+        "external_id" => {
+            !external_ids.is_empty()
+                && external_ids
+                    .iter()
+                    .all(|external_id| table.row_for_identity(external_id, None).is_some())
+        }
+        "delivery_name" => table.row_for_identity("", Some(delivery_name)).is_some(),
+        _ => false,
+    })
 }
 
 pub(crate) fn tests_to_skip_for_students(
     project: &VMActivityProject,
     project_root: &Path,
     external_ids: &[String],
+    delivery_name: &str,
 ) -> Result<std::collections::HashSet<String>, String> {
     let mut skipped = std::collections::HashSet::new();
     for (index, importer) in project.tests.iter().enumerate() {
@@ -279,7 +313,7 @@ pub(crate) fn tests_to_skip_for_students(
             .position(|test| test.name == *target_name)
             .unwrap_or(usize::MAX);
         if index < target_index
-            && external_ids_covered_by_import(project_root, importer, external_ids)?
+            && external_ids_covered_by_import(project_root, importer, external_ids, delivery_name)?
         {
             skipped.insert(target_name.clone());
         }
@@ -293,6 +327,7 @@ pub(crate) fn apply_test_imports(
     external_id: &str,
     report: &mut Value,
 ) -> Result<(), String> {
+    let delivery_name = report["delivery_filename"].as_str().map(str::to_owned);
     let already_has_errors = report["overall_status"] == "completed_with_errors"
         || !report["orchestration_error"].is_null()
         || report["cleanup"]["status"] != "passed";
@@ -304,7 +339,12 @@ pub(crate) fn apply_test_imports(
         .iter()
         .filter(|test| test.test_ref == "import/csv")
     {
-        let imported = imported_test_result(project_root, importer, external_id)?;
+        let imported = imported_test_result(
+            project_root,
+            importer,
+            external_id,
+            delivery_name.as_deref(),
+        )?;
         let Some(imported) = imported else {
             if let Some(row) = results
                 .iter_mut()
@@ -315,7 +355,9 @@ pub(crate) fn apply_test_imports(
                 row["stdout"] = json!("");
                 row["stderr"] = json!("");
                 row["diagnostics"] = json!(format!(
-                    "CSV file has no row for student external_id {external_id:?}"
+                    "CSV file has no row for external_id {:?} or delivery_name {:?}",
+                    external_id,
+                    delivery_name.as_deref().unwrap_or_default()
                 ));
             }
             continue;
@@ -381,6 +423,7 @@ pub(crate) fn check_rows(
     let external_id = report["student"]["external_id"]
         .as_str()
         .unwrap_or_default();
+    let delivery_name = report["delivery_filename"].as_str();
     let mut output = existing_rows.to_vec();
     for declaration in declarations
         .iter()
@@ -389,13 +432,13 @@ pub(crate) fn check_rows(
         let parameters = declaration.parameters.into_strings()?;
         let filepath = required_filepath(&parameters, "CSV check")?;
         let table = read_project_csv(project_root, filepath)?;
-        require_external_id(&table, "CSV check")?;
-        let Some(row) = table.row_for_external_id(external_id) else {
+        require_identity(&table, "CSV check")?;
+        let Some(row) = table.row_for_identity(external_id, delivery_name) else {
             continue;
         };
         let descriptions = descriptions(&parameters)?;
         for (index, name) in table.headers.iter().enumerate() {
-            if normalize_header(name) == "external_id" {
+            if normalize_header(name) == table.identity_column {
                 continue;
             }
             let cell = row.values[index].trim();
@@ -442,6 +485,7 @@ pub(crate) fn rubric_rows(
     let external_id = report["student"]["external_id"]
         .as_str()
         .unwrap_or_default();
+    let delivery_name = report["delivery_filename"].as_str();
     let mut output = existing_rows.to_vec();
     for declaration in declarations
         .iter()
@@ -450,13 +494,13 @@ pub(crate) fn rubric_rows(
         let parameters = declaration.parameters.into_strings()?;
         let filepath = required_filepath(&parameters, "CSV rubric")?;
         let table = read_project_csv(project_root, filepath)?;
-        require_external_id(&table, "CSV rubric")?;
-        let Some(row) = table.row_for_external_id(external_id) else {
+        require_identity(&table, "CSV rubric")?;
+        let Some(row) = table.row_for_identity(external_id, delivery_name) else {
             continue;
         };
         let descriptions = descriptions(&parameters)?;
         for (index, name) in table.headers.iter().enumerate() {
-            if normalize_header(name) == "external_id" {
+            if normalize_header(name) == table.identity_column {
                 continue;
             }
             let (value, error) = parse_mark(&row.values[index], name, "rubric");
@@ -494,6 +538,7 @@ pub(crate) fn evaluation_rows(
     let external_id = report["student"]["external_id"]
         .as_str()
         .unwrap_or_default();
+    let delivery_name = report["delivery_filename"].as_str();
     let mut output = existing_rows.to_vec();
     for declaration in declarations
         .iter()
@@ -502,13 +547,13 @@ pub(crate) fn evaluation_rows(
         let parameters = declaration.parameters.into_strings()?;
         let filepath = required_filepath(&parameters, "CSV evaluation")?;
         let table = read_project_csv(project_root, filepath)?;
-        require_external_id(&table, "CSV evaluation")?;
-        let Some(row) = table.row_for_external_id(external_id) else {
+        require_identity(&table, "CSV evaluation")?;
+        let Some(row) = table.row_for_identity(external_id, delivery_name) else {
             continue;
         };
         let descriptions = descriptions(&parameters)?;
         for (index, name) in table.headers.iter().enumerate() {
-            if normalize_header(name) == "external_id" {
+            if normalize_header(name) == table.identity_column {
                 continue;
             }
             let (value, error) = parse_mark(&row.values[index], name, "evaluation");
@@ -565,12 +610,12 @@ pub(crate) fn not_delivered_evaluation_rows(
         let parameters = declaration.parameters.into_strings()?;
         let filepath = required_filepath(&parameters, "CSV evaluation")?;
         let table = read_project_csv(project_root, filepath)?;
-        require_external_id(&table, "CSV evaluation")?;
+        require_identity(&table, "CSV evaluation")?;
         let descriptions = descriptions(&parameters)?;
         for name in table
             .headers
             .iter()
-            .filter(|header| normalize_header(header) != "external_id")
+            .filter(|header| normalize_header(header) != table.identity_column)
         {
             replace_named_row(
                 &mut rows,
@@ -636,8 +681,17 @@ fn require_columns(table: &CsvTable, columns: &[&str], label: &str) -> Result<()
     Ok(())
 }
 
-fn require_external_id(table: &CsvTable, label: &str) -> Result<(), String> {
-    require_columns(table, &["external_id"], label)
+fn require_identity(table: &CsvTable, label: &str) -> Result<(), String> {
+    if matches!(
+        table.identity_column.as_str(),
+        "external_id" | "delivery_name"
+    ) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} CSV must have exactly one identity column: external_id or delivery_name"
+        ))
+    }
 }
 
 fn required_filepath<'a>(
@@ -689,15 +743,24 @@ fn parse_table(contents: &str, path: &Path) -> Result<CsvTable, String> {
             ));
         }
     }
-    let external_index = indexes
-        .get(&normalize_header("external_id"))
-        .copied()
-        .ok_or_else(|| {
-            format!(
-                "CSV file {} must have an external_id column",
+    let external_index = indexes.get(&normalize_header("external_id")).copied();
+    let delivery_index = indexes.get(&normalize_header("delivery_name")).copied();
+    let (identity_column, identity_index) = match (external_index, delivery_index) {
+        (Some(index), None) => ("external_id", index),
+        (None, Some(index)) => ("delivery_name", index),
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "CSV file {} must use either external_id or delivery_name, not both",
                 path.display()
-            )
-        })?;
+            ));
+        }
+        (None, None) => {
+            return Err(format!(
+                "CSV file {} must have an external_id or delivery_name column",
+                path.display()
+            ));
+        }
+    };
     let mut rows = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for (offset, record) in records.into_iter().enumerate() {
@@ -716,28 +779,26 @@ fn parse_table(contents: &str, path: &Path) -> Result<CsvTable, String> {
                 headers.len()
             ));
         }
-        let external_id = values[external_index].trim().to_owned();
-        if external_id.is_empty() {
+        let key = values[identity_index].trim().to_owned();
+        if key.is_empty() {
             return Err(format!(
-                "CSV file {} row {row_number} has an empty external_id",
-                path.display()
+                "CSV file {} row {row_number} has an empty {identity_column}",
+                path.display(),
             ));
         }
-        if !seen.insert(external_id.clone()) {
+        if !seen.insert(key.clone()) {
             return Err(format!(
-                "CSV file {} repeats external_id {external_id:?}",
-                path.display()
+                "CSV file {} repeats {identity_column} {key:?}",
+                path.display(),
             ));
         }
-        rows.push(CsvRow {
-            external_id,
-            values,
-        });
+        rows.push(CsvRow { key, values });
     }
     Ok(CsvTable {
         headers,
         indexes,
         rows,
+        identity_column: identity_column.to_owned(),
     })
 }
 
