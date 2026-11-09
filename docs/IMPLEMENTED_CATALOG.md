@@ -12,10 +12,11 @@ This reference lists the test adapters and evaluation methods currently implemen
 | Test | `stats/regex_extract`, `stats/yaml_extract` | Summarizes values extracted from earlier tests for one delivery. |
 | Test | `aggr/select` | Selects exactly one earlier test result matching a condition and forwards its process output. |
 | Test | `aggr/join` | Joins process output from earlier tests, optionally filtering the selected results. |
+| Test | `import/csv` | Imports stdout, stderr, and exit code from a project CSV by student external ID; can override another test result. |
 | Test | `extern/<path>` | Runs a project-provided Python, shell, or executable test program. |
-| Check | `pass`, `regex_match`, `regex_extract`, `yaml_match`, `yaml_extract`, `stats/regex_extract`, `stats/yaml_extract` | Evaluates test results into numeric 0/1 values. |
-| Rubric | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum` | Aggregates configured check results into a numeric score. |
-| Evaluation | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum` | Aggregates rubric marks into final marks for a high-level learning outcome such as a Spanish FP RA. |
+| Check | `pass`, `regex_match`, `regex_extract`, `yaml_match`, `yaml_extract`, `stats/regex_extract`, `stats/yaml_extract`, `import/csv` | Evaluates tests into numeric 0/1 values or imports per-student check results. |
+| Rubric | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates configured checks or imports per-student rubric marks. |
+| Evaluation | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates rubric marks or imports per-student final marks for a learning outcome. |
 
 ## Configuration and result conventions
 
@@ -72,6 +73,43 @@ A filter list also stays unlabeled. For example, `filter_jsonpath: [$.hostname, 
 
 Labeled and unlabeled entries may be mixed in one filter list. Mixed lists preserve entry order and emit a YAML list: labeled entries appear as one-key mappings, and unlabeled entries appear as the raw filter result.
 
+## CSV result imports
+
+All import paths are relative to the root of the project archive or project directory. CSV rows are matched exactly by the `external_id` imported for each student. Students absent from a CSV keep their normal test/check/rubric/evaluation behavior. Test imports require `external_id`, `stdout`, and `exit_code`, and accept `stderr`. Check imports require `external_id` and one `0` or `1` result column per check; rubric and evaluation imports use numeric mark columns. An optional `descriptions` parameter maps imported column names to descriptions. A CSV column with the same name as an already calculated check, rubric, evaluation item, or override test replaces that result for students represented by the CSV.
+
+```yaml
+tests:
+  - name: professor_notes
+    test: import/csv
+    parameters:
+      filepath: extern/results/style.csv
+      override_test: style_review
+checks:
+  - name: professor_check_results
+    check: import/csv
+    parameters:
+      filepath: extern/results/checks.csv
+      descriptions:
+        style: Code style review
+        attitude: Class participation
+rubrics:
+  - name: professor_rubric_marks
+    calculation: import/csv
+    parameters:
+      filepath: extern/results/rubrics.csv
+      descriptions:
+        style: Code style rubric
+evaluation:
+  - name: professor_final_marks
+    calculation: import/csv
+    parameters:
+      filepath: extern/results/evaluation.csv
+      descriptions:
+        RA1: Operating systems installation
+```
+
+An undelivered student still gets an expedient. The `not_delivered_mark` project setting can be a number or `null` (default); it is assigned to every evaluation item for that student. Test, check, and rubric sections stay empty. The per-student expedient ID is built from `external_id` and `run_id`.
+
 ## Tests
 
 | Test reference | Parameters | Behavior and output |
@@ -89,6 +127,7 @@ Labeled and unlabeled entries may be mixed in one filter list. Mixed lists prese
 | `aggr/select` | `tests` (required list of earlier test names); optional `property`, `condition`, `value` | Defaults to selecting rows whose `status == passed`. A repeated test name selects all repetitions. Exactly one row must match; its `stdout`, `stderr`, and `exit_code` become this test's process output. Zero or multiple matches fail with an explanation. Scalar comparison types are inferred from the candidate and configured value. |
 | `aggr/join` | `tests` (required list); optional `filter_property`, `filter_condition`, `filter_value` | Concatenates selected results' stdout and stderr in configured test order. Repeated tests contribute each result in repetition order. Exit code is zero only when all included results have exit code zero. When filtering is configured, only matching results are joined; scalar comparison types are inferred. |
 | `stats/yaml_extract` | `tests`, `property`, `JSONPath` (required), `data_type` (optional; default `number`) | Reads a JSON or YAML document from the selected test-result property, extracts exactly one scalar using JSONPath, and writes a YAML summary to stdout. Use `stdout` for test output. |
+| `import/csv` | `filepath` (required project-relative CSV), `override_test` (optional configured test name) | Reads rows by `external_id`; requires `stdout` and `exit_code`, accepts optional `stderr`. An `exit_code` of 0 marks the imported result passed; other codes mark it failed. When `override_test` is set, matching students get the same captured process fields in that test's expedient row. Students missing from the CSV retain the actual override-test result. If the importer is earlier than the override test and covers every student assigned to a delivery, the engine skips that target once for the shared delivery execution. |
 | `extern/<path>` | Any project-specific scalar parameters | Resolves the path under the project `extern/` directory. `.py` files run with `python3`, `.sh` files with `sh`, and other files must be executable. Parameters are appended as `key=value` arguments. `THOT_ARTIFACT_DIR`, `VBOX_USER_HOME`, and `VBOX_MANAGE_PATH` are provided in the environment. stdout, stderr, exit code, timeout, and output limits are captured. These scripts run as trusted daemon child processes, not in a sandbox. |
 
 The two `stats/...` tests compute `count`, `max`, `min`, and `freq` (mode) for supported scalar types. Numeric values also include `avg`, population `var`, population `std`, and percentiles `p1`, `p5`, `p10`, `p20`, `p30`, `p40`, `p50`, `p60`, `p70`, `p80`, `p90`, `p95`, and `p99`. Percentiles use linear interpolation between sorted samples. Values that cannot be extracted are counted in `ignored_count`; the test errors if no sample can be extracted. Supported `data_type` values are `number`, `text`, `date` (`YYYY-MM-DD`), and `datetime` (RFC 3339).
@@ -106,6 +145,7 @@ Every check has a unique `name`, a configured test name in `test`, an implementa
 | `yaml_extract` | `property`; parameters `JSONPath`, `data_type`, `condition`, `value` | Parses the property as JSON or YAML (or uses a structured JSON value directly), selects exactly one scalar, and compares it with the configured constant. |
 | `stats/regex_extract` | `property`; parameters `regex`, `data_type`, `stat`, `condition` | Extracts group 1 from each unique delivery's named test result, calculates a run-wide statistic, then compares this delivery's extracted value with it. |
 | `stats/yaml_extract` | `property`; parameters `JSONPath`, `data_type`, `stat`, `condition` | Extracts one scalar by JSONPath from each unique delivery's named test result, calculates a run-wide statistic, then compares this delivery's value with it. |
+| `import/csv` | `filepath`; `descriptions` (optional map of CSV column to description) | Requires `external_id` plus one 0/1 column for each imported check. For each matching student row, each CSV column creates a check result; a column matching an existing configured check replaces that result. |
 
 For `regex_extract`, `yaml_extract`, and the statistical checks, `data_type` is `number`, `text`, `date`, or `datetime`. The ordinary extract checks require a constant `value` for comparison operators; statistical checks instead require a `stat`. Valid comparison conditions are `<`, `<=`, `>`, `>=`, `==`, and `!=`; `contains` is available only for text. Predicate conditions are also supported: `r'<regex>'` passes when the candidate value matches the regular expression, and `json'<JSONPath>'` passes when the candidate JSON/YAML document has at least one JSONPath match. Predicate conditions do not need a comparison `value` or `data_type`. Quote these conditions in YAML, for example `condition: "r'^open$'"` or `condition: "json'$.users[?(@.username == \"tvadmin\")]'"`. The same condition forms are accepted by `aggr/select` and `aggr/join` filtering. Number comparisons require finite numbers. Dates use `YYYY-MM-DD`; datetimes use RFC 3339. `yaml_match` is a presence predicate and does not take comparison parameters.
 
@@ -148,7 +188,7 @@ Rubrics are configured in the root `rubrics` list. Each rubric has a unique `nam
 | `sum` | None | Sum of the check result values. |
 | `weighted_avg` | `weights` | Weighted mean. `weights` must contain one finite, non-negative number per check, in the same order, and their sum must be positive. The weighted sum is divided by the sum of weights. |
 
-Check results, including zero results that have an `err`, are the numeric inputs to rubrics. Rubrics are recalculated whenever checks are evaluated, including with `thot run checks [run-id]`.
+Check results, including zero results that have an `err`, are the numeric inputs to rubrics. Rubrics are recalculated whenever checks are evaluated, including with `thot run checks [run-id]`. A rubric declaration with `calculation: import/csv` instead reads `external_id` and one numeric column per rubric; optional `descriptions` maps column names to descriptions. Matching CSV columns replace configured rubric results for those students.
 
 Evaluation items are configured under the root `evaluation` list. Each item has a unique `name`, optional `description`, an ordered `rubrics` list (or alias `rubrics_list`), a `calculation`, and optional `parameters`. They support the same aggregations and `weighted_avg` weights as rubrics, but use rubric results as inputs. The resulting final marks are saved under `evaluation.results`. `evaluation_multiplier` (default `1`) scales each calculated evaluation item. If both multipliers differ from `1`, run creation returns a warning and the expedient records it: rubric marks are scaled first, then evaluation marks are scaled again. Multipliers must be finite positive numbers.
 
@@ -168,7 +208,9 @@ evaluation:
       weights: [0.7, 0.3]
 ```
 
-Here each check contributes 0 or 10 to its rubric, while the final `RA1` mark remains on the same scale because `evaluation_multiplier` is 1.
+Here each check contributes 0 or 10 to its rubric, while the final `RA1` mark remains on the same scale because `evaluation_multiplier` is 1. An evaluation declaration with `calculation: import/csv` reads `external_id` and one numeric column per evaluation item, with optional column descriptions; these imported marks replace same-named configured evaluation rows.
+
+Every project student receives an expedient, even if no delivery is assigned. Such expedients keep tests, checks, and rubrics empty. Set `not_delivered_mark` in `configuration.yaml` to a number or `null` (default) to provide that value or leave evaluation results blank for each evaluation item. Each expedient ID combines the student's `external_id` and the run ID.
 
 ## Reports
 

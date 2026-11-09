@@ -41,13 +41,19 @@ runs. The `create` forms accept an archive path or project directory;
 relative paths resolve from the archive's containing directory or the project
 directory, and absolute paths are accepted. A delivery override can point
 anywhere the daemon can read. Assignment commands index the project's direct
-`.ova` children before a run begins. Students without deliveries and deliveries
-without assigned students are skipped. If there are no assigned pairs, the run
-completes without creating student expedients or running tests.
+`.ova` children before a run begins. Deliveries without assigned students are
+skipped. Every imported project student gets an expedient, including students
+without a delivery; those expedients have empty test, check, and rubric sections.
+Set `not_delivered_mark` to a number to use it for every evaluation item on such
+an expedient, or leave it `null` (the default) for a blank mark. If no student
+has a delivery, the run still creates and finishes their expedients without
+running tests.
 
 `thot run checks [RUN_ID]` reevaluates configured checks against saved test
 results, recalculates configured rubrics and evaluation items, then updates each
-student's `checks`, `rubrics`, and `evaluation.results` sections. Without an ID, it selects the most recently
+student's `checks`, `rubrics`, and `evaluation.results` sections. It also applies
+configured CSV imports. Expedients without a delivery retain blank checks and
+rubrics and receive `not_delivered_mark` for each evaluation item. Without an ID, it selects the most recently
 created finished run. When run from the same unpacked project directory used
 by that run, it reads that directory's current `configuration.yaml`; otherwise
 it uses the run's saved configuration.
@@ -121,6 +127,16 @@ and retrieval responses identify their project. A project's root
 recognized external-ID column or a row has a blank external ID, each student's
 email is used as `external_id`. The `get students csv` command writes project
 details to stderr and CSV rows to stdout.
+
+Project CSV imports use project-relative `filepath` values. A test declared as
+`test: import/csv` requires `external_id`, `stdout`, and `exit_code` columns and
+may include `stderr`; it can set `override_test` to replace that test's saved
+process result for matching students. Students without a CSV row keep their
+actual test result. Checks use `check: import/csv`; rubrics and evaluation
+items use `calculation: import/csv`. These CSV files have an `external_id`
+column and one numeric result column per check, rubric, or evaluation item.
+Optional `descriptions` maps column names to descriptions. A matching existing
+result is replaced only for students with a matching CSV row.
 
 `thot assignments guess` indexes the current project's delivery folder and
 compares student names, surnames, email usernames,
