@@ -122,6 +122,7 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
             return Err(format!("check name {:?} is repeated", check.name));
         }
     }
+    validate_aggregate_check_dependencies(&project.checks, &check_names)?;
     let mut rubric_names = HashSet::new();
     let has_rubric_csv = project
         .rubrics
@@ -589,6 +590,10 @@ fn validate_check(
         return Err(format!("invalid check name {:?}", check.name));
     }
     let parameters = check.parameters.into_strings()?;
+    if check.check_ref == "aggr/checks" {
+        validate_aggregate_check_parameters(check, &parameters)?;
+        return Ok(());
+    }
     if check.check_ref == "import/csv" {
         validate_csv_import_parameters(&parameters, "CSV check", false)?;
         return Ok(());
@@ -731,6 +736,171 @@ fn validate_check(
             check.name
         )),
     }
+}
+
+fn validate_aggregate_check_parameters(
+    check: &ProjectCheck,
+    parameters: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if !check.test.is_empty() || check.property.is_some() {
+        return Err(format!(
+            "aggregate check {:?} does not use test or property fields",
+            check.name
+        ));
+    }
+    if let Some(unknown) = parameters
+        .keys()
+        .find(|key| !matches!(key.as_str(), "checks" | "condition" | "value"))
+    {
+        return Err(format!(
+            "aggregate check {:?} does not support parameter {unknown:?}",
+            check.name
+        ));
+    }
+    let names = aggregate_check_names(check, parameters)?;
+    let condition = parameters
+        .get("condition")
+        .filter(|condition| !condition.trim().is_empty())
+        .ok_or_else(|| {
+            format!(
+                "aggregate check {:?} requires parameter condition",
+                check.name
+            )
+        })?;
+    if matches!(
+        condition.as_str(),
+        "all" | "any" | "one" | "none" | "majority"
+    ) {
+        if parameters.contains_key("value") {
+            return Err(format!(
+                "aggregate check {:?} condition {condition:?} does not use parameter value",
+                check.name
+            ));
+        }
+    } else if matches!(condition.as_str(), "<" | "<=" | ">" | ">=" | "==" | "!=") {
+        let value = parameters
+            .get("value")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "aggregate check {:?} condition {condition:?} requires a non-negative integer value",
+                    check.name
+                )
+            })?;
+        value.parse::<usize>().map_err(|_| {
+            format!(
+                "aggregate check {:?} value must be a non-negative integer",
+                check.name
+            )
+        })?;
+    } else {
+        return Err(format!(
+            "aggregate check {:?} condition must be all, any, one, none, majority, >=, <=, <, >, ==, or !=",
+            check.name
+        ));
+    }
+    if names.is_empty() {
+        return Err(format!(
+            "aggregate check {:?} requires a non-empty checks list",
+            check.name
+        ));
+    }
+    let mut unique = HashSet::new();
+    if names.iter().any(|name| !unique.insert(name)) {
+        return Err(format!(
+            "aggregate check {:?} checks list contains a duplicate name",
+            check.name
+        ));
+    }
+    Ok(())
+}
+
+fn aggregate_check_names(
+    check: &ProjectCheck,
+    parameters: &BTreeMap<String, String>,
+) -> Result<Vec<String>, String> {
+    let value = parameters
+        .get("checks")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("aggregate check {:?} requires parameter checks", check.name))?;
+    let names = value
+        .split(',')
+        .map(str::trim)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if names.iter().any(|name| {
+        name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    }) {
+        return Err(format!(
+            "aggregate check {:?} checks must be non-empty valid check names",
+            check.name
+        ));
+    }
+    Ok(names)
+}
+
+fn validate_aggregate_check_dependencies(
+    checks: &[ProjectCheck],
+    check_names: &HashSet<&str>,
+) -> Result<(), String> {
+    let definitions = checks
+        .iter()
+        .map(|check| (check.name.as_str(), check))
+        .collect::<std::collections::HashMap<_, _>>();
+    for check in checks
+        .iter()
+        .filter(|check| check.check_ref == "aggr/checks")
+    {
+        let parameters = check.parameters.into_strings()?;
+        for name in aggregate_check_names(check, &parameters)? {
+            if !check_names.contains(name.as_str()) {
+                return Err(format!(
+                    "aggregate check {:?} references unknown check {:?}",
+                    check.name, name
+                ));
+            }
+        }
+    }
+
+    fn visit(
+        name: &str,
+        definitions: &std::collections::HashMap<&str, &ProjectCheck>,
+        visiting: &mut HashSet<String>,
+        visited: &mut HashSet<String>,
+    ) -> Result<(), String> {
+        if visited.contains(name) {
+            return Ok(());
+        }
+        if !visiting.insert(name.to_owned()) {
+            return Err(format!(
+                "aggregate checks contain a dependency cycle involving {name:?}"
+            ));
+        }
+        if let Some(check) = definitions.get(name)
+            && check.check_ref == "aggr/checks"
+        {
+            let parameters = check.parameters.into_strings()?;
+            for dependency in aggregate_check_names(check, &parameters)? {
+                visit(&dependency, definitions, visiting, visited)?;
+            }
+        }
+        visiting.remove(name);
+        visited.insert(name.to_owned());
+        Ok(())
+    }
+
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    for check in checks
+        .iter()
+        .filter(|check| check.check_ref == "aggr/checks")
+    {
+        visit(&check.name, &definitions, &mut visiting, &mut visited)?;
+    }
+    Ok(())
 }
 
 fn validate_csv_import_parameters(

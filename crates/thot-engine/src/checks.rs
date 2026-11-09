@@ -4,7 +4,11 @@ use chrono::{DateTime, NaiveDate, Utc};
 use regex::Regex;
 use serde_json::{Value, json};
 use serde_json_path::JsonPath;
-use std::{cmp::Ordering, collections::BTreeMap, time::Instant};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, HashMap, HashSet},
+    time::Instant,
+};
 use thot_core::{ProjectCheck, ProjectTest};
 
 /// Evaluate every configured check and return the report rows to store in an expedient.
@@ -46,6 +50,143 @@ pub fn evaluate_checks(
             row
         })
         .collect()
+}
+
+/// Add configured aggregate checks after ordinary and CSV-imported check results exist.
+pub fn evaluate_aggregate_checks(checks: &[ProjectCheck], check_rows: &[Value]) -> Vec<Value> {
+    let definitions = checks
+        .iter()
+        .map(|check| (check.name.as_str(), check))
+        .collect::<HashMap<_, _>>();
+    let mut rows = check_rows.to_vec();
+    let mut computed = HashMap::<String, Result<u8, String>>::new();
+    for row in check_rows {
+        if let Some(name) = row["name"].as_str() {
+            let result = row["result"]
+                .as_u64()
+                .filter(|value| *value <= 1)
+                .map(|value| value as u8)
+                .ok_or_else(|| format!("check result {name:?} is not 0 or 1"));
+            computed.insert(name.to_owned(), result);
+        }
+    }
+
+    for check in checks
+        .iter()
+        .filter(|check| check.check_ref == "aggr/checks")
+    {
+        if rows
+            .iter()
+            .any(|row| row["name"].as_str() == Some(check.name.as_str()))
+        {
+            continue;
+        }
+        let started = Instant::now();
+        let mut visiting = HashSet::new();
+        let result = aggregate_check_result(
+            &check.name,
+            &definitions,
+            &rows,
+            &mut computed,
+            &mut visiting,
+        );
+        let (value, error) = match result {
+            Ok(value) => (value, Value::Null),
+            Err(error) => (0, json!(error)),
+        };
+        rows.push(json!({
+            "name": check.name,
+            "description": check.description,
+            "result": value,
+            "err": error,
+            "date_time": Utc::now().to_rfc3339(),
+            "duration_ms": started.elapsed().as_millis(),
+        }));
+    }
+    rows
+}
+
+fn aggregate_check_result(
+    name: &str,
+    definitions: &HashMap<&str, &ProjectCheck>,
+    rows: &[Value],
+    computed: &mut HashMap<String, Result<u8, String>>,
+    visiting: &mut HashSet<String>,
+) -> Result<u8, String> {
+    if let Some(result) = computed.get(name) {
+        return result.clone();
+    }
+    if !visiting.insert(name.to_owned()) {
+        return Err(format!(
+            "aggregate check dependency cycle found at {name:?}"
+        ));
+    }
+    let result = (|| {
+        let check = definitions
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("configured check {name:?} was not found"))?;
+        if check.check_ref != "aggr/checks" {
+            return Err(format!("check result {name:?} is missing"));
+        }
+        let parameters = check.parameters.into_strings()?;
+        let names = parameters
+            .get("checks")
+            .map(|value| value.split(',').map(str::trim).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if names.is_empty() || names.iter().any(|dependency| dependency.is_empty()) {
+            return Err("aggregate check requires a non-empty checks list".into());
+        }
+        let mut passed_count = 0usize;
+        for dependency in &names {
+            let value = if let Some(row) = rows
+                .iter()
+                .find(|row| row["name"].as_str() == Some(dependency))
+            {
+                row["result"]
+                    .as_u64()
+                    .filter(|value| *value <= 1)
+                    .ok_or_else(|| format!("check result {dependency:?} is not 0 or 1"))?
+                    as u8
+            } else {
+                aggregate_check_result(dependency, definitions, rows, computed, visiting)?
+            };
+            passed_count += usize::from(value == 1);
+        }
+
+        let condition = parameters
+            .get("condition")
+            .map(String::as_str)
+            .ok_or("aggregate check is missing parameter condition")?;
+        let passed = match condition {
+            "all" => passed_count == names.len(),
+            "any" => passed_count > 0,
+            "one" => passed_count == 1,
+            "none" => passed_count == 0,
+            "majority" => passed_count * 2 > names.len(),
+            ">=" | "<=" | ">" | "<" | "==" | "!=" => {
+                let expected = parameters
+                    .get("value")
+                    .ok_or_else(|| format!("condition {condition:?} requires value"))?
+                    .parse::<usize>()
+                    .map_err(|_| "aggregate check value must be a non-negative integer")?;
+                match condition {
+                    ">=" => passed_count >= expected,
+                    "<=" => passed_count <= expected,
+                    ">" => passed_count > expected,
+                    "<" => passed_count < expected,
+                    "==" => passed_count == expected,
+                    "!=" => passed_count != expected,
+                    _ => unreachable!(),
+                }
+            }
+            _ => return Err(format!("unknown aggregate check condition {condition:?}")),
+        };
+        Ok(u8::from(passed))
+    })();
+    visiting.remove(name);
+    computed.insert(name.to_owned(), result.clone());
+    result
 }
 
 fn find_test<'a>(check: &ProjectCheck, tests: &'a [ProjectTest]) -> Option<&'a ProjectTest> {

@@ -138,6 +138,27 @@ impl ParameterInput {
                         .collect::<Result<Vec<_>, _>>()?;
                     names.join(",")
                 }
+                Value::Array(values) if key == "checks" => {
+                    let names = values
+                        .iter()
+                        .map(|value| match value {
+                            Value::String(name)
+                                if !name.trim().is_empty()
+                                    && !name.contains(',')
+                                    && !name.contains('\0') =>
+                            {
+                                Ok(name.clone())
+                            }
+                            _ => Err(format!(
+                                "parameter {key:?} list entries must be non-empty check names without commas"
+                            )),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if names.is_empty() {
+                        return Err(format!("parameter {key:?} list must not be empty"));
+                    }
+                    names.join(",")
+                }
                 Value::Array(values) if key == "weights" => {
                     let weights = values
                         .iter()

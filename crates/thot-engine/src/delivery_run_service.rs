@@ -892,7 +892,9 @@ impl DeliveryRunService {
             let (check_rows, rubric_rows, evaluation_rows) = if has_delivery {
                 let configured_checks = checks
                     .iter()
-                    .filter(|check| check.check_ref != "import/csv")
+                    .filter(|check| {
+                        check.check_ref != "import/csv" && check.check_ref != "aggr/checks"
+                    })
                     .cloned()
                     .collect::<Vec<_>>();
                 let mut check_rows = crate::checks::evaluate_checks(
@@ -906,6 +908,7 @@ impl DeliveryRunService {
                         .map_err(|error| {
                             ServiceError::Internal(format!("cannot import CSV checks: {error}"))
                         })?;
+                check_rows = crate::checks::evaluate_aggregate_checks(checks, &check_rows);
                 let configured_rubrics = rubrics
                     .iter()
                     .filter(|rubric| rubric.calculation != "import/csv")
