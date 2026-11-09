@@ -35,6 +35,12 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
             return Err(format!("{key} must be a finite number greater than zero"));
         }
     }
+    if project
+        .not_delivered_mark
+        .is_some_and(|mark| !mark.is_finite())
+    {
+        return Err("not_delivered_mark must be a finite number or null".into());
+    }
     if project.tests.is_empty() {
         return Err("tests must contain at least one test".into());
     }
@@ -56,6 +62,39 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
             }
         }
         let test_parameters = test.parameters.into_strings()?;
+        if test.test_ref == "import/csv" {
+            if test.repeat != 1 {
+                return Err(format!(
+                    "CSV test {:?} cannot be repeated; configure repeat: 1",
+                    test.name
+                ));
+            }
+            validate_csv_import_parameters(&test_parameters, "CSV test", true)?;
+            if let Some(override_test) = test_parameters.get("override_test") {
+                let target = project
+                    .tests
+                    .iter()
+                    .find(|candidate| candidate.name == *override_test)
+                    .ok_or_else(|| {
+                        format!(
+                            "CSV test {:?} override_test {:?} must name an existing test",
+                            test.name, override_test
+                        )
+                    })?;
+                if target.name == test.name || target.test_ref == "import/csv" {
+                    return Err(format!(
+                        "CSV test {:?} override_test must name a different non-import/csv test",
+                        test.name
+                    ));
+                }
+                if target.repeat != 1 {
+                    return Err(format!(
+                        "CSV test {:?} cannot override repeated test {:?}; configure repeat: 1",
+                        test.name, target.name
+                    ));
+                }
+            }
+        }
         if test.test_ref == "network/nmap" {
             crate::tests::network::validate_parameters(&test_parameters)
                 .map_err(|error| format!("test {:?}: {error}", test.name))?;
@@ -73,6 +112,10 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
         prior_repeats.insert(test.name.as_str(), test.repeat);
     }
     let mut check_names = HashSet::new();
+    let has_check_csv = project
+        .checks
+        .iter()
+        .any(|check| check.check_ref == "import/csv");
     for check in &project.checks {
         validate_check(check, &project.tests, &names)?;
         if !check_names.insert(check.name.as_str()) {
@@ -80,15 +123,20 @@ pub fn validate_project(project: &VMActivityProject) -> Result<(), String> {
         }
     }
     let mut rubric_names = HashSet::new();
+    let has_rubric_csv = project
+        .rubrics
+        .iter()
+        .any(|rubric| rubric.calculation == "import/csv");
     for rubric in &project.rubrics {
-        validate_rubric(rubric, &check_names)?;
+        validate_rubric(rubric, &check_names, has_check_csv)?;
         if !rubric_names.insert(rubric.name.as_str()) {
             return Err(format!("rubric name {:?} is repeated", rubric.name));
         }
     }
     let mut evaluation_names = HashSet::new();
+    let has_evaluation_rubric_csv = has_rubric_csv;
     for item in &project.evaluation {
-        validate_evaluation(item, &rubric_names)?;
+        validate_evaluation(item, &rubric_names, has_evaluation_rubric_csv)?;
         if !evaluation_names.insert(item.name.as_str()) {
             return Err(format!("evaluation item name {:?} is repeated", item.name));
         }
@@ -108,7 +156,11 @@ pub fn configuration_warnings(rubrics_multiplier: f64, evaluation_multiplier: f6
     }
 }
 
-fn validate_rubric(rubric: &ProjectRubric, check_names: &HashSet<&str>) -> Result<(), String> {
+fn validate_rubric(
+    rubric: &ProjectRubric,
+    check_names: &HashSet<&str>,
+    has_check_csv: bool,
+) -> Result<(), String> {
     if rubric.name.trim().is_empty()
         || !rubric
             .name
@@ -117,6 +169,17 @@ fn validate_rubric(rubric: &ProjectRubric, check_names: &HashSet<&str>) -> Resul
     {
         return Err(format!("invalid rubric name {:?}", rubric.name));
     }
+    if rubric.calculation == "import/csv" {
+        let parameters = rubric.parameters.into_strings()?;
+        validate_csv_import_parameters(&parameters, "CSV rubric", false)?;
+        if !rubric.checks.is_empty() {
+            return Err(format!(
+                "CSV rubric {:?} does not accept a checks list",
+                rubric.name
+            ));
+        }
+        return Ok(());
+    }
     if rubric.checks.is_empty() {
         return Err(format!(
             "rubric {:?} must reference at least one check",
@@ -124,7 +187,7 @@ fn validate_rubric(rubric: &ProjectRubric, check_names: &HashSet<&str>) -> Resul
         ));
     }
     for check in &rubric.checks {
-        if !check_names.contains(check.as_str()) {
+        if !check_names.contains(check.as_str()) && !has_check_csv {
             return Err(format!(
                 "rubric {:?} references unknown check {:?}",
                 rubric.name, check
@@ -195,6 +258,7 @@ fn validate_rubric(rubric: &ProjectRubric, check_names: &HashSet<&str>) -> Resul
 fn validate_evaluation(
     item: &ProjectEvaluation,
     rubric_names: &HashSet<&str>,
+    has_rubric_csv: bool,
 ) -> Result<(), String> {
     if item.name.trim().is_empty()
         || !item
@@ -204,6 +268,17 @@ fn validate_evaluation(
     {
         return Err(format!("invalid evaluation item name {:?}", item.name));
     }
+    if item.calculation == "import/csv" {
+        let parameters = item.parameters.into_strings()?;
+        validate_csv_import_parameters(&parameters, "CSV evaluation", false)?;
+        if !item.rubrics.is_empty() {
+            return Err(format!(
+                "CSV evaluation item {:?} does not accept a rubrics list",
+                item.name
+            ));
+        }
+        return Ok(());
+    }
     if item.rubrics.is_empty() {
         return Err(format!(
             "evaluation item {:?} must reference at least one rubric",
@@ -211,7 +286,7 @@ fn validate_evaluation(
         ));
     }
     for rubric in &item.rubrics {
-        if !rubric_names.contains(rubric.as_str()) {
+        if !rubric_names.contains(rubric.as_str()) && !has_rubric_csv {
             return Err(format!(
                 "evaluation item {:?} references unknown rubric {:?}",
                 item.name, rubric
@@ -513,6 +588,11 @@ fn validate_check(
     if !valid_name(&check.name) {
         return Err(format!("invalid check name {:?}", check.name));
     }
+    let parameters = check.parameters.into_strings()?;
+    if check.check_ref == "import/csv" {
+        validate_csv_import_parameters(&parameters, "CSV check", false)?;
+        return Ok(());
+    }
     let statistical = crate::stats::is_stats_check(&check.check_ref);
     let matched_test = tests.iter().find(|test| {
         test.name == check.test
@@ -533,7 +613,6 @@ fn validate_check(
             check.name, check.test
         ));
     }
-    let parameters = check.parameters.into_strings()?;
     match check.check_ref.as_str() {
         "pass" => Ok(()),
         "regex_match" => {
@@ -652,6 +731,55 @@ fn validate_check(
             check.name
         )),
     }
+}
+
+fn validate_csv_import_parameters(
+    parameters: &BTreeMap<String, String>,
+    label: &str,
+    allow_override: bool,
+) -> Result<(), String> {
+    let allowed = if allow_override {
+        &["filepath", "override_test"][..]
+    } else {
+        &["filepath", "descriptions"][..]
+    };
+    if let Some(unknown) = parameters
+        .keys()
+        .find(|key| !allowed.contains(&key.as_str()))
+    {
+        return Err(format!("{label} does not support parameter {unknown:?}"));
+    }
+    let filepath = parameters
+        .get("filepath")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{label} requires parameter filepath"))?;
+    let path = std::path::Path::new(filepath);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "{label} filepath must be a project-relative path without '..' components"
+        ));
+    }
+    if let Some(encoded) = parameters.get("descriptions") {
+        let value: serde_json::Value = serde_json::from_str(encoded)
+            .map_err(|error| format!("{label} descriptions parameter is invalid: {error}"))?;
+        if !value.as_object().is_some_and(|mapping| {
+            mapping
+                .iter()
+                .all(|(key, value)| !key.trim().is_empty() && value.is_string())
+        }) {
+            return Err(format!(
+                "{label} descriptions must map non-empty column names to strings"
+            ));
+        }
+    }
+    if !allow_override && parameters.contains_key("override_test") {
+        return Err(format!("{label} does not accept override_test"));
+    }
+    Ok(())
 }
 
 fn validate_stat_parameters(

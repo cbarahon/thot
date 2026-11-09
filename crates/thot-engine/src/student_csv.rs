@@ -112,7 +112,7 @@ fn field_kind(header: &str) -> Option<&'static str> {
     }
 }
 
-fn parse_csv(contents: &str) -> Vec<Result<Vec<String>, String>> {
+pub(crate) fn parse_csv(contents: &str) -> Vec<Result<Vec<String>, String>> {
     let characters = contents.chars().collect::<Vec<_>>();
     let mut rows = Vec::new();
     let mut row = Vec::new();

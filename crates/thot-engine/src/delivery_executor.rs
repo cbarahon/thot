@@ -1,7 +1,7 @@
 //! Purpose: Runs one delivery's configured tests and persists its expedient and cleanup result.
 use chrono::Utc;
 use serde_json::{Value, json};
-use std::{fs, path::Path, time::Instant};
+use std::{collections::HashSet, fs, path::Path, time::Instant};
 
 use crate::{
     test_executor::execute_project_tests,
@@ -16,6 +16,7 @@ pub async fn execute_delivery(
     run_id: &str,
     expedient_id: &str,
     input: &DeliveryInput,
+    skipped_test_names: &HashSet<String>,
     report_dir: &Path,
     report_path: &Path,
 ) -> Value {
@@ -71,6 +72,7 @@ pub async fn execute_delivery(
         project,
         runtime,
         input,
+        skipped_test_names,
         run_id,
         expedient_id,
         report_dir,

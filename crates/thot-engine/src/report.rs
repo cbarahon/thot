@@ -15,6 +15,7 @@ struct DeliveryData {
     report: Value,
 }
 
+#[derive(Clone)]
 struct ExpedientData {
     expedient_id: String,
     delivery_filename: String,
@@ -217,10 +218,11 @@ pub(crate) async fn test_stats(
 ) -> Result<Value, ServiceError> {
     let (run_id, _run_status, project, expedients) =
         load_run_expedients(pool, artifact_root, requested_run_id).await?;
-    let names = test_names(project.as_ref(), &expedients);
+    let tested = expedients_with_deliveries(&expedients);
+    let names = test_names(project.as_ref(), &tested);
     let statistics = names
         .iter()
-        .map(|name| test_statistic(name, project.as_ref(), &names, &expedients))
+        .map(|name| test_statistic(name, project.as_ref(), &names, &tested))
         .collect::<Vec<_>>();
     Ok(json!({"run_id": run_id, "statistics": statistics}))
 }
@@ -232,11 +234,12 @@ pub(crate) async fn checks_stats(
 ) -> Result<Value, ServiceError> {
     let (run_id, run_status, project, expedients) =
         load_run_expedients(pool, artifact_root, requested_run_id).await?;
-    let checks_in_progress = is_check_phase(&run_status, &expedients);
-    let names = check_names(project.as_ref(), &expedients);
+    let tested = expedients_with_deliveries(&expedients);
+    let checks_in_progress = is_check_phase(&run_status, &tested);
+    let names = check_names(project.as_ref(), &tested);
     let statistics = names
         .iter()
-        .map(|name| check_statistic(name, &expedients, checks_in_progress))
+        .map(|name| check_statistic(name, &tested, checks_in_progress))
         .collect::<Vec<_>>();
     Ok(json!({"run_id": run_id, "statistics": statistics}))
 }
@@ -248,11 +251,12 @@ pub(crate) async fn rubric_stats(
 ) -> Result<Value, ServiceError> {
     let (run_id, run_status, project, expedients) =
         load_run_expedients(pool, artifact_root, requested_run_id).await?;
-    let checks_in_progress = is_check_phase(&run_status, &expedients);
-    let names = rubric_names(project.as_ref(), &expedients);
+    let tested = expedients_with_deliveries(&expedients);
+    let checks_in_progress = is_check_phase(&run_status, &tested);
+    let names = rubric_names(project.as_ref(), &tested);
     let statistics = names
         .iter()
-        .map(|name| rubric_statistic(name, &expedients, checks_in_progress))
+        .map(|name| rubric_statistic(name, &tested, checks_in_progress))
         .collect::<Vec<_>>();
     Ok(json!({"run_id": run_id, "statistics": statistics}))
 }
@@ -316,7 +320,7 @@ async fn load_run_expedients(
     };
     let project = load_project(artifact_root, &run_id);
     let rows = sqlx::query_as::<_, (String, Option<i64>, String, String, String)>(
-        "SELECT e.expedient_id, e.student_id, COALESCE(d.original_filename,''), e.status, e.report_path FROM vm_activity_expedients e LEFT JOIN vm_activity_deliveries d ON d.delivery_id=e.delivery_id WHERE e.run_id=? ORDER BY e.student_id, e.expedient_id",
+        "SELECT e.expedient_id, e.student_id, COALESCE(CASE WHEN e.delivery_id='__thot_unassigned__' THEN '' ELSE d.original_filename END,''), e.status, e.report_path FROM vm_activity_expedients e LEFT JOIN vm_activity_deliveries d ON d.delivery_id=e.delivery_id WHERE e.run_id=? ORDER BY e.student_id, e.expedient_id",
     )
     .bind(&run_id)
     .fetch_all(pool)
@@ -369,12 +373,25 @@ fn test_names(project: Option<&VMActivityProject>, expedients: &[ExpedientData])
     })
 }
 
+fn expedients_with_deliveries(expedients: &[ExpedientData]) -> Vec<ExpedientData> {
+    expedients
+        .iter()
+        .filter(|expedient| {
+            expedient.report["delivery_id"]
+                .as_str()
+                .is_some_and(|delivery_id| delivery_id != "__thot_unassigned__")
+        })
+        .cloned()
+        .collect()
+}
+
 fn check_names(project: Option<&VMActivityProject>, expedients: &[ExpedientData]) -> Vec<String> {
     let configured = project
         .map(|project| {
             project
                 .checks
                 .iter()
+                .filter(|check| check.check_ref != "import/csv")
                 .map(|check| check.name.clone())
                 .collect()
         })
@@ -395,6 +412,7 @@ fn rubric_names(project: Option<&VMActivityProject>, expedients: &[ExpedientData
             project
                 .rubrics
                 .iter()
+                .filter(|rubric| rubric.calculation != "import/csv")
                 .map(|rubric| rubric.name.clone())
                 .collect()
         })
@@ -418,6 +436,7 @@ fn evaluation_names(
             project
                 .evaluation
                 .iter()
+                .filter(|item| item.calculation != "import/csv")
                 .map(|item| item.name.clone())
                 .collect()
         })
@@ -956,7 +975,7 @@ async fn load_deliveries(
     run_id: &str,
 ) -> Result<Vec<DeliveryData>, ServiceError> {
     let rows = sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(
-        "SELECT e.delivery_id, (SELECT e2.report_path FROM vm_activity_expedients e2 WHERE e2.run_id=e.run_id AND e2.delivery_id=e.delivery_id ORDER BY e2.student_id, e2.expedient_id LIMIT 1), d.original_filename, COUNT(*), MAX(CASE WHEN e.status='running' THEN 1 ELSE 0 END), MAX(CASE WHEN e.status='pending' THEN 1 ELSE 0 END) FROM vm_activity_expedients e JOIN vm_activity_deliveries d ON d.delivery_id=e.delivery_id WHERE e.run_id=? GROUP BY e.delivery_id, d.original_filename ORDER BY d.original_filename COLLATE NOCASE, e.delivery_id",
+        "SELECT e.delivery_id, (SELECT e2.report_path FROM vm_activity_expedients e2 WHERE e2.run_id=e.run_id AND e2.delivery_id=e.delivery_id ORDER BY e2.student_id, e2.expedient_id LIMIT 1), d.original_filename, COUNT(*), MAX(CASE WHEN e.status='running' THEN 1 ELSE 0 END), MAX(CASE WHEN e.status='pending' THEN 1 ELSE 0 END) FROM vm_activity_expedients e JOIN vm_activity_deliveries d ON d.delivery_id=e.delivery_id WHERE e.run_id=? AND e.delivery_id!='__thot_unassigned__' GROUP BY e.delivery_id, d.original_filename ORDER BY d.original_filename COLLATE NOCASE, e.delivery_id",
     )
     .bind(run_id)
     .fetch_all(pool)

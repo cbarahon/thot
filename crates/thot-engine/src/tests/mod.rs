@@ -2,6 +2,7 @@
 pub mod aggr;
 #[path = "extern.rs"]
 pub mod extern_tests;
+pub mod import_csv;
 pub mod libguestfs;
 pub mod network;
 pub mod ssh;
@@ -27,6 +28,7 @@ pub async fn dispatch(invocation: &TestInvocation) -> TestOutcome {
         return libguestfs::run(invocation).await;
     }
     match invocation.test_reference.as_str() {
+        "import/csv" => import_csv::run(invocation).await,
         "ssh/get_host_info" => ssh::run(invocation).await,
         reference if reference.starts_with("VirtualBox/") => virtualbox::run(invocation).await,
         _ => TestOutcome::error(format!(

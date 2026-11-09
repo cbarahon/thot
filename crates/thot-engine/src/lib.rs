@@ -2,6 +2,7 @@
 
 pub mod assignments;
 pub mod checks;
+pub mod csv_import;
 pub mod delivery_executor;
 pub mod delivery_run_service;
 pub mod evaluation;

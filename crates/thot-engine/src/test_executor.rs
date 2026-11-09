@@ -3,7 +3,11 @@ use chrono::Utc;
 use regex::Regex;
 use serde_json::{Value, json};
 use serde_json_path::JsonPath;
-use std::{collections::HashMap, path::Path, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    time::Instant,
+};
 use thot_core::{VMActivityProject, test_results::TestStatus};
 
 use crate::{
@@ -17,6 +21,7 @@ pub async fn execute_project_tests(
     snapshot: &ProjectSnapshot,
     runtime: &VmActivityRuntime,
     input: &DeliveryInput,
+    skipped_test_names: &HashSet<String>,
     run_id: &str,
     expedient_id: &str,
     report_dir: &Path,
@@ -61,7 +66,19 @@ pub async fn execute_project_tests(
             let (record_dir, artifacts_dir) =
                 test_result_store::paths_for_test(report_dir, &input.filename, &test_name)
                     .map_err(|e| format!("cannot create test record directory: {e}"))?;
-            let mut outcome = if let Some(requirement) = unmet {
+            let mut outcome = if skipped_test_names.contains(&definition.name) {
+                TestOutcome {
+                    status: TestStatus::Passed,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    diagnostics:
+                        "execution omitted because an earlier import/csv test overrides this result"
+                            .into(),
+                    observation: json!({}),
+                    evidence: Vec::new(),
+                }
+            } else if let Some(requirement) = unmet {
                 TestOutcome::skipped(format!(
                     "required test {requirement:?} did not pass all repetitions"
                 ))

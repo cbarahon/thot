@@ -26,6 +26,8 @@ pub struct VMActivityProject {
     pub rubrics_multiplier: f64,
     #[serde(default = "default_multiplier")]
     pub evaluation_multiplier: f64,
+    #[serde(default)]
+    pub not_delivered_mark: Option<f64>,
 }
 
 fn default_multiplier() -> f64 {
@@ -55,6 +57,7 @@ pub struct ProjectCheck {
     pub description: Option<String>,
     #[serde(rename = "check")]
     pub check_ref: String,
+    #[serde(default)]
     pub test: String,
     #[serde(default)]
     pub property: Option<String>,
@@ -69,6 +72,7 @@ pub struct ProjectRubric {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(rename = "checks", alias = "checks_list")]
+    #[serde(default)]
     pub checks: Vec<String>,
     pub calculation: String,
     #[serde(default)]
@@ -82,6 +86,7 @@ pub struct ProjectEvaluation {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(rename = "rubrics", alias = "rubrics_list")]
+    #[serde(default)]
     pub rubrics: Vec<String>,
     pub calculation: String,
     #[serde(default)]
@@ -260,6 +265,19 @@ impl ParameterInput {
                         LABELED_JSONPATH_FILTER_PREFIX
                     };
                     format!("{prefix}{encoded}")
+                }
+                Value::Object(values) if key == "descriptions" => {
+                    if values
+                        .iter()
+                        .any(|(label, value)| label.trim().is_empty() || !value.is_string())
+                    {
+                        return Err(
+                            "parameter \"descriptions\" must map non-empty column names to strings"
+                                .into(),
+                        );
+                    }
+                    serde_json::to_string(values)
+                        .map_err(|error| format!("cannot encode descriptions mapping: {error}"))?
                 }
                 Value::Array(_) | Value::Object(_) => {
                     return Err(format!("parameter {key:?} must be a scalar"));

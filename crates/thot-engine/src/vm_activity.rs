@@ -116,6 +116,7 @@ pub async fn load_project(
         return Err("project source must be an archive file or directory".into());
     };
     let configuration = crate::project_config::parse_configuration(&configuration_bytes)?;
+    crate::csv_import::validate_project_files(&configuration, &extracted_root)?;
     let ssh_username = configuration
         .tests
         .iter()

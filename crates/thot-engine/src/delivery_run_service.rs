@@ -16,6 +16,8 @@ use crate::{
     vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime},
 };
 
+const UNASSIGNED_DELIVERY_ID: &str = "__thot_unassigned__";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub run_id: String,
@@ -36,8 +38,8 @@ pub struct RunExpedientSummary {
     pub student_id: Option<i64>,
     pub student_name: Option<String>,
     pub student_email: Option<String>,
-    pub delivery_id: String,
-    pub delivery_filename: String,
+    pub delivery_id: Option<String>,
+    pub delivery_filename: Option<String>,
     /// Lifecycle state shown to users: pending, running, or finished.
     pub status: String,
 }
@@ -66,8 +68,8 @@ struct StudentExpedientWork {
     student_surname: Option<String>,
     student_email: String,
     student_external_id: String,
-    delivery_id: String,
-    delivery_filename: String,
+    delivery_id: Option<String>,
+    delivery_filename: Option<String>,
     report_path: PathBuf,
 }
 
@@ -229,20 +231,15 @@ impl DeliveryRunService {
                 "concurrency greater than one is not supported for projects using shared VirtualBox or SSH forwarding ports".into(),
             ));
         }
-        let vbox_version = if uses_vm_ports {
+        let mut inputs = vm_activity::discover_deliveries(&selected, self.runtime.max_ova_bytes)
+            .map_err(ServiceError::Invalid)?;
+        let vbox_version = if uses_vm_ports && !inputs.is_empty() {
             vm_activity::preflight(&self.runtime)
                 .await
                 .map_err(ServiceError::Invalid)?
         } else {
             "not used".to_owned()
         };
-        let mut inputs = vm_activity::discover_deliveries(&selected, self.runtime.max_ova_bytes)
-            .map_err(ServiceError::Invalid)?;
-        if inputs.is_empty() {
-            return Err(ServiceError::Invalid(
-                "the project delivery folder contains no OVA files to assign".into(),
-            ));
-        }
         let mut inventory = Vec::with_capacity(inputs.len());
         for input in &mut inputs {
             let delivery_id = register_delivery(&self.pool, input).await?;
@@ -289,12 +286,13 @@ impl DeliveryRunService {
                 "the project has no students; import a roster before assigning deliveries and creating a run".into(),
             ));
         }
-        let assignments = sqlx::query_as::<_, (i64, String, Option<String>, String, String, String, String)>(
-            "SELECT ps.student_id, ps.name, ps.surname, ps.email, ps.external_id, pa.delivery_id, d.original_filename FROM project_assignments pa JOIN project_students ps ON ps.project_id=pa.project_id AND ps.student_id=pa.student_id JOIN vm_activity_deliveries d ON d.delivery_id=pa.delivery_id WHERE pa.project_id=? ORDER BY ps.student_id",
+        let assignments = sqlx::query_as::<_, (i64, String, Option<String>, String, String, Option<String>, Option<String>)>(
+            "SELECT ps.student_id, ps.name, ps.surname, ps.email, ps.external_id, pa.delivery_id, d.original_filename FROM project_students ps LEFT JOIN project_assignments pa ON pa.project_id=ps.project_id AND pa.student_id=ps.student_id LEFT JOIN vm_activity_deliveries d ON d.delivery_id=pa.delivery_id WHERE ps.project_id=? ORDER BY ps.student_id",
         )
         .bind(&snapshot.project_id)
         .fetch_all(&self.pool)
         .await?;
+        let has_unassigned_students = assignments.iter().any(|assignment| assignment.5.is_none());
         let mut student_work = Vec::with_capacity(assignments.len());
         for (
             student_id,
@@ -307,8 +305,8 @@ impl DeliveryRunService {
         ) in assignments
         {
             let base = format!(
-                "{}-{timestamp}-student-{student_id}",
-                expedient_file_component(&delivery_filename)
+                "{}-{run_id}",
+                expedient_external_id_component(&student_external_id)
             );
             let mut expedient_id = base.clone();
             let mut collision = 1_u32;
@@ -327,7 +325,7 @@ impl DeliveryRunService {
                 .artifact_root
                 .join(&snapshot.project_id)
                 .join(&run_id)
-                .join(&delivery_id);
+                .join(delivery_id.as_deref().unwrap_or(UNASSIGNED_DELIVERY_ID));
             let report_path = report_dir.join(format!("{expedient_id}.json"));
             student_work.push(StudentExpedientWork {
                 expedient_id,
@@ -347,13 +345,25 @@ impl DeliveryRunService {
             .collect::<Vec<_>>();
         let exp_data = serde_json::to_string(&expedient_ids).unwrap_or_else(|_| "[]".into());
         let mut transaction = self.pool.begin().await?;
+        if has_unassigned_students {
+            // The expedient table references deliveries with a foreign key. Keep a reserved row
+            // only while a run needs to represent students without a delivery.
+            sqlx::query("INSERT OR IGNORE INTO vm_activity_deliveries(delivery_id,collection_ref,source_ref,content_sha256,original_filename,byte_size) VALUES(?,?,?,?,?,0)")
+                .bind(UNASSIGNED_DELIVERY_ID)
+                .bind("__thot_internal__")
+                .bind("__unassigned__")
+                .bind("__thot_internal__")
+                .bind("unassigned")
+                .execute(&mut *transaction)
+                .await?;
+        }
         sqlx::query("INSERT INTO vm_activity_runs(run_id,project_id,delivery_directory,status,expedient_ids,created_at) VALUES(?,?,?,?,?,?)")
             .bind(&run_id).bind(&snapshot.project_id).bind(selected.display().to_string()).bind("queued").bind(exp_data).bind(&created_at).execute(&mut *transaction).await?;
         for work in &student_work {
             sqlx::query("INSERT INTO vm_activity_expedients(expedient_id,run_id,delivery_id,student_id,report_path,status) VALUES(?,?,?,?,?,?)")
                 .bind(&work.expedient_id)
                 .bind(&run_id)
-                .bind(&work.delivery_id)
+                .bind(work.delivery_id.as_deref().unwrap_or(UNASSIGNED_DELIVERY_ID))
                 .bind(work.student_id)
                 .bind(work.report_path.display().to_string())
                 .bind("pending")
@@ -418,17 +428,44 @@ impl DeliveryRunService {
             input: DeliveryInput,
             students: Vec<StudentExpedientWork>,
             report_dir: PathBuf,
+            skipped_tests: std::collections::HashSet<String>,
         }
         let mut inputs_by_id = inputs
             .into_iter()
             .map(|input| (input.delivery_id.clone(), input))
             .collect::<HashMap<_, _>>();
         let mut students_by_delivery = BTreeMap::<String, Vec<StudentExpedientWork>>::new();
+        let mut unassigned_students = Vec::new();
         for student in students {
-            students_by_delivery
-                .entry(student.delivery_id.clone())
-                .or_default()
-                .push(student);
+            if let Some(delivery_id) = student.delivery_id.as_deref() {
+                students_by_delivery
+                    .entry(delivery_id.to_owned())
+                    .or_default()
+                    .push(student);
+            } else {
+                unassigned_students.push(student);
+            }
+        }
+        let mut had_errors = false;
+        for student in unassigned_students {
+            let report = unassigned_expedient_report(&project, &run_id, &student);
+            if let Err(error) =
+                crate::test_result_store::persist_report(&student.report_path, &report)
+            {
+                tracing::error!(%error, expedient_id = %student.expedient_id, "could not persist unassigned student expedient");
+                had_errors = true;
+            }
+            if let Err(error) = sqlx::query(
+                "UPDATE vm_activity_expedients SET status='finished', report_path=? WHERE expedient_id=?",
+            )
+            .bind(student.report_path.display().to_string())
+            .bind(&student.expedient_id)
+            .execute(&self.pool)
+            .await
+            {
+                tracing::error!(%error, expedient_id = %student.expedient_id, "could not finish unassigned student expedient");
+                had_errors = true;
+            }
         }
         let expected_delivery_count = students_by_delivery.len();
         let mut work_items = Vec::with_capacity(expected_delivery_count);
@@ -443,13 +480,30 @@ impl DeliveryRunService {
                 .parent()
                 .unwrap_or(Path::new("."))
                 .to_path_buf();
+            let external_ids = assigned_students
+                .iter()
+                .map(|student| student.student_external_id.clone())
+                .collect::<Vec<_>>();
+            let skipped_tests = match crate::csv_import::tests_to_skip_for_students(
+                &project.configuration,
+                &project.extracted_root,
+                &external_ids,
+            ) {
+                Ok(tests) => tests,
+                Err(error) => {
+                    tracing::error!(%error, %delivery_id, "could not prepare imported test overrides");
+                    had_errors = true;
+                    std::collections::HashSet::new()
+                }
+            };
             work_items.push(DeliveryWork {
                 input,
                 students: assigned_students,
                 report_dir,
+                skipped_tests,
             });
         }
-        let mut had_errors = work_items.len() != expected_delivery_count;
+        had_errors |= work_items.len() != expected_delivery_count;
         let concurrency = project.configuration.concurrency.max(1) as usize;
         let outcomes = stream::iter(work_items)
             .map(|mut work| {
@@ -482,6 +536,7 @@ impl DeliveryRunService {
                     &run_id,
                     &execution_expedient_id,
                     &work.input,
+                    &work.skipped_tests,
                     &work.report_dir,
                     &execution_report_path,
                 ).await;
@@ -498,10 +553,23 @@ impl DeliveryRunService {
                         "email": student.student_email,
                         "external_id": student.student_external_id
                     });
+                    student_report["delivery_id"] = serde_json::json!(student.delivery_id);
                     student_report["delivery_filename"] = serde_json::json!(student.delivery_filename);
                     student_report["shared_delivery_execution"] = serde_json::json!(work.students.len() > 1);
+                    if let Err(error) = crate::csv_import::apply_test_imports(
+                        &project.configuration,
+                        &project.extracted_root,
+                        &student.student_external_id,
+                        &mut student_report,
+                    ) {
+                        student_report["csv_import_error"] = serde_json::json!(error);
+                        copy_failed = true;
+                    }
                     if let Err(error) = crate::test_result_store::persist_report(&student.report_path, &student_report) {
                         tracing::error!(%error, expedient_id = %student.expedient_id, "could not persist student expedient report");
+                        copy_failed = true;
+                    }
+                    if student_report["overall_status"] == "completed_with_errors" {
                         copy_failed = true;
                     }
                     if let Err(error) = sqlx::query("UPDATE vm_activity_expedients SET status='finished', report_path=? WHERE expedient_id=?")
@@ -522,20 +590,26 @@ impl DeliveryRunService {
             .await;
         had_errors |= outcomes.into_iter().any(|failed| failed);
         if !project.configuration.checks.is_empty()
-            && let Err(error) = self
+            || !project.configuration.rubrics.is_empty()
+            || !project.configuration.evaluation.is_empty()
+        {
+            if let Err(error) = self
                 .evaluate_saved_run_checks(
                     &run_id,
                     &project.configuration.checks,
                     &project.configuration.rubrics,
                     &project.configuration.evaluation,
                     &project.configuration.tests,
+                    &project.extracted_root,
                     project.configuration.rubrics_multiplier,
                     project.configuration.evaluation_multiplier,
+                    project.configuration.not_delivered_mark,
                 )
                 .await
-        {
-            tracing::error!(%error, %run_id, "could not evaluate run checks");
-            had_errors = true;
+            {
+                tracing::error!(%error, %run_id, "could not evaluate run checks");
+                had_errors = true;
+            }
         }
         let final_status = if self
             .get_run(&run_id)
@@ -737,12 +811,17 @@ impl DeliveryRunService {
             crate::project_config::parse_configuration(&configuration_bytes).map_err(|error| {
                 ServiceError::Internal(format!("project configuration for run is invalid: {error}"))
             })?;
-        if project.checks.is_empty() {
+        if project.checks.is_empty() && project.rubrics.is_empty() && project.evaluation.is_empty()
+        {
             return Err(ServiceError::Invalid(format!(
-                "no checks are configured for run {run_id:?} in the project configuration used at {}",
+                "no checks, rubrics, or evaluation items are configured for run {run_id:?} in the project configuration used at {}",
                 configuration_path.display()
             )));
         }
+        let project_root = configuration_path.parent().unwrap_or(Path::new("."));
+        crate::csv_import::validate_project_files(&project, project_root).map_err(|error| {
+            ServiceError::Internal(format!("project CSV import is invalid: {error}"))
+        })?;
 
         let result_rows = self
             .evaluate_saved_run_checks(
@@ -751,8 +830,10 @@ impl DeliveryRunService {
                 &project.rubrics,
                 &project.evaluation,
                 &project.tests,
+                project_root,
                 project.rubrics_multiplier,
                 project.evaluation_multiplier,
+                project.not_delivered_mark,
             )
             .await?;
         Ok(Some(RunChecksResponse {
@@ -769,8 +850,10 @@ impl DeliveryRunService {
         rubrics: &[thot_core::ProjectRubric],
         evaluation: &[thot_core::ProjectEvaluation],
         tests: &[thot_core::ProjectTest],
+        project_root: &Path,
         rubrics_multiplier: f64,
         evaluation_multiplier: f64,
+        not_delivered_mark: Option<f64>,
     ) -> Result<Vec<ExpedientChecksResult>, ServiceError> {
         let expedients = sqlx::query_as::<_, (String, Option<i64>, String)>(
             "SELECT expedient_id, student_id, report_path FROM vm_activity_expedients WHERE run_id=? ORDER BY student_id, expedient_id",
@@ -794,18 +877,93 @@ impl DeliveryRunService {
         }
         let reports_for_run = reports
             .iter()
+            .filter(|(_, _, _, report)| {
+                report["delivery_id"]
+                    .as_str()
+                    .is_some_and(|id| id != UNASSIGNED_DELIVERY_ID)
+            })
             .map(|(_, _, _, report)| report.clone())
             .collect::<Vec<_>>();
         let mut result_rows = Vec::with_capacity(reports.len());
         for (expedient_id, student_id, report_path, mut report) in reports {
-            let check_rows =
-                crate::checks::evaluate_checks(checks, tests, &report, &reports_for_run);
+            let has_delivery = report["delivery_id"]
+                .as_str()
+                .is_some_and(|id| id != UNASSIGNED_DELIVERY_ID);
+            let (check_rows, rubric_rows, evaluation_rows) = if has_delivery {
+                let configured_checks = checks
+                    .iter()
+                    .filter(|check| check.check_ref != "import/csv")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut check_rows = crate::checks::evaluate_checks(
+                    &configured_checks,
+                    tests,
+                    &report,
+                    &reports_for_run,
+                );
+                check_rows =
+                    crate::csv_import::check_rows(checks, project_root, &report, &check_rows)
+                        .map_err(|error| {
+                            ServiceError::Internal(format!("cannot import CSV checks: {error}"))
+                        })?;
+                let configured_rubrics = rubrics
+                    .iter()
+                    .filter(|rubric| rubric.calculation != "import/csv")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut rubric_rows = crate::rubrics::evaluate_rubrics(
+                    &configured_rubrics,
+                    &check_rows,
+                    rubrics_multiplier,
+                );
+                rubric_rows = crate::csv_import::rubric_rows(
+                    rubrics,
+                    project_root,
+                    &report,
+                    &rubric_rows,
+                    rubrics_multiplier,
+                )
+                .map_err(|error| {
+                    ServiceError::Internal(format!("cannot import CSV rubrics: {error}"))
+                })?;
+                let configured_evaluation = evaluation
+                    .iter()
+                    .filter(|item| item.calculation != "import/csv")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut evaluation_rows = crate::evaluation::evaluate_items(
+                    &configured_evaluation,
+                    &rubric_rows,
+                    evaluation_multiplier,
+                );
+                evaluation_rows = crate::csv_import::evaluation_rows(
+                    evaluation,
+                    project_root,
+                    &report,
+                    &evaluation_rows,
+                    evaluation_multiplier,
+                )
+                .map_err(|error| {
+                    ServiceError::Internal(format!("cannot import CSV evaluation: {error}"))
+                })?;
+                (check_rows, rubric_rows, evaluation_rows)
+            } else {
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    crate::csv_import::not_delivered_evaluation_rows(
+                        evaluation,
+                        project_root,
+                        not_delivered_mark,
+                        evaluation_multiplier,
+                    )
+                    .map_err(|error| {
+                        ServiceError::Internal(format!("cannot prepare undelivered marks: {error}"))
+                    })?,
+                )
+            };
             report["checks"] = serde_json::json!(check_rows);
-            let rubric_rows =
-                crate::rubrics::evaluate_rubrics(rubrics, &check_rows, rubrics_multiplier);
-            let evaluation_rows =
-                crate::evaluation::evaluate_items(evaluation, &rubric_rows, evaluation_multiplier);
-            let evaluation_status = if rubrics.is_empty() && evaluation.is_empty() {
+            let evaluation_status = if rubric_rows.is_empty() && evaluation_rows.is_empty() {
                 "not_evaluated"
             } else if rubric_rows.iter().any(|row| !row["err"].is_null())
                 || evaluation_rows.iter().any(|row| !row["err"].is_null())
@@ -846,7 +1004,7 @@ impl DeliveryRunService {
         &self,
         run_id: &str,
     ) -> Result<Vec<RunExpedientSummary>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, Option<i64>, Option<String>, Option<String>, String, String, String)>(
+        let rows = sqlx::query_as::<_, (String, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, String)>(
             "SELECT e.expedient_id, e.student_id, ps.name, ps.email, e.delivery_id, d.original_filename, e.status FROM vm_activity_expedients e JOIN vm_activity_runs run ON run.run_id=e.run_id LEFT JOIN project_students ps ON ps.project_id=run.project_id AND ps.student_id=e.student_id LEFT JOIN vm_activity_deliveries d ON d.delivery_id=e.delivery_id WHERE e.run_id=? ORDER BY ps.student_id, e.expedient_id",
         )
         .bind(run_id)
@@ -864,6 +1022,9 @@ impl DeliveryRunService {
                     delivery_filename,
                     status,
                 )| {
+                    let has_delivery = delivery_id
+                        .as_deref()
+                        .is_some_and(|value| value != UNASSIGNED_DELIVERY_ID);
                     let status = match status.as_str() {
                         "pending" | "queued" => "pending",
                         "running" => "running",
@@ -874,8 +1035,8 @@ impl DeliveryRunService {
                         student_id,
                         student_name,
                         student_email,
-                        delivery_id,
-                        delivery_filename,
+                        delivery_id: delivery_id.filter(|value| value != UNASSIGNED_DELIVERY_ID),
+                        delivery_filename: delivery_filename.filter(|_| has_delivery),
                         status: status.into(),
                     }
                 },
@@ -1173,6 +1334,57 @@ impl DeliveryRunService {
     }
 }
 
+fn unassigned_expedient_report(
+    project: &ProjectSnapshot,
+    run_id: &str,
+    student: &StudentExpedientWork,
+) -> serde_json::Value {
+    let now = chrono::Utc::now().to_rfc3339();
+    serde_json::json!({
+        "schema_version": 3,
+        "project_id": project.project_id,
+        "activity_name": project.configuration.activity_name,
+        "run_id": run_id,
+        "expedient_id": student.expedient_id,
+        "student": {
+            "student_id": student.student_id,
+            "name": student.student_name,
+            "surname": student.student_surname,
+            "email": student.student_email,
+            "external_id": student.student_external_id
+        },
+        "delivery_id": null,
+        "delivery_filename": null,
+        "shared_delivery_execution": false,
+        "execution_context": {
+            "project_archive": project.archive_path.file_name().and_then(|name| name.to_str()),
+            "project_config_sha256": project.sha256,
+            "engine_version": env!("CARGO_PKG_VERSION"),
+            "host_os": std::env::consts::OS,
+            "virtualbox_version": "not used"
+        },
+        "source": null,
+        "test_results": [],
+        "checks": [],
+        "rubrics": [],
+        "evaluation": {
+            "status": "not_evaluated",
+            "results": [],
+            "rubrics_multiplier": project.configuration.rubrics_multiplier,
+            "evaluation_multiplier": project.configuration.evaluation_multiplier,
+            "warnings": crate::project_config::configuration_warnings(
+                project.configuration.rubrics_multiplier,
+                project.configuration.evaluation_multiplier
+            )
+        },
+        "cleanup": {"status":"not_applicable", "details":["student has no assigned delivery"]},
+        "overall_status": "completed",
+        "started_at": now,
+        "finished_at": chrono::Utc::now().to_rfc3339(),
+        "duration_ms": 0
+    })
+}
+
 fn project_file_component(path: &Path) -> String {
     let filename = path
         .file_name()
@@ -1223,23 +1435,19 @@ fn safe_id_component(value: &str) -> String {
     }
 }
 
-fn expedient_file_component(value: &str) -> String {
-    let component: String = value
-        .chars()
-        .take(100)
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let component = component.trim_matches(|character| character == '_' || character == '.');
-    if component.is_empty() {
-        "delivery".into()
+fn expedient_external_id_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'@' | b'.' | b'_' | b'-' | b'+') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    if encoded.is_empty() {
+        "student".into()
     } else {
-        component.to_owned()
+        encoded
     }
 }
 
@@ -1360,10 +1568,14 @@ mod path_tests {
     }
 
     #[test]
-    fn expedient_id_component_preserves_filename_extension_safely() {
+    fn expedient_id_component_preserves_external_id_safely() {
         assert_eq!(
-            expedient_file_component("Alpine Test.Dani.ova"),
-            "Alpine_Test.Dani.ova"
+            expedient_external_id_component("student.name+1@example.org"),
+            "student.name+1@example.org"
+        );
+        assert_eq!(
+            expedient_external_id_component("student/one"),
+            "student%2Fone"
         );
     }
 
