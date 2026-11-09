@@ -129,14 +129,16 @@ email is used as `external_id`. The `get students csv` command writes project
 details to stderr and CSV rows to stdout.
 
 Project CSV imports use project-relative `filepath` values. A test declared as
-`test: import/csv` requires `external_id`, `stdout`, and `exit_code` columns and
-may include `stderr`; it can set `override_test` to replace that test's saved
-process result for matching students. Students without a CSV row keep their
+`test: import/csv` requires `stdout` and `exit_code` columns and may include
+`stderr`; it can set `override_test` to replace that test's saved process result.
+Each CSV uses exactly one key column: `external_id` applies a row to one
+student, while `delivery_name` applies it to every student assigned that exact
+deliverable filename. Students or deliveries without a CSV row keep their
 actual test result. Checks use `check: import/csv`; rubrics and evaluation
-items use `calculation: import/csv`. These CSV files have an `external_id`
-column and one numeric result column per check, rubric, or evaluation item.
-Optional `descriptions` maps column names to descriptions. A matching existing
-result is replaced only for students with a matching CSV row.
+items use `calculation: import/csv`. Their CSV files use the same key columns
+plus one numeric result column per check, rubric, or evaluation item. Optional
+`descriptions` maps column names to descriptions. A matching existing result
+is replaced for the student or delivery group matched by that row.
 
 `thot assignments guess` indexes the current project's delivery folder and
 compares student names, surnames, email usernames,

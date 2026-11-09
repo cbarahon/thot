@@ -75,7 +75,7 @@ Labeled and unlabeled entries may be mixed in one filter list. Mixed lists prese
 
 ## CSV result imports
 
-All import paths are relative to the root of the project archive or project directory. CSV rows are matched exactly by the `external_id` imported for each student. Students absent from a CSV keep their normal test/check/rubric/evaluation behavior. Test imports require `external_id`, `stdout`, and `exit_code`, and accept `stderr`. Check imports require `external_id` and one `0` or `1` result column per check; rubric and evaluation imports use numeric mark columns. An optional `descriptions` parameter maps imported column names to descriptions. A CSV column with the same name as an already calculated check, rubric, evaluation item, or override test replaces that result for students represented by the CSV.
+All import paths are relative to the root of the project archive or project directory. Each CSV must use exactly one identity column: `external_id` to match individual students, or `delivery_name` to match the assigned delivery filename. A `delivery_name` row applies its results to every student assigned that deliverable, which supports shared group submissions. Students or deliveries absent from a CSV keep their normal test/check/rubric/evaluation behavior. Test imports require `stdout` and `exit_code`, and accept `stderr`. Check imports require one `0` or `1` result column per check; rubric and evaluation imports use numeric mark columns. An optional `descriptions` parameter maps imported column names to descriptions. A CSV column with the same name as an already calculated check, rubric, evaluation item, or override test replaces that result for the students or delivery represented by the row.
 
 ```yaml
 tests:
@@ -108,6 +108,16 @@ evaluation:
         RA1: Operating systems installation
 ```
 
+To apply a row to every student assigned to one deliverable, use `delivery_name` as the CSV key instead. For example, a checks CSV can contain:
+
+```csv
+delivery_name,style,teamwork
+team_alpha.ova,1,1
+team_beta.ova,0,1
+```
+
+Each `delivery_name` must match the assigned filename exactly. A CSV cannot contain both identity columns, and keys must be unique within the file.
+
 An undelivered student still gets an expedient. The `not_delivered_mark` project setting can be a number or `null` (default); it is assigned to every evaluation item for that student. Test, check, and rubric sections stay empty. The per-student expedient ID is built from `external_id` and `run_id`.
 
 ## Tests
@@ -127,7 +137,7 @@ An undelivered student still gets an expedient. The `not_delivered_mark` project
 | `aggr/select` | `tests` (required list of earlier test names); optional `property`, `condition`, `value` | Defaults to selecting rows whose `status == passed`. A repeated test name selects all repetitions. Exactly one row must match; its `stdout`, `stderr`, and `exit_code` become this test's process output. Zero or multiple matches fail with an explanation. Scalar comparison types are inferred from the candidate and configured value. |
 | `aggr/join` | `tests` (required list); optional `filter_property`, `filter_condition`, `filter_value` | Concatenates selected results' stdout and stderr in configured test order. Repeated tests contribute each result in repetition order. Exit code is zero only when all included results have exit code zero. When filtering is configured, only matching results are joined; scalar comparison types are inferred. |
 | `stats/yaml_extract` | `tests`, `property`, `JSONPath` (required), `data_type` (optional; default `number`) | Reads a JSON or YAML document from the selected test-result property, extracts exactly one scalar using JSONPath, and writes a YAML summary to stdout. Use `stdout` for test output. |
-| `import/csv` | `filepath` (required project-relative CSV), `override_test` (optional configured test name) | Reads rows by `external_id`; requires `stdout` and `exit_code`, accepts optional `stderr`. An `exit_code` of 0 marks the imported result passed; other codes mark it failed. When `override_test` is set, matching students get the same captured process fields in that test's expedient row. Students missing from the CSV retain the actual override-test result. If the importer is earlier than the override test and covers every student assigned to a delivery, the engine skips that target once for the shared delivery execution. |
+| `import/csv` | `filepath` (required project-relative CSV), `override_test` (optional configured test name) | Reads rows by exactly one key: `external_id` for a student or `delivery_name` for an assigned delivery filename. Requires `stdout` and `exit_code`, accepts optional `stderr`. An `exit_code` of 0 marks the imported result passed; other codes mark it failed. A delivery-keyed row is copied to every student assigned that delivery. When `override_test` is set, matching expedients get the captured process fields in that test's row. Students or deliveries missing from the CSV retain the actual override-test result. If the importer is earlier than the override test and covers the relevant student or delivery group, the engine skips that target once for the shared execution. |
 | `extern/<path>` | Any project-specific scalar parameters | Resolves the path under the project `extern/` directory. `.py` files run with `python3`, `.sh` files with `sh`, and other files must be executable. Parameters are appended as `key=value` arguments. `THOT_ARTIFACT_DIR`, `VBOX_USER_HOME`, and `VBOX_MANAGE_PATH` are provided in the environment. stdout, stderr, exit code, timeout, and output limits are captured. These scripts run as trusted daemon child processes, not in a sandbox. |
 
 The two `stats/...` tests compute `count`, `max`, `min`, and `freq` (mode) for supported scalar types. Numeric values also include `avg`, population `var`, population `std`, and percentiles `p1`, `p5`, `p10`, `p20`, `p30`, `p40`, `p50`, `p60`, `p70`, `p80`, `p90`, `p95`, and `p99`. Percentiles use linear interpolation between sorted samples. Values that cannot be extracted are counted in `ignored_count`; the test errors if no sample can be extracted. Supported `data_type` values are `number`, `text`, `date` (`YYYY-MM-DD`), and `datetime` (RFC 3339).
@@ -146,7 +156,7 @@ Every check has a unique `name`, a configured test name in `test`, an implementa
 | `stats/regex_extract` | `property`; parameters `regex`, `data_type`, `stat`, `condition` | Extracts group 1 from each unique delivery's named test result, calculates a run-wide statistic, then compares this delivery's extracted value with it. |
 | `stats/yaml_extract` | `property`; parameters `JSONPath`, `data_type`, `stat`, `condition` | Extracts one scalar by JSONPath from each unique delivery's named test result, calculates a run-wide statistic, then compares this delivery's value with it. |
 | `aggr/checks` | Parameters `checks`, `condition`, and `value` for numeric conditions | Combines named check results. Supports `all`, `any`, `one`, `none`, `majority`, and comparisons of the passing-check count with an integer value. Referenced checks must be configured; aggregate dependencies may be nested but cannot contain cycles. |
-| `import/csv` | `filepath`; `descriptions` (optional map of CSV column to description) | Requires `external_id` plus one 0/1 column for each imported check. For each matching student row, each CSV column creates a check result; a column matching an existing configured check replaces that result. |
+| `import/csv` | `filepath`; `descriptions` (optional map of CSV column to description) | Requires exactly one of `external_id` or `delivery_name`, plus one 0/1 column for each imported check. Each result column creates a check result; a column matching an existing configured check replaces that result. A delivery-keyed row is applied to every student assigned that filename. |
 
 For `regex_extract`, `yaml_extract`, and the statistical checks, `data_type` is `number`, `text`, `date`, or `datetime`. The ordinary extract checks require a constant `value` for comparison operators; statistical checks instead require a `stat`. Valid comparison conditions are `<`, `<=`, `>`, `>=`, `==`, and `!=`; `contains` is available only for text. Predicate conditions are also supported: `r'<regex>'` passes when the candidate value matches the regular expression, and `json'<JSONPath>'` passes when the candidate JSON/YAML document has at least one JSONPath match. Predicate conditions do not need a comparison `value` or `data_type`. Quote these conditions in YAML, for example `condition: "r'^open$'"` or `condition: "json'$.users[?(@.username == \"tvadmin\")]'"`. The same condition forms are accepted by `aggr/select` and `aggr/join` filtering. Number comparisons require finite numbers. Dates use `YYYY-MM-DD`; datetimes use RFC 3339. `yaml_match` is a presence predicate and does not take comparison parameters.
 
@@ -213,7 +223,7 @@ Rubrics are configured in the root `rubrics` list. Each rubric has a unique `nam
 | `sum` | None | Sum of the check result values. |
 | `weighted_avg` | `weights` | Weighted mean. `weights` must contain one finite, non-negative number per check, in the same order, and their sum must be positive. The weighted sum is divided by the sum of weights. |
 
-Check results, including zero results that have an `err`, are the numeric inputs to rubrics. Rubrics are recalculated whenever checks are evaluated, including with `thot run checks [run-id]`. A rubric declaration with `calculation: import/csv` instead reads `external_id` and one numeric column per rubric; optional `descriptions` maps column names to descriptions. Matching CSV columns replace configured rubric results for those students.
+Check results, including zero results that have an `err`, are the numeric inputs to rubrics. Rubrics are recalculated whenever checks are evaluated, including with `thot run checks [run-id]`. A rubric declaration with `calculation: import/csv` instead reads exactly one of `external_id` or `delivery_name` and one numeric column per rubric; optional `descriptions` maps column names to descriptions. Matching CSV columns replace configured rubric results for the matching students or all students assigned to the named delivery.
 
 Evaluation items are configured under the root `evaluation` list. Each item has a unique `name`, optional `description`, an ordered `rubrics` list (or alias `rubrics_list`), a `calculation`, and optional `parameters`. They support the same aggregations and `weighted_avg` weights as rubrics, but use rubric results as inputs. The resulting final marks are saved under `evaluation.results`. `evaluation_multiplier` (default `1`) scales each calculated evaluation item. If both multipliers differ from `1`, run creation returns a warning and the expedient records it: rubric marks are scaled first, then evaluation marks are scaled again. Multipliers must be finite positive numbers.
 
@@ -233,7 +243,7 @@ evaluation:
       weights: [0.7, 0.3]
 ```
 
-Here each check contributes 0 or 10 to its rubric, while the final `RA1` mark remains on the same scale because `evaluation_multiplier` is 1. An evaluation declaration with `calculation: import/csv` reads `external_id` and one numeric column per evaluation item, with optional column descriptions; these imported marks replace same-named configured evaluation rows.
+Here each check contributes 0 or 10 to its rubric, while the final `RA1` mark remains on the same scale because `evaluation_multiplier` is 1. An evaluation declaration with `calculation: import/csv` reads exactly one of `external_id` or `delivery_name` and one numeric column per evaluation item, with optional column descriptions; these imported marks replace same-named configured evaluation rows for the matching students or delivery group.
 
 Every project student receives an expedient, even if no delivery is assigned. Such expedients keep tests, checks, and rubrics empty. Set `not_delivered_mark` in `configuration.yaml` to a number or `null` (default) to provide that value or leave evaluation results blank for each evaluation item. Each expedient ID combines the student's `external_id` and the run ID.
 
