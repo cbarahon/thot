@@ -14,7 +14,7 @@ This reference lists the test adapters and evaluation methods currently implemen
 | Test | `aggr/join` | Joins process output from earlier tests, optionally filtering the selected results. |
 | Test | `import/csv` | Imports stdout, stderr, and exit code from a project CSV by student external ID; can override another test result. |
 | Test | `extern/<path>` | Runs a project-provided Python, shell, or executable test program. |
-| Check | `pass`, `regex_match`, `regex_extract`, `yaml_match`, `yaml_extract`, `stats/regex_extract`, `stats/yaml_extract`, `import/csv` | Evaluates tests into numeric 0/1 values or imports per-student check results. |
+| Check | `pass`, `regex_match`, `regex_extract`, `yaml_match`, `yaml_extract`, `stats/regex_extract`, `stats/yaml_extract`, `aggr/checks`, `import/csv` | Evaluates tests, aggregates check results, or imports per-student check results. |
 | Rubric | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates configured checks or imports per-student rubric marks. |
 | Evaluation | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates rubric marks or imports per-student final marks for a learning outcome. |
 
@@ -145,6 +145,7 @@ Every check has a unique `name`, a configured test name in `test`, an implementa
 | `yaml_extract` | `property`; parameters `JSONPath`, `data_type`, `condition`, `value` | Parses the property as JSON or YAML (or uses a structured JSON value directly), selects exactly one scalar, and compares it with the configured constant. |
 | `stats/regex_extract` | `property`; parameters `regex`, `data_type`, `stat`, `condition` | Extracts group 1 from each unique delivery's named test result, calculates a run-wide statistic, then compares this delivery's extracted value with it. |
 | `stats/yaml_extract` | `property`; parameters `JSONPath`, `data_type`, `stat`, `condition` | Extracts one scalar by JSONPath from each unique delivery's named test result, calculates a run-wide statistic, then compares this delivery's value with it. |
+| `aggr/checks` | Parameters `checks`, `condition`, and `value` for numeric conditions | Combines named check results. Supports `all`, `any`, `one`, `none`, `majority`, and comparisons of the passing-check count with an integer value. Referenced checks must be configured; aggregate dependencies may be nested but cannot contain cycles. |
 | `import/csv` | `filepath`; `descriptions` (optional map of CSV column to description) | Requires `external_id` plus one 0/1 column for each imported check. For each matching student row, each CSV column creates a check result; a column matching an existing configured check replaces that result. |
 
 For `regex_extract`, `yaml_extract`, and the statistical checks, `data_type` is `number`, `text`, `date`, or `datetime`. The ordinary extract checks require a constant `value` for comparison operators; statistical checks instead require a `stat`. Valid comparison conditions are `<`, `<=`, `>`, `>=`, `==`, and `!=`; `contains` is available only for text. Predicate conditions are also supported: `r'<regex>'` passes when the candidate value matches the regular expression, and `json'<JSONPath>'` passes when the candidate JSON/YAML document has at least one JSONPath match. Predicate conditions do not need a comparison `value` or `data_type`. Quote these conditions in YAML, for example `condition: "r'^open$'"` or `condition: "json'$.users[?(@.username == \"tvadmin\")]'"`. The same condition forms are accepted by `aggr/select` and `aggr/join` filtering. Number comparisons require finite numbers. Dates use `YYYY-MM-DD`; datetimes use RFC 3339. `yaml_match` is a presence predicate and does not take comparison parameters.
@@ -174,6 +175,30 @@ Example regex match check:
   parameters:
     - regex: 'Forwarding\(\d+\)="[^"]*,tcp,,8080,,80"'
 ```
+
+An aggregate check does not use `test` or `property`. Its `checks` parameter is a list of check names, and `condition` selects how their 0/1 results are combined. `all`, `any`, `one`, `none`, and `majority` do not take `value`; `>=`, `<=`, `<`, `>`, `==`, and `!=` compare the number of passing checks with a non-negative integer `value`. For example:
+
+```yaml
+- name: linux_installed
+  description: At least one Linux root filesystem detector succeeded.
+  check: aggr/checks
+  parameters:
+    - checks: [system_info, tinycore_info]
+    - condition: any
+- name: mostly_correct
+  check: aggr/checks
+  parameters:
+    - checks: [ssh, http, dns, ntp]
+    - condition: majority
+- name: minimum_services
+  check: aggr/checks
+  parameters:
+    - checks: [ssh, http, dns, ntp]
+    - condition: '>='
+    - value: 3
+```
+
+`majority` means strictly more than half of the listed checks passed. A nested aggregate can refer to another aggregate check. Unknown check names, repeated names, and dependency cycles are rejected when loading the project configuration.
 
 ## Rubrics
 
