@@ -350,7 +350,7 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
                 ei_codes.get(&name).cloned().unwrap_or_default(),
                 name,
                 string(&item["description"]),
-                display_value(&item["result"]),
+                display_mark(&item["result"]),
             ]
         })
         .collect::<Vec<_>>();
@@ -395,7 +395,7 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
                 rubric
                     .map(|row| string(&row["description"]))
                     .unwrap_or_default(),
-                display_value(&ref_row["result"]),
+                display_mark(&ref_row["result"]),
             ]);
         }
         if !rows.is_empty() {
@@ -411,6 +411,7 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
         pdf.text("No rubric marks are available.");
     }
 
+    pdf.section_break();
     pdf.heading("How rubric marks were calculated");
     let mut matrix_rows = Vec::new();
     for item in evaluations {
@@ -448,6 +449,7 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
         );
     }
 
+    pdf.section_break();
     pdf.heading("Code guide");
     for item in evaluations {
         let name = string(&item["name"]);
@@ -483,6 +485,7 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
     }
     pdf.text("Check result: 1 means the requirement was met; 0 means it was not met. A blank mark means no result was recorded.");
 
+    pdf.section_break();
     pdf.heading("Test results appendix");
     pdf.text("These results show the evidence used to calculate the marks. Process output is included when available.");
     let tests = array(&report["test_results"]);
@@ -533,7 +536,7 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
             let mut row = student_columns(report);
             row.extend(evaluation_names.iter().map(|name| {
                 find_result(&report["evaluation"]["results"], name)
-                    .map(|item| display_value(&item["result"]))
+                    .map(|item| display_mark(&item["result"]))
                     .unwrap_or_default()
             }));
             row
@@ -571,7 +574,7 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
                 let mut row = student_columns(report);
                 row.extend(rubric_order.iter().map(|name| {
                     find_result(&report["rubrics"], name)
-                        .map(|item| display_value(&item["result"]))
+                        .map(|item| display_mark(&item["result"]))
                         .unwrap_or_default()
                 }));
                 row
@@ -584,6 +587,7 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
         }
     }
 
+    pdf.section_break();
     pdf.heading("Check results, grouped by rubric");
     for rubric_name in &rubric_names {
         let check_order = reports
@@ -627,6 +631,7 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
         pdf.table_dynamic(&headers, &rows);
     }
 
+    pdf.section_break();
     pdf.heading("Test outcomes by student");
     let mut headers = vec!["Student".to_owned(), "External ID".to_owned()];
     headers.extend(test_names.iter().cloned());
@@ -649,6 +654,7 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
         .collect::<Vec<_>>();
     pdf.table_dynamic(&headers, &rows);
 
+    pdf.section_break();
     pdf.heading("Code guide");
     for name in &evaluation_names {
         let description = reports
@@ -811,6 +817,23 @@ fn display_value(value: &Value) -> String {
     }
 }
 
+fn display_mark(value: &Value) -> String {
+    let Some(number) = value.as_f64().filter(|number| number.is_finite()) else {
+        return display_value(value);
+    };
+    let absolute = number.abs();
+    let decimals = if absolute > 100.0 {
+        0
+    } else if absolute > 10.0 {
+        1
+    } else if absolute > 1.0 || absolute == 0.0 {
+        2
+    } else {
+        (2.0 - absolute.log10().floor()).clamp(0.0, 8.0) as usize
+    };
+    format!("{number:.decimals$}")
+}
+
 struct PdfDocument {
     width: f32,
     height: f32,
@@ -838,6 +861,12 @@ impl PdfDocument {
 
     fn ensure(&mut self, height: f32) {
         if self.y + height > self.height - 40.0 {
+            self.page();
+        }
+    }
+
+    fn section_break(&mut self) {
+        if self.y > 45.0 {
             self.page();
         }
     }
@@ -886,28 +915,69 @@ impl PdfDocument {
             return;
         }
         let usable = self.width - 72.0;
-        let mut weights = headers
+        let widths = headers
             .iter()
-            .map(|header| {
-                if header == "Student" {
-                    2.6
-                } else if header == "External ID" {
-                    1.8
-                } else {
-                    1.0
+            .enumerate()
+            .map(|(column, header)| {
+                let max_chars = rows
+                    .iter()
+                    .filter_map(|row| row.get(column))
+                    .map(|value| value.chars().count())
+                    .chain(std::iter::once(header.chars().count()))
+                    .max()
+                    .unwrap_or(0) as f32;
+                let desired = max_chars * 3.8 + 10.0;
+                match column {
+                    0 => desired.clamp(58.0, 125.0),
+                    1 => desired.clamp(48.0, 105.0),
+                    _ => desired.clamp(30.0, 82.0),
                 }
             })
             .collect::<Vec<_>>();
-        let total = weights.iter().sum::<f32>();
-        let widths = weights
-            .iter_mut()
-            .map(|weight| {
-                let width = usable * *weight / total;
-                *weight = width;
-                width
-            })
-            .collect::<Vec<_>>();
-        self.table_with_widths(headers, rows, &widths);
+        let total = widths.iter().sum::<f32>();
+        if total <= usable || headers.len() <= 2 {
+            self.table_with_widths(headers, rows, &widths);
+            return;
+        }
+
+        // Keep student identity columns fixed and split wider matrices into readable blocks.
+        let identity_width = widths.iter().take(2).sum::<f32>().min(usable * 0.55);
+        let mut chunks: Vec<Vec<usize>> = Vec::new();
+        let mut current = Vec::new();
+        let mut current_width = identity_width;
+        for column in 2..headers.len() {
+            if !current.is_empty() && current_width + widths[column] > usable {
+                chunks.push(std::mem::take(&mut current));
+                current_width = identity_width;
+            }
+            current.push(column);
+            current_width += widths[column];
+        }
+        if !current.is_empty() {
+            chunks.push(current);
+        }
+        for chunk in chunks {
+            let mut indexes = vec![0, 1];
+            indexes.extend(chunk);
+            let chunk_headers = indexes
+                .iter()
+                .map(|&column| headers[column].clone())
+                .collect::<Vec<_>>();
+            let chunk_widths = indexes
+                .iter()
+                .map(|&column| widths[column])
+                .collect::<Vec<_>>();
+            let chunk_rows = rows
+                .iter()
+                .map(|row| {
+                    indexes
+                        .iter()
+                        .map(|&column| row.get(column).cloned().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            self.table_with_widths(&chunk_headers, &chunk_rows, &chunk_widths);
+        }
     }
 
     fn table_with_widths(&mut self, headers: &[String], rows: &[Vec<String>], widths: &[f32]) {
@@ -929,7 +999,6 @@ impl PdfDocument {
             }
             self.draw_table_row(&cells, widths, total_width, false);
         }
-        self.line(36.0, self.y - 3.0, 36.0 + total_width, self.y - 3.0);
         self.y += 8.0;
     }
 
@@ -947,7 +1016,6 @@ impl PdfDocument {
             .collect::<Vec<_>>();
         let row_height =
             (lines.iter().map(Vec::len).max().unwrap_or(1) as f32 * 9.0 + 7.0).max(18.0);
-        self.line(36.0, self.y - 3.0, 36.0 + total_width, self.y - 3.0);
         let mut x = 40.0;
         for (index, column) in lines.iter().enumerate() {
             for (line_index, line) in column.iter().enumerate() {
@@ -956,6 +1024,7 @@ impl PdfDocument {
             x += widths.get(index).copied().unwrap_or(40.0);
         }
         self.y += row_height;
+        self.line(36.0, self.y - 3.0, 36.0 + total_width, self.y - 3.0);
     }
 
     fn draw_text(&mut self, x: f32, y_from_top: f32, size: f32, bold: bool, value: &str) {
