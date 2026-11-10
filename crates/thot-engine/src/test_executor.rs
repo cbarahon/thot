@@ -154,6 +154,7 @@ pub async fn execute_project_tests(
                 "test_result_id": result_id,
                 "test_id": test_name,
                 "test_reference": definition.test_ref,
+                "test_description": definition.description,
                 "status": outcome.status,
                 "start_time": now.to_rfc3339(),
                 "end_time": ended.to_rfc3339(),

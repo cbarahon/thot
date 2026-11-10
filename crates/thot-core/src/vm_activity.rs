@@ -40,6 +40,8 @@ pub struct ProjectTest {
     #[serde(rename = "test")]
     pub test_ref: String,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub requirements: Vec<String>,
     #[serde(default = "default_repeat")]
     pub repeat: usize,

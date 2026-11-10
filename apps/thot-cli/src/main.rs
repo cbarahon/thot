@@ -2,6 +2,7 @@
 mod api_client;
 mod assignment_commands;
 mod delivery_commands;
+mod grade_reports;
 mod maintenance_commands;
 mod output;
 mod report_commands;
@@ -64,7 +65,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
             assignment_commands::handle(&options.command[1..], &settings).await?;
         }
         [command, ..] if command == "report" => {
-            report_commands::handle(&options.command[1..], &settings).await?;
+            if options.command.get(1).is_some_and(|arg| arg == "grades") {
+                grade_reports::handle(&options.command[2..], &settings).await?;
+            } else {
+                report_commands::handle(&options.command[1..], &settings).await?;
+            }
         }
         [run, ..] if run == "run" => {
             delivery_commands::handle(&options.command[1..], &settings).await?;
@@ -624,6 +629,9 @@ fn write_csv_record(output: &mut impl Write, fields: &[&str]) -> io::Result<()> 
 fn print_usage() {
     println!(
         "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot assignments guess [--json]\n  thot assignments get [--json]\n  thot assignments import <fichero.yaml|json> [--json]\n  thot clean\n  thot prune\n  thot reset\n  thot report runs [--csv|--yaml|--json]\n  thot report deliveries [RUN_ID] [--csv|--yaml|--json]\n  thot report deliveries tests [RUN_ID] [--csv|--yaml|--json]\n  thot report deliveries checks [RUN_ID] [--csv|--yaml|--json]\n  thot report test_stats [RUN_ID] [--csv|--yaml|--json]\n  thot report checks_stats [RUN_ID] [--csv|--yaml|--json]\n  thot report rubric_stats [RUN_ID] [--csv|--yaml|--json]\n  thot report expedients [RUN_ID] [--csv|--yaml|--json]\n  thot run [list]\n  thot run create <ruta-proyecto> [--deliveries DIR]\n  thot run create --project <ruta-proyecto> [--deliveries DIR]\n  thot run status [RUN_ID]\n  thot run checks [RUN_ID]\n  thot run delete RUN_ID\n  thot run expedient EXPEDIENT_ID\n  thot run cancel RUN_ID\n  thot run cleanup EXPEDIENT_ID\n\nLos informes se muestran como tabla; use --csv, --yaml o --json para exportarlos.\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
+    );
+    println!(
+        "  thot report grades --students --pdf [RUN_ID] [--output-dir DIR]\n  thot report grades --professor --pdf [RUN_ID] [--output-dir DIR]\n  thot report grades --evaluation-items --csv [RUN_ID]"
     );
 }
 
