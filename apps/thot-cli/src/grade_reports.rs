@@ -338,16 +338,11 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
     pdf.heading("Final grades");
 
     let evaluations = array(&report["evaluation"]["results"]);
-    let ei_codes = codes(
-        "EI",
-        evaluations.iter().filter_map(|row| row["name"].as_str()),
-    );
     let eval_rows = evaluations
         .iter()
         .map(|item| {
             let name = string(&item["name"]);
             vec![
-                ei_codes.get(&name).cloned().unwrap_or_default(),
                 name,
                 string(&item["description"]),
                 display_mark(&item["result"]),
@@ -358,18 +353,14 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
         pdf.text("No final evaluation marks are available for this report.");
     } else {
         pdf.table(
-            &["Code", "Evaluation item", "Description", "Mark"],
+            &["Evaluation item", "Description", "Mark"],
             &eval_rows,
-            &[44.0, 125.0, 300.0, 55.0],
+            &[150.0, 320.0, 55.0],
         );
     }
 
     let rubric_rows = array(&report["rubrics"]);
     let check_rows = array(&report["checks"]);
-    let rubric_codes = codes(
-        "R",
-        rubric_rows.iter().filter_map(|row| row["name"].as_str()),
-    );
     let check_codes = codes(
         "C",
         check_rows.iter().filter_map(|row| row["name"].as_str()),
@@ -378,11 +369,7 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
     let mut found_rubric = false;
     for item in evaluations {
         let item_name = string(&item["name"]);
-        pdf.subheading(&format!(
-            "{} — {}",
-            ei_codes.get(&item_name).cloned().unwrap_or_default(),
-            item_name
-        ));
+        pdf.subheading(&name_description(&item_name, &item["description"]));
         let mut rows = Vec::new();
         for ref_row in array(&item["rubric_results"]) {
             let name = string(&ref_row["name"]);
@@ -390,7 +377,6 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
                 .iter()
                 .find(|row| row["name"].as_str() == Some(&name));
             rows.push(vec![
-                rubric_codes.get(&name).cloned().unwrap_or_default(),
                 name,
                 rubric
                     .map(|row| string(&row["description"]))
@@ -401,9 +387,9 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
         if !rows.is_empty() {
             found_rubric = true;
             pdf.table(
-                &["Code", "Rubric", "Description", "Mark"],
+                &["Rubric", "Description", "Mark"],
                 &rows,
-                &[44.0, 125.0, 300.0, 55.0],
+                &[150.0, 320.0, 55.0],
             );
         }
     }
@@ -413,77 +399,78 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
 
     pdf.section_break();
     pdf.heading("How rubric marks were calculated");
-    let mut matrix_rows = Vec::new();
+    let mut abbreviated_checks = BTreeSet::new();
     for item in evaluations {
         let ei_name = string(&item["name"]);
+        let mut check_names = Vec::new();
+        for rubric_ref in array(&item["rubric_results"]) {
+            let r_name = string(&rubric_ref["name"]);
+            if let Some(rubric) = rubric_rows
+                .iter()
+                .find(|row| row["name"].as_str() == Some(&r_name))
+            {
+                for check in array(&rubric["check_results"]) {
+                    let check_name = string(&check["name"]);
+                    if !check_names.contains(&check_name) {
+                        check_names.push(check_name);
+                    }
+                }
+            }
+        }
+        if check_names.is_empty() {
+            continue;
+        }
+        let use_names = full_column_names_fit(&check_names, 245.0, pdf.width);
+        if !use_names {
+            abbreviated_checks.extend(check_names.iter().cloned());
+        }
+        pdf.subheading(&name_description(&ei_name, &item["description"]));
+        let mut matrix_rows = Vec::new();
         for rubric_ref in array(&item["rubric_results"]) {
             let r_name = string(&rubric_ref["name"]);
             let rubric = rubric_rows
                 .iter()
                 .find(|row| row["name"].as_str() == Some(&r_name));
             let Some(rubric) = rubric else { continue };
-            for check_ref in array(&rubric["check_results"]) {
-                let c_name = string(&check_ref["name"]);
-                let check = check_rows
+            let mut row = vec![r_name, display_mark(&rubric_ref["result"])];
+            row.extend(check_names.iter().map(|check_name| {
+                array(&rubric["check_results"])
                     .iter()
-                    .find(|row| row["name"].as_str() == Some(&c_name));
-                matrix_rows.push(vec![
-                    ei_codes.get(&ei_name).cloned().unwrap_or_default(),
-                    rubric_codes.get(&r_name).cloned().unwrap_or_default(),
-                    check_codes.get(&c_name).cloned().unwrap_or_default(),
-                    display_value(&check_ref["result"]),
-                    check
-                        .map(|row| string(&row["description"]))
-                        .unwrap_or_default(),
-                ]);
-            }
+                    .find(|check| check["name"].as_str() == Some(check_name))
+                    .map(|check| check_symbol(&check["result"]))
+                    .unwrap_or_default()
+            }));
+            matrix_rows.push(row);
         }
-    }
-    if matrix_rows.is_empty() {
-        pdf.text("No check-level rubric details are available.");
-    } else {
-        pdf.table(
-            &["EI", "Rubric", "Check", "Result", "Check description"],
-            &matrix_rows,
-            &[38.0, 54.0, 54.0, 55.0, 323.0],
-        );
+        let mut headers = vec!["Rubric".to_owned(), "Rubric mark".to_owned()];
+        headers.extend(check_names.iter().map(|name| {
+            if use_names {
+                name.clone()
+            } else {
+                check_codes
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone())
+            }
+        }));
+        pdf.table_dynamic(&headers, &matrix_rows);
     }
 
     pdf.section_break();
     pdf.heading("Code guide");
-    for item in evaluations {
-        let name = string(&item["name"]);
-        pdf.text(&format!(
-            "{}: {} — {}",
-            ei_codes.get(&name).cloned().unwrap_or_default(),
-            name,
-            string(&item["description"])
-        ));
-        for rubric_ref in array(&item["rubric_results"]) {
-            let name = string(&rubric_ref["name"]);
-            let rubric = rubric_rows
-                .iter()
-                .find(|row| row["name"].as_str() == Some(&name));
-            pdf.text(&format!(
-                "  {}: {} — {}",
-                rubric_codes.get(&name).cloned().unwrap_or_default(),
-                name,
-                rubric
-                    .map(|row| string(&row["description"]))
-                    .unwrap_or_default()
-            ));
-        }
-    }
-    for check in check_rows {
-        let name = string(&check["name"]);
-        pdf.text(&format!(
-            "{}: {} — {}",
-            check_codes.get(&name).cloned().unwrap_or_default(),
-            name,
-            string(&check["description"])
-        ));
-    }
-    pdf.text("Check result: 1 means the requirement was met; 0 means it was not met. A blank mark means no result was recorded.");
+    let check_key = check_rows
+        .iter()
+        .filter(|check| abbreviated_checks.contains(check["name"].as_str().unwrap_or_default()))
+        .map(|check| {
+            let name = string(&check["name"]);
+            (
+                check_codes.get(&name).cloned().unwrap_or_default(),
+                name_description(&name, &check["description"]),
+            )
+        })
+        .collect::<Vec<_>>();
+    write_code_key(pdf, "Check reference", &check_key, 3);
+    pdf.text("v means the check passed; X means it did not pass. A blank rubric mark means no result was recorded.");
 
     pdf.section_break();
     pdf.heading("Test results appendix");
@@ -523,13 +510,26 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
     let ei_codes = codes("EI", evaluation_names.iter().map(String::as_str));
     let rubric_codes = codes("R", rubric_names.iter().map(String::as_str));
     let check_codes = codes("C", check_names.iter().map(String::as_str));
+    let mut abbreviated_evaluations = BTreeSet::new();
+    let mut abbreviated_rubrics = BTreeSet::new();
+    let mut abbreviated_checks = BTreeSet::new();
 
     pdf.heading("Professor grade summary");
     pdf.text(&format!("Project: {project}    Run: {run_id}"));
     pdf.text(&format!("Students included: {}", reports.len()));
     pdf.heading("Final grades by evaluation item");
     let mut headers = vec!["Student".to_owned(), "External ID".to_owned()];
-    headers.extend(evaluation_names.iter().map(|name| ei_codes[name].clone()));
+    let use_evaluation_names = full_column_names_fit(&evaluation_names, 230.0, pdf.width);
+    if !use_evaluation_names {
+        abbreviated_evaluations.extend(evaluation_names.iter().cloned());
+    }
+    headers.extend(evaluation_names.iter().map(|name| {
+        if use_evaluation_names {
+            name.clone()
+        } else {
+            ei_codes[name].clone()
+        }
+    }));
     let rows = reports
         .iter()
         .map(|report| {
@@ -557,16 +557,31 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        pdf.subheading(&format!(
-            "{} — {evaluation_name}",
-            ei_codes[evaluation_name]
+        let evaluation_description = reports
+            .iter()
+            .find_map(|report| {
+                find_result(&report["evaluation"]["results"], evaluation_name)
+                    .and_then(|item| item["description"].as_str())
+            })
+            .unwrap_or_default();
+        pdf.subheading(&name_description_value(
+            evaluation_name,
+            evaluation_description,
         ));
+        let use_rubric_names = full_column_names_fit(&rubric_order, 230.0, pdf.width);
+        if !use_rubric_names {
+            abbreviated_rubrics.extend(rubric_order.iter().cloned());
+        }
         let mut headers = vec!["Student".to_owned(), "External ID".to_owned()];
         headers.extend(rubric_order.iter().map(|name| {
-            rubric_codes
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| name.clone())
+            if use_rubric_names {
+                name.clone()
+            } else {
+                rubric_codes
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone())
+            }
         }));
         let rows = reports
             .iter()
@@ -602,13 +617,28 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| check_names.clone());
-        pdf.subheading(&format!("{} — {rubric_name}", rubric_codes[rubric_name]));
+        let rubric_description = reports
+            .iter()
+            .find_map(|report| {
+                find_result(&report["rubrics"], rubric_name)
+                    .and_then(|rubric| rubric["description"].as_str())
+            })
+            .unwrap_or_default();
+        pdf.subheading(&name_description_value(rubric_name, rubric_description));
+        let use_check_names = full_column_names_fit(&check_order, 230.0, pdf.width);
+        if !use_check_names {
+            abbreviated_checks.extend(check_order.iter().cloned());
+        }
         let mut headers = vec!["Student".to_owned(), "External ID".to_owned()];
         headers.extend(check_order.iter().map(|name| {
-            check_codes
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| name.clone())
+            if use_check_names {
+                name.clone()
+            } else {
+                check_codes
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone())
+            }
         }));
         let rows = reports
             .iter()
@@ -618,10 +648,10 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
                 row.extend(check_order.iter().map(|name| {
                     rubric
                         .and_then(|rubric| find_result(&rubric["check_results"], name))
-                        .map(|check| display_value(&check["result"]))
+                        .map(|check| check_symbol(&check["result"]))
                         .or_else(|| {
                             find_result(&report["checks"], name)
-                                .map(|check| display_value(&check["result"]))
+                                .map(|check| check_symbol(&check["result"]))
                         })
                         .unwrap_or_default()
                 }));
@@ -656,35 +686,106 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
 
     pdf.section_break();
     pdf.heading("Code guide");
-    for name in &evaluation_names {
-        let description = reports
-            .iter()
-            .find_map(|report| {
-                find_result(&report["evaluation"]["results"], name)
-                    .and_then(|item| item["description"].as_str())
-            })
-            .unwrap_or_default();
-        pdf.text(&format!("{}: {name} — {description}", ei_codes[name]));
+    write_code_key(
+        pdf,
+        "Evaluation item references",
+        &code_key_entries(&abbreviated_evaluations, &ei_codes, reports, "evaluation"),
+        4,
+    );
+    write_code_key(
+        pdf,
+        "Rubric references",
+        &code_key_entries(&abbreviated_rubrics, &rubric_codes, reports, "rubrics"),
+        4,
+    );
+    write_code_key(
+        pdf,
+        "Check references",
+        &code_key_entries(&abbreviated_checks, &check_codes, reports, "checks"),
+        4,
+    );
+    pdf.text("v means a check passed; X means it did not pass. Pass means a test completed successfully; No pass includes test failures and errors.");
+}
+
+fn full_column_names_fit(names: &[String], reserved_width: f32, page_width: f32) -> bool {
+    let names_width = names
+        .iter()
+        .map(|name| name.chars().count() as f32 * 3.8 + 10.0)
+        .sum::<f32>();
+    reserved_width + names_width <= page_width - 72.0
+}
+
+fn name_description(name: &str, description: &Value) -> String {
+    name_description_value(name, description.as_str().unwrap_or_default())
+}
+
+fn name_description_value(name: &str, description: &str) -> String {
+    if description.trim().is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} — {}", description.trim())
     }
-    for name in &rubric_names {
-        let description = reports
-            .iter()
-            .find_map(|report| {
-                find_result(&report["rubrics"], name).and_then(|item| item["description"].as_str())
-            })
-            .unwrap_or_default();
-        pdf.text(&format!("{}: {name} — {description}", rubric_codes[name]));
+}
+
+fn check_symbol(result: &Value) -> String {
+    if result.as_i64() == Some(1) || result.as_f64() == Some(1.0) {
+        "v".to_owned()
+    } else {
+        "X".to_owned()
     }
-    for name in &check_names {
-        let description = reports
-            .iter()
-            .find_map(|report| {
-                find_result(&report["checks"], name).and_then(|item| item["description"].as_str())
-            })
-            .unwrap_or_default();
-        pdf.text(&format!("{}: {name} — {description}", check_codes[name]));
+}
+
+fn code_key_entries(
+    names: &BTreeSet<String>,
+    codes: &BTreeMap<String, String>,
+    reports: &[Value],
+    category: &str,
+) -> Vec<(String, String)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let code = codes.get(name)?.clone();
+            let description = reports.iter().find_map(|report| {
+                let rows = match category {
+                    "evaluation" => &report["evaluation"]["results"],
+                    "rubrics" => &report["rubrics"],
+                    "checks" => &report["checks"],
+                    _ => return None,
+                };
+                find_result(rows, name)
+                    .and_then(|row| row["description"].as_str())
+                    .map(str::to_owned)
+            });
+            Some((
+                code,
+                name_description_value(name, description.as_deref().unwrap_or_default()),
+            ))
+        })
+        .collect()
+}
+
+fn write_code_key(
+    pdf: &mut PdfDocument,
+    title: &str,
+    entries: &[(String, String)],
+    columns: usize,
+) {
+    if entries.is_empty() {
+        return;
     }
-    pdf.text("Check result: 1 means the requirement was met; 0 means it was not met. Pass means a test completed successfully; No pass includes test failures and errors.");
+    pdf.subheading(title);
+    for chunk in entries.chunks(columns.max(1)) {
+        let headers = chunk
+            .iter()
+            .map(|(code, _)| code.clone())
+            .collect::<Vec<_>>();
+        let descriptions = chunk
+            .iter()
+            .map(|(_, description)| description.clone())
+            .collect::<Vec<_>>();
+        let widths = vec![(pdf.width - 72.0) / chunk.len() as f32; chunk.len()];
+        pdf.table_with_widths(&headers, &[descriptions], &widths);
+    }
 }
 
 fn append_output(pdf: &mut PdfDocument, label: &str, value: &str) {
