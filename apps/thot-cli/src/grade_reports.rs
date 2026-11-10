@@ -1024,7 +1024,7 @@ impl PdfDocument {
             x += widths.get(index).copied().unwrap_or(40.0);
         }
         self.y += row_height;
-        self.line(36.0, self.y - 3.0, 36.0 + total_width, self.y - 3.0);
+        self.line(36.0, self.y - 12.0, 36.0 + total_width, self.y - 12.0);
     }
 
     fn draw_text(&mut self, x: f32, y_from_top: f32, size: f32, bold: bool, value: &str) {
