@@ -2126,6 +2126,8 @@ impl PdfDocument {
             let width = widths.get(index).copied().unwrap_or(40.0);
             if cells.get(index).is_some_and(|cell| cell == "✓") {
                 self.draw_checkmark(x + width / 2.0, self.y);
+            } else if cells.get(index).is_some_and(|cell| cell == "X") {
+                self.draw_text(x + (width - 5.0) / 2.0, self.y, 7.3, is_header, "X");
             } else if !is_header {
                 match cells.get(index).map(String::as_str) {
                     Some("Pass") => {
