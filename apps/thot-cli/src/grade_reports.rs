@@ -2185,9 +2185,9 @@ impl PdfDocument {
 
     fn draw_checkmark(&mut self, center_x: f32, top: f32) {
         let points = [
-            (center_x - 4.0, top + 9.0),
-            (center_x - 1.0, top + 12.0),
-            (center_x + 5.0, top + 5.0),
+            (center_x - 9.0, top - 1.0),
+            (center_x - 6.0, top + 2.0),
+            (center_x + 0.0, top - 5.0),
         ];
         let pdf_y = |y_from_top: f32| self.height - y_from_top;
         self.pages.last_mut().unwrap().push(format!(
