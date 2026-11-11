@@ -2,8 +2,8 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::Deserialize;
@@ -18,6 +18,14 @@ pub(super) fn router(service: DeliveryRunService) -> Router {
         .route("/api/v1/runs/{run_id}", get(get_run).delete(delete_run))
         .route("/api/v1/runs/{run_id}/cancel", post(cancel_run))
         .route("/api/v1/expedients/{expedient_id}", get(get_expedient))
+        .route(
+            "/api/v1/expedients/{expedient_id}/artifacts",
+            get(list_expedient_artifacts),
+        )
+        .route(
+            "/api/v1/expedients/{expedient_id}/artifacts/{*artifact_path}",
+            get(get_expedient_artifact),
+        )
         .route(
             "/api/v1/expedients/{expedient_id}/cleanup",
             post(cleanup_expedient),
@@ -104,6 +112,41 @@ async fn get_expedient(
         .await?
         .map(Json)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "expedient not found".into()))
+}
+
+#[derive(Debug, Deserialize)]
+struct ExpedientArtifactPath {
+    expedient_id: String,
+    artifact_path: String,
+}
+
+async fn list_expedient_artifacts(
+    State(service): State<DeliveryRunService>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<thot_engine::delivery_run_service::ExpedientArtifactInfo>>, ApiError> {
+    service
+        .list_expedient_artifacts(&id)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "expedient not found".into()))
+}
+
+async fn get_expedient_artifact(
+    State(service): State<DeliveryRunService>,
+    Path(path): Path<ExpedientArtifactPath>,
+) -> Result<Response, ApiError> {
+    let artifact = service
+        .get_expedient_artifact(&path.expedient_id, &path.artifact_path)
+        .await?
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "artifact not found".into()))?;
+    let content_type = HeaderValue::from_str(&artifact.content_type)
+        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, artifact.bytes.len())
+        .body(axum::body::Body::from(artifact.bytes))
+        .map_err(|error| ApiError(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
 }
 
 async fn cleanup_expedient(

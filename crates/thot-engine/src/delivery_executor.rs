@@ -9,6 +9,72 @@ use crate::{
     vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime},
 };
 
+/// Keep the grade formula definitions with each saved expedient without copying test secrets.
+pub fn grading_plan(configuration: &thot_core::VMActivityProject) -> Value {
+    let weights = |parameters: &thot_core::ParameterInput| {
+        parameters
+            .into_strings()
+            .ok()
+            .and_then(|parameters| parameters.get("weights").cloned())
+            .map(|encoded| {
+                encoded
+                    .split(',')
+                    .filter_map(|value| value.parse::<f64>().ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let checks = |parameters: &thot_core::ParameterInput| {
+        let values = parameters.into_strings().unwrap_or_default();
+        let mut visible = serde_json::Map::new();
+        for (key, value) in values {
+            let lowered = key.to_ascii_lowercase();
+            if lowered == "pass"
+                || ["password", "passwd", "secret", "token", "credential"]
+                    .iter()
+                    .any(|needle| lowered.contains(needle))
+            {
+                continue;
+            }
+            visible.insert(key, json!(value));
+        }
+        Value::Object(visible)
+    };
+    json!({
+        "tests": configuration.tests.iter().map(|test| json!({
+            "name": test.name,
+            "test": test.test_ref,
+            "description": test.description,
+            "repeat": test.repeat,
+        })).collect::<Vec<_>>(),
+        "checks": configuration.checks.iter().map(|check| json!({
+            "name": check.name,
+            "description": check.description,
+            "check": check.check_ref,
+            "test": check.test,
+            "property": check.property,
+            "parameters": checks(&check.parameters),
+        })).collect::<Vec<_>>(),
+        "rubrics": configuration.rubrics.iter().map(|rubric| json!({
+            "name": rubric.name,
+            "description": rubric.description,
+            "calculation": rubric.calculation,
+            "checks": rubric.checks,
+            "weights": weights(&rubric.parameters),
+        })).collect::<Vec<_>>(),
+        "evaluation": configuration.evaluation.iter().map(|item| json!({
+            "name": item.name,
+            "description": item.description,
+            "calculation": item.calculation,
+            "rubrics": item.rubrics,
+            "weights": weights(&item.parameters),
+        })).collect::<Vec<_>>(),
+        "rubrics_multiplier": configuration.rubrics_multiplier,
+        "evaluation_multiplier": configuration.evaluation_multiplier,
+        "not_delivered_mark": configuration.not_delivered_mark,
+    })
+}
+
 pub async fn execute_delivery(
     runtime: &VmActivityRuntime,
     project: &ProjectSnapshot,
@@ -22,6 +88,7 @@ pub async fn execute_delivery(
 ) -> Value {
     let started = Instant::now();
     let now = Utc::now().to_rfc3339();
+    let grading_plan = grading_plan(&project.configuration);
     let mut report = json!({
         "schema_version": 2,
         "project_id": project.project_id,
@@ -44,6 +111,7 @@ pub async fn execute_delivery(
             "validation_error": input.validation_error
         },
         "test_results": [],
+        "grading_plan": grading_plan,
         "checks": [],
         "rubrics": [],
         "evaluation": {

@@ -5,7 +5,7 @@ use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 use tokio::sync::Mutex;
@@ -58,6 +58,138 @@ pub struct ExpedientChecksResult {
     pub checks: Vec<serde_json::Value>,
     pub rubrics: Vec<serde_json::Value>,
     pub evaluation: Vec<serde_json::Value>,
+}
+
+/// Metadata for a regular file stored in a test's artifacts directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpedientArtifactInfo {
+    pub test_id: String,
+    /// Path relative to the expedient report directory, suitable for the artifact API route.
+    pub path: String,
+    /// Path relative to the test's artifacts directory.
+    pub relative_path: String,
+    pub file_name: String,
+    pub content_type: String,
+    pub size_bytes: u64,
+}
+
+/// Artifact bytes and their response content type.
+#[derive(Debug, Clone)]
+pub struct ExpedientArtifactFile {
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+fn safe_report_relative_path(value: &str) -> Result<PathBuf, ServiceError> {
+    let path = Path::new(value);
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(ServiceError::Invalid(format!(
+            "invalid artifact path {value:?}"
+        )));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn collect_artifacts(
+    report_root: &Path,
+    directory: &Path,
+    artifact_root: &Path,
+    test_id: &str,
+    artifacts: &mut Vec<ExpedientArtifactInfo>,
+) -> Result<(), ServiceError> {
+    let canonical_root =
+        fs::canonicalize(report_root).map_err(|error| ServiceError::Internal(error.to_string()))?;
+    let canonical_dir =
+        fs::canonicalize(directory).map_err(|error| ServiceError::Internal(error.to_string()))?;
+    if !canonical_dir.starts_with(&canonical_root) {
+        return Ok(());
+    }
+    for entry in
+        fs::read_dir(directory).map_err(|error| ServiceError::Internal(error.to_string()))?
+    {
+        let entry = entry.map_err(|error| ServiceError::Internal(error.to_string()))?;
+        let metadata = entry
+            .file_type()
+            .map_err(|error| ServiceError::Internal(error.to_string()))?;
+        if metadata.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if metadata.is_dir() {
+            collect_artifacts(report_root, &path, artifact_root, test_id, artifacts)?;
+        } else if metadata.is_file() {
+            let canonical = fs::canonicalize(&path)
+                .map_err(|error| ServiceError::Internal(error.to_string()))?;
+            if !canonical.starts_with(&canonical_root) {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(artifact_root)
+                .map_err(|error| ServiceError::Internal(error.to_string()))?;
+            let full_relative = path
+                .strip_prefix(report_root)
+                .map_err(|error| ServiceError::Internal(error.to_string()))?;
+            let relative_path = relative.to_string_lossy().replace('\\', "/");
+            let path_string = full_relative.to_string_lossy().replace('\\', "/");
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            let size_bytes = fs::metadata(&canonical)
+                .map_err(|error| ServiceError::Internal(error.to_string()))?
+                .len();
+            artifacts.push(ExpedientArtifactInfo {
+                test_id: test_id.to_owned(),
+                path: path_string,
+                relative_path,
+                file_name,
+                content_type: artifact_content_type(&path),
+                size_bytes,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn artifact_content_type(path: &Path) -> String {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "ico" => "image/x-icon",
+        "tga" => "image/x-tga",
+        "pnm" | "ppm" | "pgm" | "pbm" => "image/x-portable-anymap",
+        "qoi" => "image/qoi",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "txt" | "log" => "text/plain; charset=utf-8",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "py" => "text/x-python; charset=utf-8",
+        "js" => "text/javascript; charset=utf-8",
+        "ts" => "text/typescript; charset=utf-8",
+        "rs" => "text/x-rust; charset=utf-8",
+        "sh" | "bash" => "text/x-shellscript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json",
+        "yaml" | "yml" => "application/yaml",
+        "csv" => "text/csv; charset=utf-8",
+        "md" => "text/markdown; charset=utf-8",
+        "xml" => "application/xml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
+    }
+    .to_owned()
 }
 
 #[derive(Debug, Clone)]
@@ -593,6 +725,7 @@ impl DeliveryRunService {
             .collect::<Vec<_>>()
             .await;
         had_errors |= outcomes.into_iter().any(|failed| failed);
+        let grading_plan = crate::delivery_executor::grading_plan(&project.configuration);
         if !project.configuration.checks.is_empty()
             || !project.configuration.rubrics.is_empty()
             || !project.configuration.evaluation.is_empty()
@@ -608,6 +741,7 @@ impl DeliveryRunService {
                     project.configuration.rubrics_multiplier,
                     project.configuration.evaluation_multiplier,
                     project.configuration.not_delivered_mark,
+                    &grading_plan,
                 )
                 .await
             {
@@ -815,6 +949,7 @@ impl DeliveryRunService {
             crate::project_config::parse_configuration(&configuration_bytes).map_err(|error| {
                 ServiceError::Internal(format!("project configuration for run is invalid: {error}"))
             })?;
+        let grading_plan = crate::delivery_executor::grading_plan(&project);
         if project.checks.is_empty() && project.rubrics.is_empty() && project.evaluation.is_empty()
         {
             return Err(ServiceError::Invalid(format!(
@@ -838,6 +973,7 @@ impl DeliveryRunService {
                 project.rubrics_multiplier,
                 project.evaluation_multiplier,
                 project.not_delivered_mark,
+                &grading_plan,
             )
             .await?;
         Ok(Some(RunChecksResponse {
@@ -858,6 +994,7 @@ impl DeliveryRunService {
         rubrics_multiplier: f64,
         evaluation_multiplier: f64,
         not_delivered_mark: Option<f64>,
+        grading_plan: &serde_json::Value,
     ) -> Result<Vec<ExpedientChecksResult>, ServiceError> {
         let expedients = sqlx::query_as::<_, (String, Option<i64>, String)>(
             "SELECT expedient_id, student_id, report_path FROM vm_activity_expedients WHERE run_id=? ORDER BY student_id, expedient_id",
@@ -890,6 +1027,7 @@ impl DeliveryRunService {
             .collect::<Vec<_>>();
         let mut result_rows = Vec::with_capacity(reports.len());
         for (expedient_id, student_id, report_path, mut report) in reports {
+            report["grading_plan"] = grading_plan.clone();
             let has_delivery = report["delivery_id"]
                 .as_str()
                 .is_some_and(|id| id != UNASSIGNED_DELIVERY_ID);
@@ -1116,6 +1254,138 @@ impl DeliveryRunService {
                 .map_err(|e| ServiceError::Internal(e.to_string())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(ServiceError::Internal(e.to_string())),
+        }
+    }
+
+    /// List regular files inside the artifact directories referenced by an expedient.
+    /// Paths are constrained to the report directory and symlinks are not followed.
+    pub async fn list_expedient_artifacts(
+        &self,
+        expedient_id: &str,
+    ) -> Result<Option<Vec<ExpedientArtifactInfo>>, ServiceError> {
+        let Some((report_path, report)) = self.expedient_report(expedient_id).await? else {
+            return Ok(None);
+        };
+        let report_root = report_path.parent().ok_or_else(|| {
+            ServiceError::Internal("expedient report has no parent directory".into())
+        })?;
+        let report_root = match fs::canonicalize(report_root) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Some(Vec::new()));
+            }
+            Err(error) => return Err(ServiceError::Internal(error.to_string())),
+        };
+        let mut artifacts = Vec::new();
+        for test in report
+            .get("test_results")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(test_id) = test.get("test_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(dir) = test
+                .get("artifacts_dir")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let relative_dir = safe_report_relative_path(dir)?;
+            if !relative_dir.starts_with("test_records")
+                || relative_dir.components().count() < 4
+                || relative_dir.file_name().and_then(|name| name.to_str()) != Some("artifacts")
+            {
+                continue;
+            }
+            let disk_dir = report_root.join(&relative_dir);
+            match fs::symlink_metadata(&disk_dir) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(ServiceError::Internal(error.to_string())),
+            }
+            collect_artifacts(
+                &report_root,
+                &disk_dir,
+                &relative_dir,
+                test_id,
+                &mut artifacts,
+            )?;
+        }
+        artifacts.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(Some(artifacts))
+    }
+
+    /// Read a previously listed artifact file, refusing paths outside artifact directories.
+    pub async fn get_expedient_artifact(
+        &self,
+        expedient_id: &str,
+        artifact_path: &str,
+    ) -> Result<Option<ExpedientArtifactFile>, ServiceError> {
+        let Some(artifacts) = self.list_expedient_artifacts(expedient_id).await? else {
+            return Ok(None);
+        };
+        let requested = safe_report_relative_path(artifact_path)?;
+        let requested_string = requested.to_string_lossy().replace('\\', "/");
+        if !artifacts
+            .iter()
+            .any(|artifact| artifact.path == requested_string)
+        {
+            return Ok(None);
+        }
+        let Some((report_path, _)) = self.expedient_report(expedient_id).await? else {
+            return Ok(None);
+        };
+        let report_root = report_path.parent().ok_or_else(|| {
+            ServiceError::Internal("expedient report has no parent directory".into())
+        })?;
+        let report_root = match fs::canonicalize(report_root) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(ServiceError::Internal(error.to_string())),
+        };
+        let path = report_root.join(&requested);
+        let canonical = match fs::canonicalize(&path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(ServiceError::Internal(error.to_string())),
+        };
+        if !canonical.starts_with(&report_root) {
+            return Ok(None);
+        }
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| ServiceError::Internal(error.to_string()))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Ok(None);
+        }
+        let bytes =
+            fs::read(&canonical).map_err(|error| ServiceError::Internal(error.to_string()))?;
+        Ok(Some(ExpedientArtifactFile {
+            content_type: artifact_content_type(&path),
+            bytes,
+        }))
+    }
+
+    async fn expedient_report(
+        &self,
+        expedient_id: &str,
+    ) -> Result<Option<(PathBuf, serde_json::Value)>, ServiceError> {
+        let path = sqlx::query_scalar::<_, String>(
+            "SELECT report_path FROM vm_activity_expedients WHERE expedient_id = ?",
+        )
+        .bind(expedient_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(path) = path else { return Ok(None) };
+        let path = PathBuf::from(path);
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(|report| Some((path, report)))
+                .map_err(|error| ServiceError::Internal(error.to_string())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(ServiceError::Internal(error.to_string())),
         }
     }
 
@@ -1372,6 +1642,7 @@ fn unassigned_expedient_report(
         },
         "source": null,
         "test_results": [],
+        "grading_plan": crate::delivery_executor::grading_plan(&project.configuration),
         "checks": [],
         "rubrics": [],
         "evaluation": {

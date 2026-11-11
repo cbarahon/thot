@@ -48,6 +48,26 @@ impl ApiClient {
         }
         Ok(serde_json::from_slice(&bytes)?)
     }
+
+    pub async fn request_bytes(&self, path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self.client.get(url).send().await?;
+        let status = response.status();
+        let bytes = response.bytes().await?;
+        if !status.is_success() {
+            let message = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+            return Err(api_error_message(status, path, &message).into());
+        }
+        Ok(bytes.to_vec())
+    }
 }
 
 fn api_error_message(status: StatusCode, path: &str, message: &str) -> String {

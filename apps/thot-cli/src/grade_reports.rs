@@ -1,14 +1,25 @@
 //! Purpose: Builds student and professor grade reports from saved run expedients.
 use crate::{Settings, api_client::ApiClient};
+use flate2::{Compression, write::ZlibEncoder};
+use image::{ImageReader, Limits};
 use reqwest::Method;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
-    io::{self, Write},
+    io::{self, Cursor, Write},
     path::PathBuf,
 };
+
+struct StudentArtifact {
+    test_id: String,
+    path: String,
+    relative_path: String,
+    file_name: String,
+    content_type: String,
+    bytes: Vec<u8>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Audience {
@@ -26,6 +37,7 @@ enum Format {
 struct Options {
     audience: Audience,
     format: Format,
+    all_reports: bool,
     run_id: Option<String>,
     output_dir: Option<PathBuf>,
 }
@@ -67,40 +79,47 @@ pub async fn handle(args: &[String], settings: &Settings) -> Result<(), Box<dyn 
         .and_then(|report| report["activity_name"].as_str())
         .unwrap_or("Thot project")
         .to_owned();
+    if options.all_reports {
+        let directory = all_output_directory(options.output_dir, &run_id)?;
+        let student_directory = directory.join("students");
+        fs::create_dir_all(&student_directory)?;
+        let student_paths = generate_student_pdfs(
+            &client,
+            &reports,
+            &project_name,
+            &run_id,
+            &student_directory,
+        )
+        .await?;
+
+        let professor_path = directory.join("professor_grades.pdf");
+        let mut professor_pdf = PdfDocument::new(842.0, 595.0);
+        render_professor_report(&mut professor_pdf, &reports, &project_name, &run_id);
+        fs::write(&professor_path, professor_pdf.finish())?;
+
+        let moodle_path = directory.join("moodle_grades.csv");
+        fs::write(&moodle_path, evaluation_csv(&reports)?)?;
+        println!(
+            "Generated {} student PDF report(s), professor PDF, and Moodle CSV in {}",
+            student_paths.len(),
+            directory.display()
+        );
+        for path in student_paths {
+            println!("{}", path.display());
+        }
+        println!("{}", professor_path.display());
+        println!("{}", moodle_path.display());
+        return Ok(());
+    }
     match (options.audience, options.format) {
         (Audience::EvaluationItems, Format::Csv) => {
             print_evaluation_csv(&reports)?;
         }
         (Audience::Students, Format::Pdf) => {
             let directory = output_directory(options.output_dir, &run_id, "students")?;
-            let mut paths = Vec::new();
-            let mut used_names = BTreeSet::new();
-            for report in &reports {
-                let student = &report["student"];
-                let label = student["external_id"]
-                    .as_str()
-                    .or_else(|| student["name"].as_str())
-                    .or_else(|| report["expedient_id"].as_str())
-                    .unwrap_or("student");
-                let mut filename = safe_filename(label);
-                if filename.is_empty() {
-                    filename = "student".to_owned();
-                }
-                let base_name = filename.clone();
-                let mut suffix = student["student_id"]
-                    .as_i64()
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| used_names.len().to_string());
-                while !used_names.insert(filename.clone()) {
-                    filename = format!("{base_name}-{suffix}");
-                    suffix.push_str("-2");
-                }
-                let path = directory.join(format!("{filename}.pdf"));
-                let mut pdf = PdfDocument::new(595.0, 842.0);
-                render_student_report(&mut pdf, report, &project_name, &run_id);
-                fs::write(&path, pdf.finish())?;
-                paths.push(path);
-            }
+            let paths =
+                generate_student_pdfs(&client, &reports, &project_name, &run_id, &directory)
+                    .await?;
             println!(
                 "Generated {} student PDF report(s) in {}",
                 paths.len(),
@@ -129,11 +148,13 @@ pub async fn handle(args: &[String], settings: &Settings) -> Result<(), Box<dyn 
 fn parse_args(args: &[String]) -> Result<Options, Box<dyn Error>> {
     let mut audience = None;
     let mut format = None;
+    let mut all_reports = false;
     let mut run_id = None;
     let mut output_dir = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
+            "--all" => all_reports = true,
             "--students" => audience = select_once(audience, Audience::Students, "audience")?,
             "--professor" => audience = select_once(audience, Audience::Professor, "audience")?,
             "--evaluation-items" => {
@@ -156,26 +177,111 @@ fn parse_args(args: &[String]) -> Result<Options, Box<dyn Error>> {
         }
         index += 1;
     }
-    let audience =
-        audience.ok_or("choose one of --students, --professor, or --evaluation-items")?;
-    let format = format.ok_or("choose --pdf or --csv")?;
-    match (audience, format) {
-        (Audience::Students | Audience::Professor, Format::Pdf)
-        | (Audience::EvaluationItems, Format::Csv) => {}
-        (Audience::EvaluationItems, Format::Pdf) => {
-            return Err("--evaluation-items currently supports --csv".into());
-        }
-        (_, Format::Csv) => return Err("--csv is supported with --evaluation-items".into()),
+    if all_reports && (audience.is_some() || format.is_some()) {
+        return Err("--all cannot be combined with an audience or format option".into());
     }
-    if output_dir.is_some() && format != Format::Pdf {
+    let (audience, format) = if all_reports {
+        (Audience::Students, Format::Pdf)
+    } else {
+        let audience = audience
+            .ok_or("choose --all or one of --students, --professor, or --evaluation-items")?;
+        let format = format.ok_or("choose --pdf or --csv")?;
+        match (audience, format) {
+            (Audience::Students | Audience::Professor, Format::Pdf)
+            | (Audience::EvaluationItems, Format::Csv) => {}
+            (Audience::EvaluationItems, Format::Pdf) => {
+                return Err("--evaluation-items currently supports --csv".into());
+            }
+            (_, Format::Csv) => return Err("--csv is supported with --evaluation-items".into()),
+        }
+        (audience, format)
+    };
+    if output_dir.is_some() && format != Format::Pdf && !all_reports {
         return Err("--output-dir can only be used with --pdf".into());
     }
     Ok(Options {
         audience,
         format,
+        all_reports,
         run_id,
         output_dir,
     })
+}
+
+fn all_output_directory(
+    requested: Option<PathBuf>,
+    run_id: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let directory = requested.unwrap_or_else(|| {
+        let run_component = safe_filename(run_id);
+        PathBuf::from("grades").join(if run_component.is_empty() {
+            "run".into()
+        } else {
+            run_component
+        })
+    });
+    fs::create_dir_all(&directory)?;
+    Ok(directory)
+}
+
+async fn generate_student_pdfs(
+    client: &ApiClient,
+    reports: &[Value],
+    project_name: &str,
+    run_id: &str,
+    directory: &std::path::Path,
+) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    fs::create_dir_all(directory)?;
+    let mut paths = Vec::new();
+    let mut used_names = BTreeSet::new();
+    for report in reports {
+        let student = &report["student"];
+        let label = student["external_id"]
+            .as_str()
+            .or_else(|| student["name"].as_str())
+            .or_else(|| report["expedient_id"].as_str())
+            .unwrap_or("student");
+        let mut filename = safe_filename(label);
+        if filename.is_empty() {
+            filename = "student".to_owned();
+        }
+        let base_name = filename.clone();
+        let mut suffix = student["student_id"]
+            .as_i64()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| used_names.len().to_string());
+        while !used_names.insert(filename.clone()) {
+            filename = format!("{base_name}-{suffix}");
+            suffix.push_str("-2");
+        }
+        let path = directory.join(format!("{filename}.pdf"));
+        let artifact_list_path = format!(
+            "/api/v1/expedients/{}/artifacts",
+            encode_path_segment(string(&report["expedient_id"]).as_str())
+        );
+        let artifacts = match client.request(Method::GET, &artifact_list_path, None).await {
+            Ok(value) => fetch_student_artifacts(client, &artifact_list_path, &value).await,
+            Err(error) => {
+                eprintln!("Warning: could not list artifacts for {label}: {error}");
+                Vec::new()
+            }
+        };
+        let sidecar_name = format!("{filename}_artifacts");
+        let sidecar_dir = directory.join(&sidecar_name);
+        let mut pdf = PdfDocument::new(595.0, 842.0);
+        render_student_report(
+            &mut pdf,
+            report,
+            project_name,
+            run_id,
+            &artifacts,
+            &sidecar_dir,
+            &sidecar_name,
+        )?;
+        fs::write(&path, pdf.finish())?;
+        paths.push(path);
+    }
+    Ok(paths)
 }
 
 fn select_once<T: Copy>(
@@ -221,6 +327,50 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
+async fn fetch_student_artifacts(
+    client: &ApiClient,
+    list_path: &str,
+    value: &Value,
+) -> Vec<StudentArtifact> {
+    let Some(rows) = value.as_array() else {
+        eprintln!("Warning: thotd returned an invalid expedient artifact list");
+        return Vec::new();
+    };
+    let base = list_path.trim_end_matches("/artifacts");
+    let mut artifacts = Vec::new();
+    for row in rows {
+        let (Some(test_id), Some(path), Some(relative_path), Some(file_name)) = (
+            row["test_id"].as_str(),
+            row["path"].as_str(),
+            row["relative_path"].as_str(),
+            row["file_name"].as_str(),
+        ) else {
+            continue;
+        };
+        let encoded_path = path
+            .split('/')
+            .map(encode_path_segment)
+            .collect::<Vec<_>>()
+            .join("/");
+        let url = format!("{base}/artifacts/{encoded_path}");
+        match client.request_bytes(&url).await {
+            Ok(bytes) => artifacts.push(StudentArtifact {
+                test_id: test_id.to_owned(),
+                path: path.to_owned(),
+                relative_path: relative_path.to_owned(),
+                file_name: file_name.to_owned(),
+                content_type: row["content_type"]
+                    .as_str()
+                    .unwrap_or("application/octet-stream")
+                    .to_owned(),
+                bytes,
+            }),
+            Err(error) => eprintln!("Warning: could not download test artifact {path}: {error}"),
+        }
+    }
+    artifacts
+}
+
 fn safe_filename(value: &str) -> String {
     let mut result = String::new();
     for character in value.chars() {
@@ -236,6 +386,11 @@ fn safe_filename(value: &str) -> String {
 }
 
 fn print_evaluation_csv(reports: &[Value]) -> Result<(), Box<dyn Error>> {
+    io::stdout().write_all(&evaluation_csv(reports)?)?;
+    Ok(())
+}
+
+fn evaluation_csv(reports: &[Value]) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut item_names = Vec::new();
     for report in reports {
         for item in array(&report["evaluation"]["results"]) {
@@ -281,8 +436,7 @@ fn print_evaluation_csv(reports: &[Value]) -> Result<(), Box<dyn Error>> {
         }
         write_csv(&mut output, &row)?;
     }
-    io::stdout().write_all(&output)?;
-    Ok(())
+    Ok(output)
 }
 
 fn write_csv(output: &mut impl Write, fields: &[String]) -> io::Result<()> {
@@ -301,7 +455,15 @@ fn write_csv(output: &mut impl Write, fields: &[String]) -> io::Result<()> {
     output.write_all(b"\r\n")
 }
 
-fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, run_id: &str) {
+fn render_student_report(
+    pdf: &mut PdfDocument,
+    report: &Value,
+    project: &str,
+    run_id: &str,
+    artifacts: &[StudentArtifact],
+    sidecar_dir: &std::path::Path,
+    sidecar_name: &str,
+) -> Result<(), Box<dyn Error>> {
     let student = &report["student"];
     let student_name = [
         student["name"].as_str().unwrap_or_default(),
@@ -499,7 +661,361 @@ fn render_student_report(pdf: &mut PdfDocument, report: &Value, project: &str, r
             "Additional output",
             test["stderr"].as_str().unwrap_or_default(),
         );
+        for artifact in artifacts
+            .iter()
+            .filter(|artifact| artifact.test_id == test_id)
+        {
+            pdf.subheading(&format!("Test artifact: {}", artifact.file_name));
+            if is_image_artifact(artifact) && pdf.add_image(&artifact.bytes) {
+                continue;
+            }
+            if is_text_artifact(artifact) {
+                let content = String::from_utf8_lossy(&artifact.bytes);
+                pdf.source_code_block(&artifact.file_name, &content);
+            }
+            let mut destination = sidecar_dir.join(safe_filename(&artifact.test_id));
+            let safe_parts = artifact
+                .relative_path
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .map(safe_filename)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>();
+            for part in &safe_parts {
+                destination.push(part);
+            }
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&destination, &artifact.bytes)?;
+            let relative_uri = std::iter::once(sidecar_name.to_owned())
+                .chain(std::iter::once(safe_filename(&artifact.test_id)))
+                .chain(safe_parts)
+                .map(|part| encode_path_segment(&part))
+                .collect::<Vec<_>>()
+                .join("/");
+            pdf.link_text(&artifact.path, &relative_uri);
+        }
     }
+    render_student_calculation_guide(pdf, report);
+    Ok(())
+}
+
+fn render_student_calculation_guide(pdf: &mut PdfDocument, report: &Value) {
+    pdf.section_break();
+    pdf.heading("How final marks are calculated");
+    pdf.text("Tests provide evidence. Checks turn test results into pass/fail marks. Rubrics calculate marks from checks, then evaluation items combine rubric marks into the final grades.");
+
+    let plan = &report["grading_plan"];
+    let tests = array(&plan["tests"]);
+    let configured_checks = array(&plan["checks"]);
+    let test_results = array(&report["test_results"]);
+    let check_results = array(&report["checks"]);
+    let mut checks_seen = BTreeSet::new();
+    let mut pipeline_rows = Vec::new();
+    for check in configured_checks {
+        let name = string(&check["name"]);
+        checks_seen.insert(name.clone());
+        let test_name = string(&check["test"]);
+        let test = tests
+            .iter()
+            .find(|test| test["name"].as_str() == Some(test_name.as_str()));
+        let test_label = if let Some(test) = test {
+            let description = string(&test["description"]);
+            if description.is_empty() {
+                format!("{} ({})", test_name, string(&test["test"]))
+            } else {
+                format!("{} ({}) — {description}", test_name, string(&test["test"]))
+            }
+        } else if check["check"] == "import/csv" {
+            "CSV input".to_owned()
+        } else if check["check"] == "aggr/checks" {
+            "Other check results".to_owned()
+        } else {
+            test_name.clone()
+        };
+        let matching_tests = test_results
+            .iter()
+            .filter(|test| {
+                test["test_id"]
+                    .as_str()
+                    .is_some_and(|id| id == test_name || id.starts_with(&format!("{test_name}_")))
+            })
+            .collect::<Vec<_>>();
+        let test_status = if matching_tests.is_empty() {
+            "not recorded".to_owned()
+        } else if test.is_some_and(|test| test["repeat"].as_u64().unwrap_or(1) > 1) {
+            let passed = matching_tests
+                .iter()
+                .filter(|test| test["status"].as_str() == Some("passed"))
+                .count();
+            format!("{passed}/{} repetitions passed", matching_tests.len())
+        } else {
+            friendly_status(matching_tests[0]["status"].as_str().unwrap_or("not_run")).to_owned()
+        };
+        let result = find_result(&report["checks"], &name)
+            .map(|row| check_symbol(&row["result"]))
+            .unwrap_or_else(|| "—".to_owned());
+        let criterion = check_criterion(check);
+        pipeline_rows.push(vec![
+            test_label,
+            format!("{} — {}", name, string(&check["description"])),
+            criterion,
+            format!("Test: {test_status}; check: {result}"),
+        ]);
+    }
+    for check in check_results {
+        let name = string(&check["name"]);
+        if checks_seen.insert(name.clone()) {
+            pipeline_rows.push(vec![
+                "Imported or generated".to_owned(),
+                format!("{} — {}", name, string(&check["description"])),
+                "Result was imported or combined from other checks".to_owned(),
+                check_symbol(&check["result"]),
+            ]);
+        }
+    }
+    pdf.subheading("Test evidence and checks");
+    if pipeline_rows.is_empty() {
+        pdf.text("No check definitions are available in this saved expedient.");
+    } else {
+        pdf.table_dynamic(
+            &[
+                "Test evidence".to_owned(),
+                "Check".to_owned(),
+                "Rule".to_owned(),
+                "Outcome".to_owned(),
+            ],
+            &pipeline_rows,
+        );
+    }
+
+    let multiplier = plan["rubrics_multiplier"]
+        .as_f64()
+        .or_else(|| report["evaluation"]["rubrics_multiplier"].as_f64())
+        .unwrap_or(1.0);
+    let mut rubric_rows = Vec::new();
+    let mut rubric_names = BTreeSet::new();
+    for rubric in calculation_definitions(plan, "rubrics", &report["rubrics"]) {
+        let name = string(&rubric["name"]);
+        rubric_names.insert(name.clone());
+        let checks = string_array(&rubric["checks"]);
+        let row = find_result(&report["rubrics"], &name);
+        let weights = numeric_array(row.map(|row| &row["weights"]).unwrap_or(&rubric["weights"]));
+        let formula = calculation_formula(
+            &string(&rubric["calculation"]),
+            &checks,
+            &weights,
+            Some(multiplier),
+            false,
+        );
+        rubric_rows.push(vec![
+            format!("{} — {}", name, string(&rubric["description"])),
+            string(&rubric["calculation"]),
+            formula,
+            display_optional_mark(row.map(|row| &row["result"])),
+        ]);
+    }
+    for rubric in array(&report["rubrics"]) {
+        let name = string(&rubric["name"]);
+        if !rubric_names.insert(name.clone()) {
+            continue;
+        }
+        rubric_rows.push(vec![
+            format!("{} — {}", name, string(&rubric["description"])),
+            string(&rubric["calculation"]),
+            calculation_formula(
+                &string(&rubric["calculation"]),
+                &string_array(&rubric["checks"]),
+                &numeric_array(&rubric["weights"]),
+                Some(multiplier),
+                false,
+            ),
+            display_optional_mark(Some(&rubric["result"])),
+        ]);
+    }
+    pdf.subheading("Rubric marks from check outcomes");
+    if rubric_rows.is_empty() {
+        pdf.text("No rubric calculation definitions are available.");
+    } else {
+        pdf.table_dynamic(
+            &[
+                "Rubric".to_owned(),
+                "Calculation".to_owned(),
+                "Inputs and weights".to_owned(),
+                "Mark".to_owned(),
+            ],
+            &rubric_rows,
+        );
+    }
+
+    let eval_multiplier = plan["evaluation_multiplier"]
+        .as_f64()
+        .or_else(|| report["evaluation"]["evaluation_multiplier"].as_f64())
+        .unwrap_or(1.0);
+    let mut evaluation_rows = Vec::new();
+    let mut evaluation_names = BTreeSet::new();
+    for item in calculation_definitions(plan, "evaluation", &report["evaluation"]["results"]) {
+        let name = string(&item["name"]);
+        evaluation_names.insert(name.clone());
+        let rubrics = string_array(&item["rubrics"]);
+        let row = find_result(&report["evaluation"]["results"], &name);
+        let weights = numeric_array(row.map(|row| &row["weights"]).unwrap_or(&item["weights"]));
+        let formula = if row.is_some_and(|row| row["calculation"] == "not_delivered_mark") {
+            format!(
+                "No-delivery mark: {}",
+                plan["not_delivered_mark"]
+                    .as_f64()
+                    .map(|mark| display_value(&serde_json::json!(mark)))
+                    .unwrap_or_else(|| "not configured".to_owned())
+            )
+        } else {
+            calculation_formula(
+                &string(&item["calculation"]),
+                &rubrics,
+                &weights,
+                Some(eval_multiplier),
+                true,
+            )
+        };
+        evaluation_rows.push(vec![
+            format!("{} — {}", name, string(&item["description"])),
+            string(&item["calculation"]),
+            formula,
+            display_optional_mark(row.map(|row| &row["result"])),
+        ]);
+    }
+    for item in array(&report["evaluation"]["results"]) {
+        let name = string(&item["name"]);
+        if !evaluation_names.insert(name.clone()) {
+            continue;
+        }
+        let formula = if item["calculation"] == "not_delivered_mark" {
+            format!(
+                "No-delivery mark: {}",
+                plan["not_delivered_mark"]
+                    .as_f64()
+                    .map(|mark| display_value(&serde_json::json!(mark)))
+                    .unwrap_or_else(|| "not configured".to_owned())
+            )
+        } else {
+            calculation_formula(
+                &string(&item["calculation"]),
+                &string_array(&item["rubrics"]),
+                &numeric_array(&item["weights"]),
+                Some(eval_multiplier),
+                true,
+            )
+        };
+        evaluation_rows.push(vec![
+            format!("{} — {}", name, string(&item["description"])),
+            string(&item["calculation"]),
+            formula,
+            display_optional_mark(Some(&item["result"])),
+        ]);
+    }
+    pdf.subheading("Final evaluation items from rubric marks");
+    if evaluation_rows.is_empty() {
+        pdf.text("No final evaluation definitions are available.");
+    } else {
+        pdf.table_dynamic(
+            &[
+                "Evaluation item".to_owned(),
+                "Calculation".to_owned(),
+                "Inputs and weights".to_owned(),
+                "Final mark".to_owned(),
+            ],
+            &evaluation_rows,
+        );
+    }
+    pdf.text("A v means a check passed; X means it did not pass. A blank mark means it could not be calculated or was not recorded. Weighted averages divide the weighted sum by the sum of the listed weights.");
+}
+
+fn is_image_artifact(artifact: &StudentArtifact) -> bool {
+    artifact.content_type.starts_with("image/")
+        || matches!(
+            extension(&artifact.file_name).as_str(),
+            "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "bmp"
+                | "tif"
+                | "tiff"
+                | "ico"
+                | "tga"
+                | "pnm"
+                | "ppm"
+                | "pgm"
+                | "pbm"
+                | "qoi"
+                | "webp"
+        )
+}
+
+fn is_text_artifact(artifact: &StudentArtifact) -> bool {
+    artifact.content_type.starts_with("text/")
+        || matches!(
+            extension(&artifact.file_name).as_str(),
+            "txt"
+                | "log"
+                | "html"
+                | "htm"
+                | "py"
+                | "js"
+                | "ts"
+                | "rs"
+                | "sh"
+                | "bash"
+                | "css"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "csv"
+                | "md"
+                | "xml"
+                | "conf"
+                | "ini"
+                | "sql"
+                | "java"
+                | "c"
+                | "h"
+                | "cpp"
+                | "hpp"
+                | "toml"
+                | "go"
+                | "rb"
+                | "php"
+                | "pl"
+                | "lua"
+                | "properties"
+                | "kt"
+                | "swift"
+                | "cs"
+                | "dockerfile"
+                | "makefile"
+        )
+        || looks_like_text(&artifact.bytes)
+}
+
+fn looks_like_text(bytes: &[u8]) -> bool {
+    let sample = &bytes[..bytes.len().min(8192)];
+    if sample.is_empty() || std::str::from_utf8(sample).is_err() || sample.contains(&0) {
+        return false;
+    }
+    let non_text_controls = sample
+        .iter()
+        .filter(|byte| **byte < 0x20 && !matches!(**byte, b'\n' | b'\r' | b'\t' | 0x0c))
+        .count();
+    non_text_controls * 100 <= sample.len()
+}
+
+fn extension(file_name: &str) -> String {
+    std::path::Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &str, run_id: &str) {
@@ -705,6 +1221,334 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
         4,
     );
     pdf.text("v means a check passed; X means it did not pass. Pass means a test completed successfully; No pass includes test failures and errors.");
+    pdf.section_break();
+    render_professor_calculation_guide(pdf, reports);
+}
+
+fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) {
+    pdf.heading("How final marks are calculated");
+    pdf.text("Tests produce evidence for checks. Check outcomes are combined into rubric marks; evaluation items combine rubric marks into final grades. These tables show the configured inputs, calculations, and weights.");
+    let empty = Value::Null;
+    let plan = reports
+        .iter()
+        .find(|report| report["grading_plan"].is_object())
+        .map(|report| &report["grading_plan"])
+        .unwrap_or(&empty);
+    let tests = array(&plan["tests"]);
+    let checks = array(&plan["checks"]);
+    let mut check_rows = Vec::new();
+    for check in checks {
+        let test_name = string(&check["test"]);
+        let test = tests
+            .iter()
+            .find(|test| test["name"].as_str() == Some(test_name.as_str()));
+        let test_label = test
+            .map(|test| {
+                let description = string(&test["description"]);
+                if description.is_empty() {
+                    format!("{} ({})", test_name, string(&test["test"]))
+                } else {
+                    format!("{} ({}) — {description}", test_name, string(&test["test"]))
+                }
+            })
+            .unwrap_or_else(|| match check["check"].as_str().unwrap_or("") {
+                "import/csv" => "CSV input".to_owned(),
+                "aggr/checks" => "Other check results".to_owned(),
+                _ => test_name,
+            });
+        let check_name = string(&check["name"]);
+        let evaluated_rows = reports
+            .iter()
+            .filter_map(|report| find_result(&report["checks"], &check_name))
+            .collect::<Vec<_>>();
+        let pass_count = evaluated_rows
+            .iter()
+            .filter(|row| row["result"].as_i64() == Some(1))
+            .count();
+        check_rows.push(vec![
+            test_label,
+            format!("{} — {}", check_name, string(&check["description"])),
+            check_criterion(check),
+            format!("{pass_count}/{} passed", evaluated_rows.len()),
+        ]);
+    }
+    let mut check_names = checks
+        .iter()
+        .filter_map(|check| check["name"].as_str().map(str::to_owned))
+        .collect::<BTreeSet<_>>();
+    for check in reports.iter().flat_map(|report| array(&report["checks"])) {
+        let name = string(&check["name"]);
+        if !check_names.insert(name.clone()) {
+            continue;
+        }
+        let evaluated_rows = reports
+            .iter()
+            .filter_map(|report| find_result(&report["checks"], &name))
+            .collect::<Vec<_>>();
+        let pass_count = evaluated_rows
+            .iter()
+            .filter(|row| row["result"].as_i64() == Some(1))
+            .count();
+        check_rows.push(vec![
+            "CSV or aggregate result".to_owned(),
+            format!("{} — {}", name, string(&check["description"])),
+            "Imported or combined check outcome".to_owned(),
+            format!("{pass_count}/{} passed", evaluated_rows.len()),
+        ]);
+    }
+    pdf.subheading("Test evidence feeding checks");
+    if check_rows.is_empty() {
+        pdf.text("This saved run does not contain definitions linking tests to checks.");
+    } else {
+        pdf.table_dynamic(
+            &[
+                "Test".into(),
+                "Check".into(),
+                "Rule".into(),
+                "Outcomes".into(),
+            ],
+            &check_rows,
+        );
+    }
+
+    let rubric_multiplier = plan["rubrics_multiplier"].as_f64().unwrap_or(1.0);
+    let rubric_fallback = reports
+        .first()
+        .map(|report| &report["rubrics"])
+        .unwrap_or(&empty);
+    let mut rubric_rows = Vec::new();
+    let mut rubric_names = BTreeSet::new();
+    for rubric in calculation_definitions(plan, "rubrics", rubric_fallback) {
+        let name = string(&rubric["name"]);
+        rubric_names.insert(name.clone());
+        let inputs = string_array(&rubric["checks"]);
+        let formula = calculation_formula(
+            &string(&rubric["calculation"]),
+            &inputs,
+            &numeric_array(&rubric["weights"]),
+            Some(rubric_multiplier),
+            false,
+        );
+        rubric_rows.push(vec![
+            format!("{} — {}", name, string(&rubric["description"])),
+            formula,
+        ]);
+    }
+    for rubric in reports.iter().flat_map(|report| array(&report["rubrics"])) {
+        let name = string(&rubric["name"]);
+        if !rubric_names.insert(name.clone()) {
+            continue;
+        }
+        rubric_rows.push(vec![
+            format!("{} — {}", name, string(&rubric["description"])),
+            calculation_formula(
+                &string(&rubric["calculation"]),
+                &string_array(&rubric["checks"]),
+                &numeric_array(&rubric["weights"]),
+                Some(rubric_multiplier),
+                false,
+            ),
+        ]);
+    }
+    pdf.subheading("Rubric formulas");
+    if rubric_rows.is_empty() {
+        pdf.text("No rubric calculation definitions are available in this run.");
+    } else {
+        pdf.table_dynamic(
+            &["Rubric".into(), "Calculation, inputs, and weights".into()],
+            &rubric_rows,
+        );
+        pdf.text(&format!(
+            "Rubric multiplier: {}. It scales each check result before calculation.",
+            display_value(&plan["rubrics_multiplier"])
+        ));
+    }
+
+    let evaluation_multiplier = plan["evaluation_multiplier"].as_f64().unwrap_or(1.0);
+    let evaluation_fallback = reports
+        .first()
+        .map(|report| &report["evaluation"]["results"])
+        .unwrap_or(&empty);
+    let mut evaluation_rows = Vec::new();
+    let mut evaluation_names = BTreeSet::new();
+    for item in calculation_definitions(plan, "evaluation", evaluation_fallback) {
+        let name = string(&item["name"]);
+        evaluation_names.insert(name.clone());
+        let formula = calculation_formula(
+            &string(&item["calculation"]),
+            &string_array(&item["rubrics"]),
+            &numeric_array(&item["weights"]),
+            Some(evaluation_multiplier),
+            true,
+        );
+        evaluation_rows.push(vec![
+            format!("{} — {}", name, string(&item["description"])),
+            formula,
+        ]);
+    }
+    for item in reports
+        .iter()
+        .flat_map(|report| array(&report["evaluation"]["results"]))
+    {
+        let name = string(&item["name"]);
+        if !evaluation_names.insert(name.clone()) {
+            continue;
+        }
+        let formula = if item["calculation"] == "not_delivered_mark" {
+            format!(
+                "No-delivery mark: {}",
+                plan["not_delivered_mark"]
+                    .as_f64()
+                    .map(|mark| display_value(&serde_json::json!(mark)))
+                    .unwrap_or_else(|| "not configured".to_owned())
+            )
+        } else {
+            calculation_formula(
+                &string(&item["calculation"]),
+                &string_array(&item["rubrics"]),
+                &numeric_array(&item["weights"]),
+                Some(evaluation_multiplier),
+                true,
+            )
+        };
+        evaluation_rows.push(vec![
+            format!("{} — {}", name, string(&item["description"])),
+            formula,
+        ]);
+    }
+    pdf.subheading("Final evaluation formulas");
+    if evaluation_rows.is_empty() {
+        pdf.text("No evaluation calculation definitions are available in this run.");
+    } else {
+        pdf.table_dynamic(
+            &[
+                "Evaluation item".into(),
+                "Calculation, inputs, and weights".into(),
+            ],
+            &evaluation_rows,
+        );
+        pdf.text(&format!(
+            "Evaluation multiplier: {}. Weighted averages divide the weighted sum by the sum of the listed weights.",
+            display_value(&plan["evaluation_multiplier"])
+        ));
+        pdf.text(&format!(
+            "Students without a delivery receive the configured no-delivery mark ({}) instead of calculated marks; their tests, checks, and rubrics remain blank.",
+            plan["not_delivered_mark"]
+                .as_f64()
+                .map(|mark| display_value(&serde_json::json!(mark)))
+                .unwrap_or_else(|| "none".to_owned())
+        ));
+    }
+}
+
+fn calculation_definitions(plan: &Value, key: &str, fallback: &Value) -> Vec<Value> {
+    let configured = array(&plan[key]);
+    if configured.is_empty() {
+        array(fallback).to_vec()
+    } else {
+        configured.to_vec()
+    }
+}
+
+fn string_array(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn numeric_array(value: &Value) -> Vec<f64> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_f64)
+        .collect()
+}
+
+fn display_optional_mark(value: Option<&Value>) -> String {
+    value
+        .filter(|value| !value.is_null())
+        .map(display_mark)
+        .unwrap_or_else(|| "—".to_owned())
+}
+
+fn calculation_formula(
+    calculation: &str,
+    inputs: &[String],
+    weights: &[f64],
+    multiplier: Option<f64>,
+    multiplier_after: bool,
+) -> String {
+    if calculation == "import/csv" {
+        return "Imported from CSV".to_owned();
+    }
+    if inputs.is_empty() {
+        return "No inputs are configured".to_owned();
+    }
+    let arguments = inputs
+        .iter()
+        .map(|input| {
+            if let Some(multiplier) = multiplier.filter(|_| !multiplier_after) {
+                format!(
+                    "({input} × {})",
+                    display_value(&serde_json::json!(multiplier))
+                )
+            } else {
+                input.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let weights = if calculation == "weighted_avg" && !weights.is_empty() {
+        format!(
+            "; weights=[{}]",
+            weights
+                .iter()
+                .map(|weight| display_value(&serde_json::json!(weight)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        String::new()
+    };
+    let mut formula = format!("{calculation}({arguments}{weights})");
+    if let Some(multiplier) = multiplier.filter(|_| multiplier_after) {
+        formula.push_str(&format!(
+            " × {}",
+            display_value(&serde_json::json!(multiplier))
+        ));
+    }
+    formula
+}
+
+fn check_criterion(check: &Value) -> String {
+    let check_type = string(&check["check"]);
+    let property = check["property"].as_str().unwrap_or_default();
+    let details = check["parameters"]
+        .as_object()
+        .into_iter()
+        .flat_map(|parameters| parameters.iter())
+        .map(|(key, value)| {
+            let value = value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string());
+            format!("{key}={value}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut summary = check_type;
+    if !property.is_empty() {
+        summary.push_str(&format!(" on {property}"));
+    }
+    if !details.is_empty() {
+        summary.push_str(&format!(": {details}"));
+    }
+    summary
 }
 
 fn full_column_names_fit(names: &[String], reserved_width: f32, page_width: f32) -> bool {
@@ -935,10 +1779,27 @@ fn display_mark(value: &Value) -> String {
     format!("{number:.decimals$}")
 }
 
+struct PdfLink {
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    uri: String,
+}
+
+struct PdfImage {
+    name: String,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
 struct PdfDocument {
     width: f32,
     height: f32,
     pages: Vec<Vec<String>>,
+    page_links: Vec<Vec<PdfLink>>,
+    images: Vec<PdfImage>,
     y: f32,
 }
 
@@ -948,6 +1809,8 @@ impl PdfDocument {
             width,
             height,
             pages: vec![Vec::new()],
+            page_links: vec![Vec::new()],
+            images: Vec::new(),
             y: 44.0,
         };
         document.line(36.0, 28.0, width - 36.0, 28.0);
@@ -956,6 +1819,7 @@ impl PdfDocument {
 
     fn page(&mut self) {
         self.pages.push(Vec::new());
+        self.page_links.push(Vec::new());
         self.y = 42.0;
         self.line(36.0, 28.0, self.width - 36.0, 28.0);
     }
@@ -998,8 +1862,115 @@ impl PdfDocument {
     fn code_text(&mut self, text: &str) {
         for line in wrap_text(text, 112) {
             self.ensure(12.0);
-            self.draw_text(43.0, self.y, 7.3, false, &line);
+            self.draw_text_font(43.0, self.y, 7.3, "F3", &line);
             self.y += 9.0;
+        }
+    }
+
+    fn source_code_block(&mut self, file_name: &str, source: &str) {
+        self.text(&format!("File: {file_name}"));
+        const DISPLAY_LIMIT: usize = 48 * 1024;
+        let mut source = source.to_owned();
+        let was_truncated = source.len() > DISPLAY_LIMIT;
+        if was_truncated {
+            let mut boundary = DISPLAY_LIMIT;
+            while !source.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            source.truncate(boundary);
+        }
+        let lines = source
+            .lines()
+            .flat_map(|line| wrap_text(line, 112))
+            .collect::<Vec<_>>();
+        let was_line_truncated = lines.len() > 1400;
+        for line in lines.into_iter().take(1400) {
+            self.ensure(11.0);
+            self.pages.last_mut().unwrap().push(format!(
+                "q 0.94 g 40 {:.1} {:.1} 10 re f Q\n",
+                self.height - self.y - 2.0,
+                self.width - 80.0
+            ));
+            self.draw_text_font(44.0, self.y + 5.5, 7.0, "F3", &line);
+            self.y += 10.0;
+        }
+        if was_truncated || was_line_truncated {
+            self.text("[File shortened to fit the student report]");
+        }
+    }
+
+    fn add_image(&mut self, encoded: &[u8]) -> bool {
+        if encoded.len() > 32 * 1024 * 1024 {
+            return false;
+        }
+        let mut limits = Limits::default();
+        limits.max_image_width = Some(6000);
+        limits.max_image_height = Some(6000);
+        limits.max_alloc = Some(64 * 1024 * 1024);
+        let mut reader = match ImageReader::new(Cursor::new(encoded)).with_guessed_format() {
+            Ok(reader) => reader,
+            Err(_) => return false,
+        };
+        reader.limits(limits);
+        let image = match reader.decode() {
+            Ok(image) => image.to_rgb8(),
+            Err(_) => return false,
+        };
+        let width = image.width();
+        let height = image.height();
+        if width == 0 || height == 0 {
+            return false;
+        }
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        if encoder.write_all(image.as_raw()).is_err() {
+            return false;
+        }
+        let Ok(data) = encoder.finish() else {
+            return false;
+        };
+        let max_width = self.width - 72.0;
+        let max_height = (self.height - 140.0).min(380.0);
+        let scale = (max_width / width as f32)
+            .min(max_height / height as f32)
+            .min(1.0);
+        let draw_width = width as f32 * scale;
+        let draw_height = height as f32 * scale;
+        self.ensure(draw_height + 18.0);
+        let name = format!("Im{}", self.images.len());
+        let x = (self.width - draw_width) / 2.0;
+        let y = self.height - self.y - draw_height;
+        self.pages.last_mut().unwrap().push(format!(
+            "q {draw_width:.2} 0 0 {draw_height:.2} {x:.2} {y:.2} cm /{name} Do Q\n"
+        ));
+        self.images.push(PdfImage {
+            name,
+            width,
+            height,
+            data,
+        });
+        self.y += draw_height + 12.0;
+        true
+    }
+
+    fn link_text(&mut self, text: &str, uri: &str) {
+        for line in wrap_text(text, 105) {
+            self.ensure(15.0);
+            let y_top = self.y;
+            let baseline = self.height - y_top;
+            let x = 40.0;
+            self.pages.last_mut().unwrap().push(format!(
+                "0.05 0.25 0.65 rg BT /F1 8.5 Tf 1 0 0 1 {x:.1} {baseline:.1} Tm ({}) Tj ET 0 0 0 rg\n",
+                pdf_literal(&line)
+            ));
+            let width = (line.chars().count() as f32 * 4.6).min(self.width - 80.0);
+            self.page_links.last_mut().unwrap().push(PdfLink {
+                x1: x,
+                y1: self.height - y_top - 3.0,
+                x2: x + width,
+                y2: self.height - y_top + 10.0,
+                uri: uri.to_owned(),
+            });
+            self.y += 13.0;
         }
     }
 
@@ -1130,6 +2101,10 @@ impl PdfDocument {
 
     fn draw_text(&mut self, x: f32, y_from_top: f32, size: f32, bold: bool, value: &str) {
         let font = if bold { "F2" } else { "F1" };
+        self.draw_text_font(x, y_from_top, size, font, value);
+    }
+
+    fn draw_text_font(&mut self, x: f32, y_from_top: f32, size: f32, font: &str, value: &str) {
         let y = self.height - y_from_top;
         self.pages.last_mut().unwrap().push(format!(
             "BT /{font} {size:.1} Tf 1 0 0 1 {x:.1} {y:.1} Tm ({}) Tj ET\n",
@@ -1159,18 +2134,55 @@ impl PdfDocument {
             Vec::new(),
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_vec(),
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>".to_vec(),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>".to_vec(),
         ];
+        let mut image_resources = Vec::new();
+        for image in &self.images {
+            let object_id = objects.len() + 1;
+            image_resources.push(format!("/{} {object_id} 0 R", image.name));
+            let mut object = format!(
+                "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length {} >>\nstream\n",
+                image.width,
+                image.height,
+                image.data.len()
+            )
+            .into_bytes();
+            object.extend_from_slice(&image.data);
+            object.extend_from_slice(b"\nendstream");
+            objects.push(object);
+        }
         let mut kids = Vec::new();
-        for page in self.pages {
+        for (index, page) in self.pages.into_iter().enumerate() {
             let page_object = objects.len() + 1;
             let stream_object = page_object + 1;
             kids.push(format!("{page_object} 0 R"));
             let content = page.concat().into_bytes();
-            objects.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.1} {:.1}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {stream_object} 0 R >>", self.width, self.height).into_bytes());
+            let annotation_start = stream_object + 1;
+            let annotation_ids = self.page_links[index]
+                .iter()
+                .enumerate()
+                .map(|(offset, _)| format!("{} 0 R", annotation_start + offset))
+                .collect::<Vec<_>>();
+            let annotations = if annotation_ids.is_empty() {
+                String::new()
+            } else {
+                format!(" /Annots [{}]", annotation_ids.join(" "))
+            };
+            objects.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.1} {:.1}] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> /XObject << {} >> >> /Contents {stream_object} 0 R{annotations} >>", self.width, self.height, image_resources.join(" ")).into_bytes());
             let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
             stream.extend_from_slice(&content);
             stream.extend_from_slice(b"endstream");
             objects.push(stream);
+            for link in &self.page_links[index] {
+                objects.push(format!(
+                    "<< /Type /Annot /Subtype /Link /Rect [{:.1} {:.1} {:.1} {:.1}] /Border [0 0 0] /A << /S /URI /URI ({}) >> >>",
+                    link.x1,
+                    link.y1,
+                    link.x2,
+                    link.y2,
+                    pdf_literal(&link.uri)
+                ).into_bytes());
+            }
         }
         objects[1] = format!(
             "<< /Type /Pages /Kids [{}] /Count {} >>",
