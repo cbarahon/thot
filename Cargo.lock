@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "thot-api"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "axum",
  "serde",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "thot-cli"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "axum",
  "flate2",
@@ -2326,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "thot-core"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "chrono",
  "serde",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "thot-engine"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "chrono",
  "flate2",
@@ -2361,7 +2361,7 @@ dependencies = [
 
 [[package]]
 name = "thot-runner"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "async-trait",
  "libc",
@@ -2375,7 +2375,7 @@ dependencies = [
 
 [[package]]
 name = "thotd"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "axum",
  "thot-api",

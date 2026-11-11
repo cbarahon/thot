@@ -599,7 +599,7 @@ fn render_student_report(
                 array(&rubric["check_results"])
                     .iter()
                     .find(|check| check["name"].as_str() == Some(check_name))
-                    .map(|check| check_symbol(&check["result"]))
+                    .map(check_symbol)
                     .unwrap_or_default()
             }));
             matrix_rows.push(row);
@@ -666,10 +666,8 @@ fn render_student_report(
             .filter(|artifact| artifact.test_id == test_id)
         {
             pdf.subheading(&format!("Test artifact: {}", artifact.file_name));
-            if is_image_artifact(artifact) && pdf.add_image(&artifact.bytes) {
-                continue;
-            }
-            if is_text_artifact(artifact) {
+            let rendered_image = is_image_artifact(artifact) && pdf.add_image(&artifact.bytes);
+            if !rendered_image && is_text_artifact(artifact) {
                 let content = String::from_utf8_lossy(&artifact.bytes);
                 pdf.source_code_block(&artifact.file_name, &content);
             }
@@ -694,7 +692,7 @@ fn render_student_report(
                 .map(|part| encode_path_segment(&part))
                 .collect::<Vec<_>>()
                 .join("/");
-            pdf.link_text(&artifact.path, &relative_uri);
+            pdf.link_text(&format!("Open artifact: {}", artifact.path), &relative_uri);
         }
     }
     render_student_calculation_guide(pdf, report);
@@ -754,7 +752,7 @@ fn render_student_calculation_guide(pdf: &mut PdfDocument, report: &Value) {
             friendly_status(matching_tests[0]["status"].as_str().unwrap_or("not_run")).to_owned()
         };
         let result = find_result(&report["checks"], &name)
-            .map(|row| check_symbol(&row["result"]))
+            .map(check_symbol)
             .unwrap_or_else(|| "—".to_owned());
         let criterion = check_criterion(check);
         pipeline_rows.push(vec![
@@ -771,7 +769,7 @@ fn render_student_calculation_guide(pdf: &mut PdfDocument, report: &Value) {
                 "Imported or generated".to_owned(),
                 format!("{} — {}", name, string(&check["description"])),
                 "Result was imported or combined from other checks".to_owned(),
-                check_symbol(&check["result"]),
+                check_symbol(check),
             ]);
         }
     }
@@ -807,11 +805,9 @@ fn render_student_calculation_guide(pdf: &mut PdfDocument, report: &Value) {
             &checks,
             &weights,
             Some(multiplier),
-            false,
         );
         rubric_rows.push(vec![
             format!("{} — {}", name, string(&rubric["description"])),
-            string(&rubric["calculation"]),
             formula,
             display_optional_mark(row.map(|row| &row["result"])),
         ]);
@@ -823,13 +819,11 @@ fn render_student_calculation_guide(pdf: &mut PdfDocument, report: &Value) {
         }
         rubric_rows.push(vec![
             format!("{} — {}", name, string(&rubric["description"])),
-            string(&rubric["calculation"]),
             calculation_formula(
                 &string(&rubric["calculation"]),
                 &string_array(&rubric["checks"]),
                 &numeric_array(&rubric["weights"]),
                 Some(multiplier),
-                false,
             ),
             display_optional_mark(Some(&rubric["result"])),
         ]);
@@ -838,13 +832,8 @@ fn render_student_calculation_guide(pdf: &mut PdfDocument, report: &Value) {
     if rubric_rows.is_empty() {
         pdf.text("No rubric calculation definitions are available.");
     } else {
-        pdf.table_dynamic(
-            &[
-                "Rubric".to_owned(),
-                "Calculation".to_owned(),
-                "Inputs and weights".to_owned(),
-                "Mark".to_owned(),
-            ],
+        pdf.table_formula(
+            &["Rubric".into(), "Formula".into(), "Mark".into()],
             &rubric_rows,
         );
     }
@@ -875,12 +864,10 @@ fn render_student_calculation_guide(pdf: &mut PdfDocument, report: &Value) {
                 &rubrics,
                 &weights,
                 Some(eval_multiplier),
-                true,
             )
         };
         evaluation_rows.push(vec![
             format!("{} — {}", name, string(&item["description"])),
-            string(&item["calculation"]),
             formula,
             display_optional_mark(row.map(|row| &row["result"])),
         ]);
@@ -904,12 +891,10 @@ fn render_student_calculation_guide(pdf: &mut PdfDocument, report: &Value) {
                 &string_array(&item["rubrics"]),
                 &numeric_array(&item["weights"]),
                 Some(eval_multiplier),
-                true,
             )
         };
         evaluation_rows.push(vec![
             format!("{} — {}", name, string(&item["description"])),
-            string(&item["calculation"]),
             formula,
             display_optional_mark(Some(&item["result"])),
         ]);
@@ -918,12 +903,11 @@ fn render_student_calculation_guide(pdf: &mut PdfDocument, report: &Value) {
     if evaluation_rows.is_empty() {
         pdf.text("No final evaluation definitions are available.");
     } else {
-        pdf.table_dynamic(
+        pdf.table_formula(
             &[
-                "Evaluation item".to_owned(),
-                "Calculation".to_owned(),
-                "Inputs and weights".to_owned(),
-                "Final mark".to_owned(),
+                "Evaluation item".into(),
+                "Formula".into(),
+                "Final mark".into(),
             ],
             &evaluation_rows,
         );
@@ -1033,7 +1017,6 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
     pdf.heading("Professor grade summary");
     pdf.text(&format!("Project: {project}    Run: {run_id}"));
     pdf.text(&format!("Students included: {}", reports.len()));
-    pdf.heading("Final grades by evaluation item");
     let mut headers = vec!["Student".to_owned(), "External ID".to_owned()];
     let use_evaluation_names = full_column_names_fit(&evaluation_names, 230.0, pdf.width);
     if !use_evaluation_names {
@@ -1058,9 +1041,8 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
             row
         })
         .collect::<Vec<_>>();
-    pdf.table_dynamic(&headers, &rows);
+    pdf.table_dynamic_section("Final grades by evaluation item", &headers, &rows);
 
-    pdf.heading("Rubric marks grouped by evaluation item");
     for evaluation_name in &evaluation_names {
         let rubric_order = reports
             .iter()
@@ -1080,10 +1062,10 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
                     .and_then(|item| item["description"].as_str())
             })
             .unwrap_or_default();
-        pdf.subheading(&name_description_value(
-            evaluation_name,
-            evaluation_description,
-        ));
+        let evaluation_heading = format!(
+            "Rubric marks grouped by evaluation item — {}",
+            name_description_value(evaluation_name, evaluation_description)
+        );
         let use_rubric_names = full_column_names_fit(&rubric_order, 230.0, pdf.width);
         if !use_rubric_names {
             abbreviated_rubrics.extend(rubric_order.iter().cloned());
@@ -1114,12 +1096,10 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
         if rubric_order.is_empty() {
             pdf.text("No rubric results are configured for this evaluation item.");
         } else {
-            pdf.table_dynamic(&headers, &rows);
+            pdf.table_dynamic_section(&evaluation_heading, &headers, &rows);
         }
     }
 
-    pdf.section_break();
-    pdf.heading("Check results, grouped by rubric");
     for rubric_name in &rubric_names {
         let check_order = reports
             .iter()
@@ -1140,7 +1120,16 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
                     .and_then(|rubric| rubric["description"].as_str())
             })
             .unwrap_or_default();
-        pdf.subheading(&name_description_value(rubric_name, rubric_description));
+        let rubric_code = rubric_codes
+            .get(rubric_name)
+            .cloned()
+            .unwrap_or_else(|| rubric_name.clone());
+        let rubric_label = if rubric_description.is_empty() {
+            format!("{rubric_code} — {rubric_name}")
+        } else {
+            format!("{rubric_code} — {rubric_description}")
+        };
+        let rubric_heading = format!("Check results by rubric — {rubric_label}");
         let use_check_names = full_column_names_fit(&check_order, 230.0, pdf.width);
         if !use_check_names {
             abbreviated_checks.extend(check_order.iter().cloned());
@@ -1164,21 +1153,22 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
                 row.extend(check_order.iter().map(|name| {
                     rubric
                         .and_then(|rubric| find_result(&rubric["check_results"], name))
-                        .map(|check| check_symbol(&check["result"]))
-                        .or_else(|| {
-                            find_result(&report["checks"], name)
-                                .map(|check| check_symbol(&check["result"]))
-                        })
+                        .map(check_symbol)
+                        .or_else(|| find_result(&report["checks"], name).map(check_symbol))
                         .unwrap_or_default()
                 }));
                 row
             })
             .collect::<Vec<_>>();
-        pdf.table_dynamic(&headers, &rows);
+        if check_order.is_empty() {
+            pdf.section_break();
+            pdf.heading(&rubric_heading);
+            pdf.text("No checks are configured for this rubric.");
+        } else {
+            pdf.table_dynamic_section(&rubric_heading, &headers, &rows);
+        }
     }
 
-    pdf.section_break();
-    pdf.heading("Test outcomes by student");
     let mut headers = vec!["Student".to_owned(), "External ID".to_owned()];
     headers.extend(test_names.iter().cloned());
     let rows = reports
@@ -1198,7 +1188,7 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
             row
         })
         .collect::<Vec<_>>();
-    pdf.table_dynamic(&headers, &rows);
+    pdf.table_dynamic_section("Test outcomes by student", &headers, &rows);
 
     pdf.section_break();
     pdf.heading("Code guide");
@@ -1276,6 +1266,7 @@ fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) 
         .iter()
         .filter_map(|check| check["name"].as_str().map(str::to_owned))
         .collect::<BTreeSet<_>>();
+    let mut other_check_rows = Vec::new();
     for check in reports.iter().flat_map(|report| array(&report["checks"])) {
         let name = string(&check["name"]);
         if !check_names.insert(name.clone()) {
@@ -1289,10 +1280,8 @@ fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) 
             .iter()
             .filter(|row| row["result"].as_i64() == Some(1))
             .count();
-        check_rows.push(vec![
-            "CSV or aggregate result".to_owned(),
+        other_check_rows.push(vec![
             format!("{} — {}", name, string(&check["description"])),
-            "Imported or combined check outcome".to_owned(),
             format!("{pass_count}/{} passed", evaluated_rows.len()),
         ]);
     }
@@ -1309,6 +1298,10 @@ fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) 
             ],
             &check_rows,
         );
+    }
+    if !other_check_rows.is_empty() {
+        pdf.subheading("Imported or combined checks");
+        pdf.table_dynamic(&["Check".into(), "Outcomes".into()], &other_check_rows);
     }
 
     let rubric_multiplier = plan["rubrics_multiplier"].as_f64().unwrap_or(1.0);
@@ -1327,7 +1320,6 @@ fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) 
             &inputs,
             &numeric_array(&rubric["weights"]),
             Some(rubric_multiplier),
-            false,
         );
         rubric_rows.push(vec![
             format!("{} — {}", name, string(&rubric["description"])),
@@ -1346,7 +1338,6 @@ fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) 
                 &string_array(&rubric["checks"]),
                 &numeric_array(&rubric["weights"]),
                 Some(rubric_multiplier),
-                false,
             ),
         ]);
     }
@@ -1354,12 +1345,9 @@ fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) 
     if rubric_rows.is_empty() {
         pdf.text("No rubric calculation definitions are available in this run.");
     } else {
-        pdf.table_dynamic(
-            &["Rubric".into(), "Calculation, inputs, and weights".into()],
-            &rubric_rows,
-        );
+        pdf.table_formula(&["Rubric".into(), "Formula".into()], &rubric_rows);
         pdf.text(&format!(
-            "Rubric multiplier: {}. It scales each check result before calculation.",
+            "Rubric multiplier: {}. It multiplies the calculated rubric mark once.",
             display_value(&plan["rubrics_multiplier"])
         ));
     }
@@ -1379,7 +1367,6 @@ fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) 
             &string_array(&item["rubrics"]),
             &numeric_array(&item["weights"]),
             Some(evaluation_multiplier),
-            true,
         );
         evaluation_rows.push(vec![
             format!("{} — {}", name, string(&item["description"])),
@@ -1408,7 +1395,6 @@ fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) 
                 &string_array(&item["rubrics"]),
                 &numeric_array(&item["weights"]),
                 Some(evaluation_multiplier),
-                true,
             )
         };
         evaluation_rows.push(vec![
@@ -1420,11 +1406,8 @@ fn render_professor_calculation_guide(pdf: &mut PdfDocument, reports: &[Value]) 
     if evaluation_rows.is_empty() {
         pdf.text("No evaluation calculation definitions are available in this run.");
     } else {
-        pdf.table_dynamic(
-            &[
-                "Evaluation item".into(),
-                "Calculation, inputs, and weights".into(),
-            ],
+        pdf.table_formula(
+            &["Evaluation item".into(), "Formula".into()],
             &evaluation_rows,
         );
         pdf.text(&format!(
@@ -1481,7 +1464,6 @@ fn calculation_formula(
     inputs: &[String],
     weights: &[f64],
     multiplier: Option<f64>,
-    multiplier_after: bool,
 ) -> String {
     if calculation == "import/csv" {
         return "Imported from CSV".to_owned();
@@ -1489,38 +1471,30 @@ fn calculation_formula(
     if inputs.is_empty() {
         return "No inputs are configured".to_owned();
     }
-    let arguments = inputs
-        .iter()
-        .map(|input| {
-            if let Some(multiplier) = multiplier.filter(|_| !multiplier_after) {
-                format!(
-                    "({input} × {})",
-                    display_value(&serde_json::json!(multiplier))
-                )
-            } else {
-                input.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let weights = if calculation == "weighted_avg" && !weights.is_empty() {
-        format!(
-            "; weights=[{}]",
-            weights
-                .iter()
-                .map(|weight| display_value(&serde_json::json!(weight)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+    let mut formula = if calculation == "weighted_avg" && weights.len() == inputs.len() {
+        let weighted_terms = inputs
+            .iter()
+            .zip(weights)
+            .map(|(input, weight)| {
+                format!("({input} × {})", display_value(&serde_json::json!(weight)))
+            })
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let weight_total = weights
+            .iter()
+            .map(|weight| display_value(&serde_json::json!(weight)))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        format!("(({weighted_terms}) / ({weight_total}))")
     } else {
-        String::new()
+        let arguments = inputs.join(", ");
+        format!("{calculation}({arguments})")
     };
-    let mut formula = format!("{calculation}({arguments}{weights})");
-    if let Some(multiplier) = multiplier.filter(|_| multiplier_after) {
-        formula.push_str(&format!(
-            " × {}",
+    if let Some(multiplier) = multiplier.filter(|multiplier| *multiplier != 1.0) {
+        formula = format!(
+            "{} × {formula}",
             display_value(&serde_json::json!(multiplier))
-        ));
+        );
     }
     formula
 }
@@ -1571,11 +1545,14 @@ fn name_description_value(name: &str, description: &str) -> String {
     }
 }
 
-fn check_symbol(result: &Value) -> &'static str {
+fn check_symbol(check: &Value) -> String {
+    // Rubric check results are scaled for the rubric multiplier. Their
+    // raw_result field retains the underlying 0/1 check value.
+    let result = check.get("raw_result").unwrap_or(&check["result"]);
     if result.as_i64() == Some(1) || result.as_f64() == Some(1.0) {
-        "✓" // Ya no necesitas .to_owned()
+        "✓".to_owned()
     } else {
-        "X"
+        "X".to_owned()
     }
 }
 
@@ -1633,46 +1610,37 @@ fn write_code_key(
 }
 
 fn append_output(pdf: &mut PdfDocument, label: &str, value: &str) {
-    let value = value.trim();
-    if value.is_empty() {
+    if value.trim().is_empty() {
         return;
     }
     pdf.text(label);
     let safe = redact_sensitive_output(value);
-    let truncated = if safe.chars().count() > 1400 {
-        format!(
-            "{}\n[Output shortened for this report]",
-            safe.chars().take(1400).collect::<String>()
-        )
-    } else {
-        safe
-    };
-    for line in truncated.lines() {
-        let line = if line.chars().count() > 110 {
-            line.chars().take(110).collect::<String>()
-        } else {
-            line.to_owned()
-        };
-        pdf.code_text(&line);
+    for line in safe.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let content = content.strip_suffix('\r').unwrap_or(content);
+        pdf.code_text(content);
     }
 }
 
 fn redact_sensitive_output(text: &str) -> String {
     let mut result = String::new();
-    for line in text.lines() {
+    for segment in text.split_inclusive('\n') {
+        let line = segment.strip_suffix('\n').unwrap_or(segment);
         let lowered = line.to_ascii_lowercase();
-        if lowered.contains("password")
+        let is_sensitive = lowered.contains("password")
             || lowered.contains("passwd")
             || lowered.contains("secret")
             || lowered.contains("token")
             || lowered.contains("pass=")
-            || lowered.contains("pass:")
-        {
+            || lowered.contains("pass:");
+        if is_sensitive {
             result.push_str("[Sensitive credential-like output omitted]");
+            if segment.ends_with('\n') {
+                result.push('\n');
+            }
         } else {
-            result.push_str(line);
+            result.push_str(segment);
         }
-        result.push('\n');
     }
     result
 }
@@ -1860,7 +1828,7 @@ impl PdfDocument {
     }
 
     fn code_text(&mut self, text: &str) {
-        for line in wrap_text(text, 112) {
+        for line in wrap_code_line(text, 112) {
             self.ensure(12.0);
             self.draw_text_font(43.0, self.y, 7.3, "F3", &line);
             self.y += 9.0;
@@ -1881,7 +1849,7 @@ impl PdfDocument {
         }
         let lines = source
             .lines()
-            .flat_map(|line| wrap_text(line, 112))
+            .flat_map(|line| wrap_code_line(line, 112))
             .collect::<Vec<_>>();
         let was_line_truncated = lines.len() > 1400;
         for line in lines.into_iter().take(1400) {
@@ -1983,6 +1951,39 @@ impl PdfDocument {
     }
 
     fn table_dynamic(&mut self, headers: &[String], rows: &[Vec<String>]) {
+        self.table_dynamic_inner(headers, rows, None);
+    }
+
+    fn table_dynamic_section(
+        &mut self,
+        section_heading: &str,
+        headers: &[String],
+        rows: &[Vec<String>],
+    ) {
+        self.table_dynamic_inner(headers, rows, Some(section_heading));
+    }
+
+    fn table_formula(&mut self, headers: &[String], rows: &[Vec<String>]) {
+        if headers.is_empty() {
+            return;
+        }
+        let usable = self.width - 72.0;
+        let label_width = 145.0_f32.min(usable * 0.34);
+        let mark_width = if headers.len() > 2 { 48.0 } else { 0.0 };
+        let formula_width = (usable - label_width - mark_width).max(80.0);
+        let mut widths = vec![label_width, formula_width];
+        if headers.len() > 2 {
+            widths.push(mark_width);
+        }
+        self.table_with_widths(headers, rows, &widths);
+    }
+
+    fn table_dynamic_inner(
+        &mut self,
+        headers: &[String],
+        rows: &[Vec<String>],
+        repeated_heading: Option<&str>,
+    ) {
         if headers.is_empty() {
             return;
         }
@@ -2008,7 +2009,7 @@ impl PdfDocument {
             .collect::<Vec<_>>();
         let total = widths.iter().sum::<f32>();
         if total <= usable || headers.len() <= 2 {
-            self.table_with_widths(headers, rows, &widths);
+            self.table_with_widths_repeating(headers, rows, &widths, repeated_heading);
             return;
         }
 
@@ -2048,17 +2049,39 @@ impl PdfDocument {
                         .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>();
-            self.table_with_widths(&chunk_headers, &chunk_rows, &chunk_widths);
+            self.table_with_widths_repeating(
+                &chunk_headers,
+                &chunk_rows,
+                &chunk_widths,
+                repeated_heading,
+            );
         }
     }
 
     fn table_with_widths(&mut self, headers: &[String], rows: &[Vec<String>], widths: &[f32]) {
+        self.table_with_widths_repeating(headers, rows, widths, None);
+    }
+
+    fn table_with_widths_repeating(
+        &mut self,
+        headers: &[String],
+        rows: &[Vec<String>],
+        widths: &[f32],
+        repeated_heading: Option<&str>,
+    ) {
         let total_width = widths.iter().sum::<f32>();
         let headers = (0..headers.len())
             .map(|index| headers.get(index).cloned().unwrap_or_default())
             .collect::<Vec<_>>();
+        if repeated_heading.is_some() {
+            self.section_break();
+            self.heading(repeated_heading.unwrap());
+        }
         if self.y + table_row_height(&headers, widths) > self.height - 40.0 {
             self.page();
+            if let Some(heading) = repeated_heading {
+                self.heading(heading);
+            }
         }
         self.draw_table_row(&headers, widths, total_width, true);
         for row in rows {
@@ -2067,6 +2090,9 @@ impl PdfDocument {
                 .collect::<Vec<_>>();
             if self.y + table_row_height(&cells, widths) > self.height - 40.0 {
                 self.page();
+                if let Some(heading) = repeated_heading {
+                    self.heading(heading);
+                }
                 self.draw_table_row(&headers, widths, total_width, true);
             }
             self.draw_table_row(&cells, widths, total_width, false);
@@ -2263,6 +2289,17 @@ fn wrap_text(value: &str, limit: usize) -> Vec<String> {
     } else {
         lines
     }
+}
+
+fn wrap_code_line(value: &str, limit: usize) -> Vec<String> {
+    let characters = value.chars().collect::<Vec<_>>();
+    if characters.is_empty() {
+        return vec![String::new()];
+    }
+    characters
+        .chunks(limit.max(1))
+        .map(|chunk| chunk.iter().collect())
+        .collect()
 }
 
 fn pdf_literal(value: &str) -> String {
