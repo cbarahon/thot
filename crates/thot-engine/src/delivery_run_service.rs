@@ -1306,13 +1306,7 @@ impl DeliveryRunService {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(ServiceError::Internal(error.to_string())),
             }
-            collect_artifacts(
-                &report_root,
-                &disk_dir,
-                &relative_dir,
-                test_id,
-                &mut artifacts,
-            )?;
+            collect_artifacts(&report_root, &disk_dir, &disk_dir, test_id, &mut artifacts)?;
         }
         artifacts.sort_by(|left, right| left.path.cmp(&right.path));
         Ok(Some(artifacts))

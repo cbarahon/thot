@@ -648,6 +648,7 @@ fn render_student_report(
             .filter(|description| !description.trim().is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| friendly_test_name(&test_id, test["test_reference"].as_str()));
+        pdf.space(8.0);
         pdf.subheading(&format!("{test_id} — {description}"));
         pdf.text(&format!(
             "Result: {}    Exit code: {}    Duration: {} ms",
@@ -1179,6 +1180,7 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
                 find_result(&report["test_results"], name)
                     .map(|test| match test["status"].as_str().unwrap_or("") {
                         "passed" => "Pass".to_owned(),
+                        "timed_out" => "Timeout".to_owned(),
                         "skipped" | "not_run" => "Skipped".to_owned(),
                         "running" => "Running".to_owned(),
                         _ => "No pass".to_owned(),
@@ -1210,7 +1212,7 @@ fn render_professor_report(pdf: &mut PdfDocument, reports: &[Value], project: &s
         &code_key_entries(&abbreviated_checks, &check_codes, reports, "checks"),
         4,
     );
-    pdf.text("v means a check passed; X means it did not pass. Pass means a test completed successfully; No pass includes test failures and errors.");
+    pdf.text("In test tables, Pass is green, No pass is red, and Timeout is amber. Skipped tests have no result; check symbols use v for pass and X for no pass.");
     pdf.section_break();
     render_professor_calculation_guide(pdf, reports);
 }
@@ -1827,6 +1829,11 @@ impl PdfDocument {
         }
     }
 
+    fn space(&mut self, height: f32) {
+        self.ensure(height);
+        self.y += height;
+    }
+
     fn code_text(&mut self, text: &str) {
         for line in wrap_code_line(text, 112) {
             self.ensure(12.0);
@@ -2116,10 +2123,38 @@ impl PdfDocument {
             (lines.iter().map(Vec::len).max().unwrap_or(1) as f32 * 9.0 + 7.0).max(18.0);
         let mut x = 40.0;
         for (index, column) in lines.iter().enumerate() {
-            for (line_index, line) in column.iter().enumerate() {
-                self.draw_text(x, self.y + line_index as f32 * 9.0, 7.3, is_header, line);
+            let width = widths.get(index).copied().unwrap_or(40.0);
+            if cells.get(index).is_some_and(|cell| cell == "✓") {
+                self.draw_checkmark(x + width / 2.0, self.y);
+            } else if !is_header {
+                match cells.get(index).map(String::as_str) {
+                    Some("Pass") => {
+                        self.draw_colored_text(x, self.y, 7.3, (0.05, 0.42, 0.16), "Pass")
+                    }
+                    Some("No pass") => {
+                        self.draw_colored_text(x, self.y, 7.3, (0.72, 0.08, 0.08), "No pass")
+                    }
+                    Some("Timeout") => {
+                        self.draw_colored_text(x, self.y, 7.3, (0.68, 0.38, 0.02), "Timeout")
+                    }
+                    _ => {
+                        for (line_index, line) in column.iter().enumerate() {
+                            self.draw_text(
+                                x,
+                                self.y + line_index as f32 * 9.0,
+                                7.3,
+                                is_header,
+                                line,
+                            );
+                        }
+                    }
+                }
+            } else {
+                for (line_index, line) in column.iter().enumerate() {
+                    self.draw_text(x, self.y + line_index as f32 * 9.0, 7.3, is_header, line);
+                }
             }
-            x += widths.get(index).copied().unwrap_or(40.0);
+            x += width;
         }
         self.y += row_height;
         self.line(36.0, self.y - 12.0, 36.0 + total_width, self.y - 12.0);
@@ -2128,6 +2163,42 @@ impl PdfDocument {
     fn draw_text(&mut self, x: f32, y_from_top: f32, size: f32, bold: bool, value: &str) {
         let font = if bold { "F2" } else { "F1" };
         self.draw_text_font(x, y_from_top, size, font, value);
+    }
+
+    fn draw_colored_text(
+        &mut self,
+        x: f32,
+        y_from_top: f32,
+        size: f32,
+        color: (f32, f32, f32),
+        value: &str,
+    ) {
+        let y = self.height - y_from_top;
+        self.pages.last_mut().unwrap().push(format!(
+            "{:.2} {:.2} {:.2} rg BT /F2 {size:.1} Tf 1 0 0 1 {x:.1} {y:.1} Tm ({}) Tj ET 0 0 0 rg\n",
+            color.0,
+            color.1,
+            color.2,
+            pdf_literal(value)
+        ));
+    }
+
+    fn draw_checkmark(&mut self, center_x: f32, top: f32) {
+        let points = [
+            (center_x - 4.0, top + 9.0),
+            (center_x - 1.0, top + 12.0),
+            (center_x + 5.0, top + 5.0),
+        ];
+        let pdf_y = |y_from_top: f32| self.height - y_from_top;
+        self.pages.last_mut().unwrap().push(format!(
+            "0.08 0.38 0.14 RG 1.2 w {:.1} {:.1} m {:.1} {:.1} l {:.1} {:.1} l S 0 0 0 RG 0.65 w\n",
+            points[0].0,
+            pdf_y(points[0].1),
+            points[1].0,
+            pdf_y(points[1].1),
+            points[2].0,
+            pdf_y(points[2].1)
+        ));
     }
 
     fn draw_text_font(&mut self, x: f32, y_from_top: f32, size: f32, font: &str, value: &str) {
@@ -2306,6 +2377,7 @@ fn pdf_literal(value: &str) -> String {
     let mut escaped = String::new();
     for character in value.chars() {
         let byte = match character {
+            '✓' => b'v',
             '\u{20ac}' => 0x80,
             '\u{201a}' => 0x82,
             '\u{0192}' => 0x83,
