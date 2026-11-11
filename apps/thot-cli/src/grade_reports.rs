@@ -1571,11 +1571,11 @@ fn name_description_value(name: &str, description: &str) -> String {
     }
 }
 
-fn check_symbol(result: &Value) -> String {
+fn check_symbol(result: &Value) -> &'static str {
     if result.as_i64() == Some(1) || result.as_f64() == Some(1.0) {
-        "v".to_owned()
+        "✓" // Ya no necesitas .to_owned()
     } else {
-        "X".to_owned()
+        "X"
     }
 }
 
