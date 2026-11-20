@@ -2,7 +2,10 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::Path,
+};
 
 use crate::{delivery_run_service::ServiceError, project_config};
 use thot_core::{ProjectTest, VMActivityProject};
@@ -328,11 +331,13 @@ async fn load_run_expedients(
     let mut expedients = Vec::with_capacity(rows.len());
     for (expedient_id, _student_id, delivery_filename, status, report_path) in rows {
         let report = match tokio::fs::read(&report_path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-                ServiceError::Internal(format!(
-                    "saved report for expedient {expedient_id:?} is invalid JSON: {error}"
-                ))
-            })?,
+            Ok(_) => {
+                crate::test_result_store::read_report(Path::new(&report_path)).map_err(|error| {
+                    ServiceError::Internal(format!(
+                        "saved report for expedient {expedient_id:?} is invalid JSON: {error}"
+                    ))
+                })?
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
             Err(error) => {
                 return Err(ServiceError::Internal(format!(
@@ -351,10 +356,11 @@ async fn load_run_expedients(
 }
 
 fn load_project(artifact_root: &std::path::Path, run_id: &str) -> Option<VMActivityProject> {
-    let config_path = artifact_root
+    let project_root = artifact_root
         .join("project-snapshots")
         .join(run_id)
-        .join("project/configuration.yaml");
+        .join("project");
+    let config_path = project_config::configuration_file(&project_root).ok()?;
     let bytes = std::fs::read(config_path).ok()?;
     project_config::parse_configuration(&bytes).ok()
 }
@@ -983,11 +989,13 @@ async fn load_deliveries(
     let mut deliveries = Vec::with_capacity(rows.len());
     for (delivery_id, report_path, filename, student_count, has_running, has_pending) in rows {
         let report = match tokio::fs::read(&report_path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-                ServiceError::Internal(format!(
-                    "saved report for delivery {delivery_id:?} is invalid JSON: {error}"
-                ))
-            })?,
+            Ok(_) => {
+                crate::test_result_store::read_report(Path::new(&report_path)).map_err(|error| {
+                    ServiceError::Internal(format!(
+                        "saved report for delivery {delivery_id:?} is invalid JSON: {error}"
+                    ))
+                })?
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
             Err(error) => {
                 return Err(ServiceError::Internal(format!(
@@ -1013,10 +1021,13 @@ async fn load_deliveries(
 }
 
 fn configured_test_names(artifact_root: &std::path::Path, run_id: &str) -> Vec<String> {
-    let config_path = artifact_root
+    let project_root = artifact_root
         .join("project-snapshots")
         .join(run_id)
-        .join("project/configuration.yaml");
+        .join("project");
+    let Ok(config_path) = project_config::configuration_file(&project_root) else {
+        return Vec::new();
+    };
     let Ok(bytes) = std::fs::read(config_path) else {
         return Vec::new();
     };
@@ -1125,12 +1136,13 @@ fn combined_check_names(
     run_id: &str,
     deliveries: &[DeliveryData],
 ) -> Vec<String> {
-    let config_path = artifact_root
+    let project_root = artifact_root
         .join("project-snapshots")
         .join(run_id)
-        .join("project/configuration.yaml");
-    let mut names: Vec<String> = std::fs::read(config_path)
-        .ok()
+        .join("project");
+    let config_path = project_config::configuration_file(&project_root).ok();
+    let mut names: Vec<String> = config_path
+        .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| project_config::parse_configuration(&bytes).ok())
         .map(|project| project.checks.into_iter().map(|check| check.name).collect())
         .unwrap_or_default();

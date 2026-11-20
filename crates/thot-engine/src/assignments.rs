@@ -193,6 +193,7 @@ impl AssignmentService {
             .await?;
         }
         transaction.commit().await?;
+        self.persist_project_assignment_file(&project).await?;
         self.get(None).await
     }
 
@@ -283,12 +284,54 @@ impl AssignmentService {
             resolve_project_assignments(&self.pool, &project.project_id, &request.assignments)
                 .await?;
         persist_project_assignments(&self.pool, &project.project_id, &resolved.rows).await?;
+        self.persist_project_assignment_file(&project).await?;
         let assignments = self.get(None).await?;
         Ok(AssignmentImportResponse {
             assignments,
             imported_records: resolved.imported_records,
             errors: resolved.errors,
         })
+    }
+
+    async fn persist_project_assignment_file(
+        &self,
+        project: &ProjectContext,
+    ) -> Result<(), AssignmentError> {
+        let root = Path::new(&project.project_path);
+        if !root.is_dir() {
+            return Ok(());
+        }
+        let yaml_path = root.join("assignments.yaml");
+        let json_path = root.join("assignments.json");
+        let yaml_exists = regular_file_exists(&yaml_path).map_err(AssignmentError::Invalid)?;
+        let json_exists = regular_file_exists(&json_path).map_err(AssignmentError::Invalid)?;
+        if yaml_exists && json_exists {
+            return Err(AssignmentError::Invalid(
+                "project contains both assignments.yaml and assignments.json".into(),
+            ));
+        }
+        let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            "SELECT ps.external_id, a.delivery_id, d.original_filename FROM project_students ps LEFT JOIN project_assignments a ON a.project_id=ps.project_id AND a.student_id=ps.student_id LEFT JOIN vm_activity_deliveries d ON d.delivery_id=a.delivery_id WHERE ps.project_id=? ORDER BY ps.external_id",
+        ).bind(&project.project_id).fetch_all(&self.pool).await?;
+        let assignments = rows.into_iter().map(|(student_external_id, submission_id, delivery_filename)| serde_json::json!({"student_external_id":student_external_id,"submission_id":submission_id,"delivery_filename":delivery_filename})).collect::<Vec<_>>();
+        let value = serde_json::json!({"assignments": assignments});
+        let path = if json_exists { json_path } else { yaml_path };
+        let bytes = if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+            serde_json::to_vec_pretty(&value)
+                .map_err(|error| AssignmentError::Invalid(error.to_string()))?
+        } else {
+            serde_yaml::to_string(&value)
+                .map_err(|error| AssignmentError::Invalid(error.to_string()))?
+                .into_bytes()
+        };
+        let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+        fs::write(&temporary, bytes).map_err(|error| {
+            AssignmentError::Invalid(format!("cannot write project assignment file: {error}"))
+        })?;
+        fs::rename(&temporary, &path).map_err(|error| {
+            AssignmentError::Invalid(format!("cannot replace project assignment file: {error}"))
+        })?;
+        Ok(())
     }
 
     async fn refresh_project_inventory(
@@ -312,35 +355,14 @@ impl AssignmentService {
         let snapshot = vm_activity::load_project(Path::new(&project.project_path), staging)
             .await
             .map_err(AssignmentError::Invalid)?;
-        let students_csv = snapshot.extracted_root.join("students.csv");
-        match std::fs::symlink_metadata(&students_csv) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                return Err(AssignmentError::Invalid(
-                    "project students.csv must be a regular non-symlink file".into(),
-                ));
-            }
-            Ok(_) => {
-                let contents = std::fs::read_to_string(&students_csv).map_err(|error| {
-                    AssignmentError::Invalid(format!("cannot read project students.csv: {error}"))
-                })?;
-                let (students, malformed) = crate::student_csv::parse_students_csv(&contents)
-                    .map_err(AssignmentError::Invalid)?;
-                let (_, _, rejected) =
-                    import_project_students(&self.pool, &project.project_id, students).await?;
-                if !malformed.is_empty() || !rejected.is_empty() {
-                    tracing::warn!(
-                        project_id = %project.project_id,
-                        malformed_rows = malformed.len(),
-                        rejected_rows = rejected.len(),
-                        "some project students.csv rows were not imported"
-                    );
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(AssignmentError::Invalid(format!(
-                    "cannot inspect project students.csv: {error}"
-                )));
+        if let Some((students, malformed)) =
+            crate::student_csv::load_project_students(&snapshot.extracted_root)
+                .map_err(AssignmentError::Invalid)?
+        {
+            let (_, _, rejected) =
+                import_project_students(&self.pool, &project.project_id, students).await?;
+            if !malformed.is_empty() || !rejected.is_empty() {
+                tracing::warn!(project_id = %project.project_id, malformed_rows = malformed.len(), rejected_rows = rejected.len(), "some project roster rows were not imported");
             }
         }
         let delivery_directory = delivery_run_service::resolve_directory(
@@ -478,7 +500,9 @@ async fn resolve_project_assignments(
     .fetch_all(pool)
     .await?;
     let mut delivery_ids_by_filename = HashMap::<String, Vec<String>>::new();
+    let mut project_submission_ids = HashSet::<String>::new();
     for (delivery_id, filename) in delivery_rows {
+        project_submission_ids.insert(delivery_id.clone());
         delivery_ids_by_filename
             .entry(filename)
             .or_default()
@@ -556,57 +580,81 @@ async fn resolve_project_assignments(
             continue;
         }
 
-        let delivery_filename = match object.get("delivery_filename") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(filename)) => Some(filename.as_str()),
-            Some(_) => {
-                errors.push(AssignmentRecordError {
-                    record_index: Some(index + 1),
-                    student_external_id: Some(external_id.to_owned()),
-                    error: "delivery_filename must be a string or null".into(),
-                    correction:
-                        "use an exact filename from `thot assignments get`, or set it to null."
-                            .into(),
-                });
-                continue;
-            }
-        };
-        let delivery_id = match delivery_filename {
-            None => None,
-            Some(filename) if filename.trim().is_empty() => {
-                errors.push(AssignmentRecordError {
-                    record_index: Some(index + 1),
-                    student_external_id: Some(external_id.to_owned()),
-                    error: "delivery_filename is empty".into(),
-                    correction:
-                        "use an exact filename from `thot assignments get`, or set it to null."
-                            .into(),
-                });
-                continue;
-            }
-            Some(filename) => {
-                let Some(delivery_ids) = delivery_ids_by_filename.get(filename) else {
-                    errors.push(AssignmentRecordError {
-                        record_index: Some(index + 1),
-                        student_external_id: Some(external_id.to_owned()),
-                        error: format!("delivery_filename {filename:?} does not exist in this project"),
-                        correction: "copy an exact delivery filename from `thot assignments get`, or use null.".into(),
-                    });
-                    continue;
-                };
-                if delivery_ids.len() != 1 {
+        let delivery_id = match object.get("submission_id") {
+            Some(Value::String(submission_id)) if !submission_id.trim().is_empty() => {
+                if project_submission_ids.contains(submission_id) {
+                    Some(submission_id.clone())
+                } else {
                     errors.push(AssignmentRecordError {
                         record_index: Some(index + 1),
                         student_external_id: Some(external_id.to_owned()),
                         error: format!(
-                            "delivery_filename {filename:?} is not unique in this project"
+                            "submission_id {submission_id:?} does not exist in this project"
                         ),
                         correction:
-                            "use a unique delivery filename in the project delivery folder.".into(),
+                            "use a stable submission ID from this project's delivery inventory."
+                                .into(),
                     });
                     continue;
                 }
-                Some(delivery_ids[0].clone())
+            }
+            Some(Value::String(_))
+            | Some(Value::Bool(_))
+            | Some(Value::Number(_))
+            | Some(Value::Array(_))
+            | Some(Value::Object(_)) => {
+                errors.push(AssignmentRecordError {
+                    record_index: Some(index + 1),
+                    student_external_id: Some(external_id.to_owned()),
+                    error: "submission_id must be a non-empty string".into(),
+                    correction:
+                        "use a stable submission ID from this project's delivery inventory.".into(),
+                });
+                continue;
+            }
+            None | Some(Value::Null) => {
+                let delivery_filename = match object.get("delivery_filename") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(filename)) => Some(filename.as_str()),
+                    Some(_) => {
+                        errors.push(AssignmentRecordError {
+                            record_index: Some(index + 1), student_external_id: Some(external_id.to_owned()),
+                            error: "delivery_filename must be a string or null".into(),
+                            correction: "use an exact filename from `thot assignments get`, or set it to null.".into(),
+                        });
+                        continue;
+                    }
+                };
+                match delivery_filename {
+                    None => None,
+                    Some(filename) if filename.trim().is_empty() => {
+                        errors.push(AssignmentRecordError {
+                            record_index: Some(index + 1), student_external_id: Some(external_id.to_owned()),
+                            error: "delivery_filename is empty".into(),
+                            correction: "use an exact filename from `thot assignments get`, or set it to null.".into(),
+                        });
+                        continue;
+                    }
+                    Some(filename) => {
+                        let Some(delivery_ids) = delivery_ids_by_filename.get(filename) else {
+                            errors.push(AssignmentRecordError {
+                                record_index: Some(index + 1), student_external_id: Some(external_id.to_owned()),
+                                error: format!("delivery_filename {filename:?} does not exist in this project"),
+                                correction: "copy an exact delivery filename from `thot assignments get`, or use null.".into(),
+                            });
+                            continue;
+                        };
+                        if delivery_ids.len() != 1 {
+                            errors.push(AssignmentRecordError {
+                                record_index: Some(index + 1), student_external_id: Some(external_id.to_owned()),
+                                error: format!("delivery_filename {filename:?} is not unique in this project"),
+                                correction: "use a unique delivery filename or stable submission_id.".into(),
+                            });
+                            continue;
+                        }
+                        Some(delivery_ids[0].clone())
+                    }
+                }
             }
         };
         resolved.push((student_id, delivery_id));

@@ -29,7 +29,7 @@ pub fn paths_for_test(
     test_name: &str,
 ) -> io::Result<(PathBuf, PathBuf)> {
     let record_dir = report_dir
-        .join("test_records")
+        .join("tests")
         .join(safe_component(delivery_filename))
         .join(safe_component(test_name));
     let artifacts = record_dir.join("artifacts");
@@ -43,8 +43,22 @@ pub fn persist_output(record_dir: &Path, stdout: &str, stderr: &str) -> io::Resu
 }
 
 pub fn persist_report(path: &Path, report: &serde_json::Value) -> io::Result<()> {
-    let bytes = serde_json::to_vec_pretty(report).map_err(io::Error::other)?;
+    let bytes = match path.extension().and_then(|extension| extension.to_str()) {
+        Some("yaml" | "yml") => serde_yaml::to_string(report)
+            .map_err(io::Error::other)?
+            .into_bytes(),
+        _ => serde_json::to_vec_pretty(report).map_err(io::Error::other)?,
+    };
     atomic_write(path, &bytes)
+}
+
+pub fn read_report(path: &Path) -> io::Result<serde_json::Value> {
+    let bytes = fs::read(path)?;
+    if let Ok(value) = serde_json::from_slice(&bytes) {
+        return Ok(value);
+    }
+    let yaml: serde_yaml::Value = serde_yaml::from_slice(&bytes).map_err(io::Error::other)?;
+    serde_json::to_value(yaml).map_err(io::Error::other)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -66,7 +80,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("thot-record-{}", uuid::Uuid::new_v4()));
         let (record, artifacts) =
             paths_for_test(&root, "student one.ova", "start_time_01").unwrap();
-        assert!(artifacts.ends_with("test_records/student_one.ova/start_time_01/artifacts"));
+        assert!(artifacts.ends_with("tests/student_one.ova/start_time_01/artifacts"));
         assert!(record.starts_with(&root));
         fs::remove_dir_all(root).unwrap();
     }

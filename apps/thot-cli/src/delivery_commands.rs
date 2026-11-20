@@ -133,14 +133,27 @@ fn discover_project() -> Result<String, Box<dyn std::error::Error>> {
             sources.push(path);
         }
     }
-    let configuration = current_dir.join("configuration.yaml");
+    let canonical_configuration = current_dir.join("configuration.thot.yaml");
+    let legacy_configuration = current_dir.join("configuration.yaml");
+    if canonical_configuration.is_file() && legacy_configuration.is_file() {
+        return Err("project contains both configuration.thot.yaml and configuration.yaml".into());
+    }
+    let configuration = if canonical_configuration.is_file() {
+        canonical_configuration
+    } else {
+        legacy_configuration
+    };
     if configuration.is_file() {
         sources.push(configuration);
     }
 
     if sources.len() == 1 {
         let source = sources.pop().expect("one source was found");
-        if source.file_name().and_then(|name| name.to_str()) == Some("configuration.yaml") {
+        if source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "configuration.yaml" | "configuration.thot.yaml"))
+        {
             return Ok(current_dir.to_string_lossy().into_owned());
         }
         return Ok(source.to_string_lossy().into_owned());

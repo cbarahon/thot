@@ -260,7 +260,7 @@ impl DeliveryRunService {
     ) -> Result<RunRecord, ServiceError> {
         if !Path::new(&project_path).is_absolute() {
             return Err(ServiceError::Invalid(
-                "project_path must be an absolute path to a project archive".into(),
+                "project_path must be an absolute path to a project folder or supported project archive".into(),
             ));
         }
         let _guard = self.create_gate.lock().await;
@@ -274,22 +274,81 @@ impl DeliveryRunService {
                 "another delivery run is queued or running".into(),
             ));
         }
+        let source_metadata = std::fs::symlink_metadata(&project_path).map_err(|error| {
+            ServiceError::Invalid(format!("project source is unavailable: {error}"))
+        })?;
+        if source_metadata.file_type().is_symlink() {
+            return Err(ServiceError::Invalid(
+                "project source must not be a symlink".into(),
+            ));
+        }
+        let canonical_source = Path::new(&project_path).canonicalize().map_err(|error| {
+            ServiceError::Invalid(format!("cannot resolve project source: {error}"))
+        })?;
+        let project_id = vm_activity::project_identifier_for_path(&canonical_source)
+            .map_err(ServiceError::Invalid)?;
+        let project_root = if source_metadata.is_dir() {
+            canonical_source.clone()
+        } else {
+            self.artifact_root.join("projects").join(&project_id)
+        };
+        std::fs::create_dir_all(&project_root).map_err(|error| {
+            ServiceError::Internal(format!("cannot create project run root: {error}"))
+        })?;
+        let project_root = project_root.canonicalize().map_err(|error| {
+            ServiceError::Internal(format!("cannot resolve project run root: {error}"))
+        })?;
+        let runs_root = project_root.join("runs");
+        match fs::symlink_metadata(&runs_root) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(ServiceError::Invalid(
+                    "project runs path must be a real directory, not a symlink".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&runs_root).map_err(|error| {
+                    ServiceError::Internal(format!("cannot create project runs directory: {error}"))
+                })?;
+            }
+            Err(error) => {
+                return Err(ServiceError::Internal(format!(
+                    "cannot inspect project runs directory: {error}"
+                )));
+            }
+        }
+        let canonical_runs_root = runs_root.canonicalize().map_err(|error| {
+            ServiceError::Internal(format!("cannot resolve project runs directory: {error}"))
+        })?;
+        if canonical_runs_root.parent() != Some(project_root.as_path()) {
+            return Err(ServiceError::Invalid(
+                "project runs directory resolves outside the project root".into(),
+            ));
+        }
         let now = chrono::Utc::now();
         let created_at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let timestamp = now.format("%Y%m%d_%H%M%S").to_string();
         let project_name = project_file_component(Path::new(&project_path));
         let base_run_id = format!("{project_name}-{timestamp}");
-        let mut run_id = base_run_id.clone();
-        let mut collision = 1_u32;
-        while sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vm_activity_runs WHERE run_id=?")
-            .bind(&run_id)
-            .fetch_one(&self.pool)
-            .await?
-            > 0
-        {
-            run_id = format!("{base_run_id}-{collision:02}");
+        let mut collision = 0_u32;
+        let run_id = loop {
+            let candidate = if collision == 0 {
+                base_run_id.clone()
+            } else {
+                format!("{base_run_id}-{collision:02}")
+            };
+            let in_database: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM vm_activity_runs WHERE run_id=?")
+                    .bind(&candidate)
+                    .fetch_one(&self.pool)
+                    .await?;
+            let candidate_path = canonical_runs_root.join(&candidate);
+            if in_database == 0 && fs::symlink_metadata(&candidate_path).is_err() {
+                break candidate;
+            }
             collision += 1;
-        }
+        };
+        let run_root = canonical_runs_root.join(&run_id);
         let snapshot_dir = self.artifact_root.join("project-snapshots").join(&run_id);
         let snapshot = vm_activity::load_project(Path::new(&project_path), &snapshot_dir)
             .await
@@ -310,40 +369,18 @@ impl DeliveryRunService {
         )
         .await
         .map_err(|error| ServiceError::Internal(error.to_string()))?;
-        let students_csv = snapshot.extracted_root.join("students.csv");
-        match std::fs::symlink_metadata(&students_csv) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                return Err(ServiceError::Invalid(
-                    "project students.csv must be a regular non-symlink file".into(),
-                ));
+        if let Some((students, malformed)) =
+            crate::student_csv::load_project_students(&snapshot.extracted_root)
+                .map_err(ServiceError::Invalid)?
+        {
+            let (imported, discarded, rejected) =
+                import_project_students(&self.pool, &snapshot.project_id, students).await?;
+            tracing::info!(project_id = %snapshot.project_id, imported, discarded, malformed_rows = malformed.len(), "imported project roster");
+            for (row, reason) in malformed {
+                tracing::warn!(project_id = %snapshot.project_id, row, %reason, "skipped malformed project student CSV row");
             }
-            Ok(_) => {
-                let contents = std::fs::read_to_string(&students_csv).map_err(|error| {
-                    ServiceError::Invalid(format!("cannot read project students.csv: {error}"))
-                })?;
-                let (students, malformed) = crate::student_csv::parse_students_csv(&contents)
-                    .map_err(ServiceError::Invalid)?;
-                let (imported, discarded, rejected) =
-                    import_project_students(&self.pool, &snapshot.project_id, students).await?;
-                tracing::info!(
-                    project_id = %snapshot.project_id,
-                    imported,
-                    discarded,
-                    malformed_rows = malformed.len(),
-                    "imported students.csv from project"
-                );
-                for (row, reason) in malformed {
-                    tracing::warn!(project_id = %snapshot.project_id, row, %reason, "skipped malformed project student CSV row");
-                }
-                for rejected in rejected {
-                    tracing::warn!(project_id = %snapshot.project_id, row = ?rejected.row, %rejected.reason, "rejected project student record");
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(ServiceError::Invalid(format!(
-                    "cannot inspect project students.csv: {error}"
-                )));
+            for rejected in rejected {
+                tracing::warn!(project_id = %snapshot.project_id, row = ?rejected.row, %rejected.reason, "rejected project student record");
             }
         }
         let selected = if let Some(override_path) = delivery_directory {
@@ -365,12 +402,38 @@ impl DeliveryRunService {
         }
         let mut inputs = vm_activity::discover_deliveries(&selected, self.runtime.max_ova_bytes)
             .map_err(ServiceError::Invalid)?;
-        let vbox_version = if uses_vm_ports && !inputs.is_empty() {
-            vm_activity::preflight(&self.runtime)
+        let uses_virtualbox_agent = snapshot
+            .configuration
+            .tests
+            .iter()
+            .any(|test| test.test_ref.starts_with("VirtualBox/"));
+        let (vbox_version, agent_manifest) = if uses_virtualbox_agent && !inputs.is_empty() {
+            let capabilities = crate::tests::virtualbox::preflight()
                 .await
-                .map_err(ServiceError::Invalid)?
+                .map_err(ServiceError::Invalid)?;
+            for test in snapshot
+                .configuration
+                .tests
+                .iter()
+                .filter(|test| test.test_ref.starts_with("VirtualBox/"))
+            {
+                if !capabilities.tests.contains(&test.test_ref) {
+                    return Err(ServiceError::Invalid(format!(
+                        "configured test {:?} is not supported by the VirtualBox agent",
+                        test.test_ref
+                    )));
+                }
+            }
+            let label = format!("{} {}", capabilities.agent_id, capabilities.agent_version);
+            let metadata = serde_json::json!({
+                "agent_id": capabilities.agent_id,
+                "agent_version": capabilities.agent_version,
+                "protocol_version": capabilities.protocol_version,
+                "host_version": capabilities.host_version,
+            });
+            (label, metadata)
         } else {
-            "not used".to_owned()
+            ("not used".to_owned(), serde_json::Value::Null)
         };
         let mut inventory = Vec::with_capacity(inputs.len());
         for input in &mut inputs {
@@ -425,6 +488,24 @@ impl DeliveryRunService {
         .fetch_all(&self.pool)
         .await?;
         let has_unassigned_students = assignments.iter().any(|assignment| assignment.5.is_none());
+        std::fs::create_dir_all(run_root.join("snapshot")).map_err(|error| {
+            ServiceError::Internal(format!("cannot create run snapshot directory: {error}"))
+        })?;
+        crate::project_archive::snapshot_project_directory(
+            &snapshot.extracted_root,
+            &run_root.join("snapshot").join("project"),
+            &[],
+        )
+        .map_err(ServiceError::Invalid)?;
+        std::fs::create_dir_all(run_root.join("expedients")).map_err(|error| {
+            ServiceError::Internal(format!("cannot create expedients directory: {error}"))
+        })?;
+        std::fs::create_dir_all(run_root.join("tests")).map_err(|error| {
+            ServiceError::Internal(format!("cannot create tests directory: {error}"))
+        })?;
+        std::fs::create_dir_all(run_root.join("reports")).map_err(|error| {
+            ServiceError::Internal(format!("cannot create reports directory: {error}"))
+        })?;
         let mut student_work = Vec::with_capacity(assignments.len());
         for (
             student_id,
@@ -453,12 +534,9 @@ impl DeliveryRunService {
                 expedient_id = format!("{base}-{collision:02}");
                 collision += 1;
             }
-            let report_dir = self
-                .artifact_root
-                .join(&snapshot.project_id)
-                .join(&run_id)
-                .join(delivery_id.as_deref().unwrap_or(UNASSIGNED_DELIVERY_ID));
-            let report_path = report_dir.join(format!("{expedient_id}.json"));
+            let report_path = run_root
+                .join("expedients")
+                .join(format!("{expedient_id}.yaml"));
             student_work.push(StudentExpedientWork {
                 expedient_id,
                 student_id,
@@ -526,12 +604,41 @@ impl DeliveryRunService {
             error: None,
             warnings,
         };
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "run_id": record.run_id.clone(),
+            "project_id": record.project_id.clone(),
+            "project_source": snapshot.archive_path.display().to_string(),
+            "status": "queued",
+            "started_at": record.created_at.clone(),
+            "finished_at": null,
+            "project_configuration_file": crate::project_config::configuration_file(&snapshot.extracted_root)
+                .ok()
+                .and_then(|path| path.strip_prefix(&snapshot.extracted_root).ok().map(|relative| relative.to_string_lossy().into_owned())),
+            "project_configuration_sha256": snapshot.configuration_sha256.clone(),
+            "project_snapshot_sha256": snapshot.sha256,
+            "engine_version": env!("CARGO_PKG_VERSION"),
+            "agent": agent_manifest,
+            "submissions": inputs.iter().map(|input| serde_json::json!({
+                "submission_id": input.delivery_id,
+                "filename": input.filename,
+                "sha256": input.sha256,
+                "size_bytes": input.size,
+            })).collect::<Vec<_>>(),
+            "expedient_ids": record.expedient_ids.clone(),
+            "tests_root": "tests",
+            "expedients_root": "expedients",
+        });
+        crate::test_result_store::persist_report(&run_root.join("run.yaml"), &manifest).map_err(
+            |error| ServiceError::Internal(format!("cannot write run manifest: {error}")),
+        )?;
         let service = self.clone();
         let background_run_id = record.run_id.clone();
         tokio::spawn(async move {
             service
                 .execute_run(
                     background_run_id,
+                    run_root,
                     snapshot,
                     vbox_version,
                     inputs,
@@ -545,6 +652,7 @@ impl DeliveryRunService {
     async fn execute_run(
         &self,
         run_id: String,
+        run_root: PathBuf,
         project: ProjectSnapshot,
         vbox_version: String,
         inputs: Vec<DeliveryInput>,
@@ -556,6 +664,12 @@ impl DeliveryRunService {
         .bind(&run_id)
         .execute(&self.pool)
         .await;
+        let manifest_path = run_root.join("run.yaml");
+        if let Ok(mut manifest) = crate::test_result_store::read_report(&manifest_path) {
+            manifest["status"] = serde_json::json!("running");
+            manifest["started_at"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
+            let _ = crate::test_result_store::persist_report(&manifest_path, &manifest);
+        }
         struct DeliveryWork {
             input: DeliveryInput,
             students: Vec<StudentExpedientWork>,
@@ -607,11 +721,7 @@ impl DeliveryRunService {
                 tracing::error!(%delivery_id, "assigned delivery disappeared before execution");
                 continue;
             };
-            let report_dir = assigned_students[0]
-                .report_path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_path_buf();
+            let report_dir = run_root.clone();
             let external_ids = assigned_students
                 .iter()
                 .map(|student| student.student_external_id.clone())
@@ -766,9 +876,15 @@ impl DeliveryRunService {
             "UPDATE vm_activity_runs SET status=? WHERE run_id=? AND status!='cancelled'",
         )
         .bind(final_status)
-        .bind(run_id)
+        .bind(&run_id)
         .execute(&self.pool)
         .await;
+        let manifest_path = run_root.join("run.yaml");
+        if let Ok(mut manifest) = crate::test_result_store::read_report(&manifest_path) {
+            manifest["status"] = serde_json::json!(final_status);
+            manifest["finished_at"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
+            let _ = crate::test_result_store::persist_report(&manifest_path, &manifest);
+        }
     }
 
     async fn run_accepts_work(&self, run_id: &str) -> bool {
@@ -907,27 +1023,40 @@ impl DeliveryRunService {
             )));
         }
 
-        let snapshot_configuration_path = self
+        if let Some(project_path) = requested_project_path {
+            let candidate_id =
+                crate::vm_activity::project_identifier_for_path(Path::new(project_path))
+                    .map_err(ServiceError::Invalid)?;
+            if candidate_id != project_id {
+                return Err(ServiceError::Invalid(format!(
+                    "project path does not match run {run_id:?}"
+                )));
+            }
+        }
+        let report_path = sqlx::query_scalar::<_, String>(
+            "SELECT report_path FROM vm_activity_expedients WHERE run_id=? ORDER BY expedient_id LIMIT 1",
+        )
+        .bind(&run_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let run_snapshot_project = report_path
+            .as_deref()
+            .and_then(|path| Path::new(path).parent()?.parent())
+            .map(|run_root| run_root.join("snapshot").join("project"));
+        let legacy_snapshot_project = self
             .artifact_root
             .join("project-snapshots")
             .join(&run_id)
-            .join("project")
-            .join("configuration.yaml");
-        let current_configuration_path = if let Some(project_path) = requested_project_path {
-            let path = Path::new(project_path);
-            let matches_run_project = crate::vm_activity::project_identifier_for_path(path)
-                .is_ok_and(|candidate_id| candidate_id == project_id);
-            if matches_run_project && path.is_dir() {
-                Some(path.join("configuration.yaml"))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let configuration_path = current_configuration_path
-            .as_deref()
-            .unwrap_or(&snapshot_configuration_path);
+            .join("project");
+        let snapshot_project_root = run_snapshot_project
+            .filter(|path| path.is_dir())
+            .unwrap_or(legacy_snapshot_project);
+        let configuration_path = crate::project_config::configuration_file(&snapshot_project_root)
+            .map_err(|error| {
+                ServiceError::Internal(format!(
+                    "project configuration snapshot for run {run_id:?} is unavailable: {error}"
+                ))
+            })?;
         let metadata = fs::symlink_metadata(&configuration_path).map_err(|error| {
             ServiceError::Internal(format!(
                 "project configuration for run {run_id:?} is unavailable at {}: {error}",
@@ -1004,12 +1133,10 @@ impl DeliveryRunService {
         .await?;
         let mut reports = Vec::with_capacity(expedients.len());
         for (expedient_id, student_id, report_path) in expedients {
-            let bytes = fs::read(&report_path).map_err(|error| {
-                ServiceError::Internal(format!(
-                    "cannot read expedient {expedient_id:?} report at {report_path}: {error}"
-                ))
-            })?;
-            let report: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+            let report: serde_json::Value = crate::test_result_store::read_report(Path::new(
+                &report_path,
+            ))
+            .map_err(|error| {
                 ServiceError::Internal(format!(
                     "expedient {expedient_id:?} report is invalid JSON: {error}"
                 ))
@@ -1206,6 +1333,40 @@ impl DeliveryRunService {
                 "cannot delete a run while it is queued, running, or cancelling".into(),
             ));
         }
+        let run_report_path = sqlx::query_scalar::<_, String>(
+            "SELECT report_path FROM vm_activity_expedients WHERE run_id=? ORDER BY expedient_id LIMIT 1",
+        )
+        .bind(run_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let run_directory = run_report_path
+            .as_deref()
+            .map(|value| validated_run_directory(value, run_id))
+            .transpose()?
+            .flatten();
+        if run_directory.is_some() {
+            let report_paths = sqlx::query_scalar::<_, String>(
+                "SELECT report_path FROM vm_activity_expedients WHERE run_id=?",
+            )
+            .bind(run_id)
+            .fetch_all(&mut *transaction)
+            .await?;
+            for report_path in report_paths {
+                let report = crate::test_result_store::read_report(Path::new(&report_path))
+                    .map_err(|error| {
+                        ServiceError::Internal(format!(
+                            "cannot inspect expedient before deleting run: {error}"
+                        ))
+                    })?;
+                let context = &report["agent_context"];
+                if context.get("vm_name").is_some() && context["cleaned"].as_bool() != Some(true) {
+                    transaction.rollback().await?;
+                    return Err(ServiceError::Conflict(format!(
+                        "run {run_id:?} has VirtualBox cleanup pending; clean its expedients before deleting the run"
+                    )));
+                }
+            }
+        }
         let delivery_ids = sqlx::query_scalar::<_, String>(
             "SELECT delivery_id FROM vm_activity_expedients WHERE run_id=?",
         )
@@ -1233,6 +1394,11 @@ impl DeliveryRunService {
                 .execute(&mut *transaction)
                 .await?;
         }
+        if let Some(run_directory) = run_directory {
+            fs::remove_dir_all(run_directory).map_err(|error| {
+                ServiceError::Internal(format!("cannot remove run files for {run_id:?}: {error}"))
+            })?;
+        }
         transaction.commit().await?;
         Ok(true)
     }
@@ -1248,8 +1414,8 @@ impl DeliveryRunService {
         .fetch_optional(&self.pool)
         .await?;
         let Some(path) = path else { return Ok(None) };
-        match tokio::fs::read(path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes)
+        match tokio::fs::read(&path).await {
+            Ok(_) => crate::test_result_store::read_report(Path::new(&path))
                 .map(Some)
                 .map_err(|e| ServiceError::Internal(e.to_string())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -1266,9 +1432,15 @@ impl DeliveryRunService {
         let Some((report_path, report)) = self.expedient_report(expedient_id).await? else {
             return Ok(None);
         };
-        let report_root = report_path.parent().ok_or_else(|| {
+        let report_parent = report_path.parent().ok_or_else(|| {
             ServiceError::Internal("expedient report has no parent directory".into())
         })?;
+        let report_root =
+            if report_parent.file_name().and_then(|name| name.to_str()) == Some("expedients") {
+                report_parent.parent().unwrap_or(report_parent)
+            } else {
+                report_parent
+            };
         let report_root = match fs::canonicalize(report_root) {
             Ok(path) => path,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1293,7 +1465,7 @@ impl DeliveryRunService {
                 continue;
             };
             let relative_dir = safe_report_relative_path(dir)?;
-            if !relative_dir.starts_with("test_records")
+            if !(relative_dir.starts_with("tests") || relative_dir.starts_with("test_records"))
                 || relative_dir.components().count() < 4
                 || relative_dir.file_name().and_then(|name| name.to_str()) != Some("artifacts")
             {
@@ -1332,9 +1504,15 @@ impl DeliveryRunService {
         let Some((report_path, _)) = self.expedient_report(expedient_id).await? else {
             return Ok(None);
         };
-        let report_root = report_path.parent().ok_or_else(|| {
+        let report_parent = report_path.parent().ok_or_else(|| {
             ServiceError::Internal("expedient report has no parent directory".into())
         })?;
+        let report_root =
+            if report_parent.file_name().and_then(|name| name.to_str()) == Some("expedients") {
+                report_parent.parent().unwrap_or(report_parent)
+            } else {
+                report_parent
+            };
         let report_root = match fs::canonicalize(report_root) {
             Ok(path) => path,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1375,7 +1553,7 @@ impl DeliveryRunService {
         let Some(path) = path else { return Ok(None) };
         let path = PathBuf::from(path);
         match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
+            Ok(_) => crate::test_result_store::read_report(&path)
                 .map(|report| Some((path, report)))
                 .map_err(|error| ServiceError::Internal(error.to_string())),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -1465,23 +1643,48 @@ impl DeliveryRunService {
             return Ok(None);
         };
         let mut report: serde_json::Value = match tokio::fs::read(&path).await {
-            Ok(b) => {
-                serde_json::from_slice(&b).map_err(|e| ServiceError::Internal(e.to_string()))?
-            }
+            Ok(_) => crate::test_result_store::read_report(Path::new(&path))
+                .map_err(|e| ServiceError::Internal(e.to_string()))?,
             Err(_) => return Ok(None),
         };
-        let report_dir = Path::new(&path).parent().unwrap_or(Path::new("."));
-        let result = if report_dir.join("cleanup-manifest.json").is_file() {
-            vm_activity::cleanup_from_manifest(&self.runtime, report_dir, &delivery_id).await
-        } else {
-            serde_json::json!({
-                "status": "passed",
-                "vm_unregistered": true,
-                "run_storage_removed": true,
-                "details": ["no VirtualBox import manifest exists; there are no VM resources to clean"]
-            })
+        let expedient_dir = Path::new(&path).parent().unwrap_or(Path::new("."));
+        let tests_root = expedient_dir
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("tests");
+        let source_path = report["source"]["source_ref"]
+            .as_str()
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let input = DeliveryInput {
+            delivery_id: delivery_id.clone(),
+            source: source_path.clone(),
+            original_source: source_path,
+            filename: report["source"]["filename"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            size: report["source"]["size_bytes"].as_u64().unwrap_or_default(),
+            estimated_import_bytes: 0,
+            sha256: report["source"]["sha256"].as_str().map(str::to_owned),
+            validation_error: None,
         };
+        let context = report
+            .get("agent_context")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let result = crate::tests::virtualbox::cleanup(
+            &run_id,
+            &input,
+            &tests_root,
+            context,
+            self.runtime.shutdown_grace + self.runtime.ssh_timeout,
+        )
+        .await;
         report["cleanup"] = result;
+        if report["cleanup"]["status"] == "passed" && report["agent_context"].is_object() {
+            report["agent_context"]["cleaned"] = serde_json::json!(true);
+        }
         let cleanup_status = report["cleanup"]["status"]
             .as_str()
             .unwrap_or("failed")
@@ -1560,10 +1763,8 @@ impl DeliveryRunService {
             if sibling_path == path {
                 continue;
             }
-            let Ok(bytes) = tokio::fs::read(&sibling_path).await else {
-                continue;
-            };
-            let Ok(mut sibling) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            let Ok(mut sibling) = crate::test_result_store::read_report(Path::new(&sibling_path))
+            else {
                 continue;
             };
             sibling["cleanup"] = report["cleanup"].clone();
@@ -1605,6 +1806,50 @@ impl DeliveryRunService {
     }
 }
 
+pub(crate) fn validated_run_directory(
+    report_path: &str,
+    run_id: &str,
+) -> Result<Option<PathBuf>, ServiceError> {
+    let report = Path::new(report_path);
+    if report.file_name().is_none()
+        || report.parent().and_then(Path::file_name) != Some(std::ffi::OsStr::new("expedients"))
+    {
+        return Ok(None);
+    }
+    let run_directory = report
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| ServiceError::Internal("stored report path has no run directory".into()))?;
+    if run_directory.file_name() != Some(std::ffi::OsStr::new(run_id))
+        || run_directory.parent().and_then(Path::file_name) != Some(std::ffi::OsStr::new("runs"))
+    {
+        return Ok(None);
+    }
+    let metadata = fs::symlink_metadata(run_directory)
+        .map_err(|error| ServiceError::Internal(format!("cannot inspect run folder: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(ServiceError::Internal(
+            "run folder is not a real directory".into(),
+        ));
+    }
+    let manifest_path = run_directory.join("run.yaml");
+    let manifest_metadata = fs::symlink_metadata(&manifest_path)
+        .map_err(|error| ServiceError::Internal(format!("cannot inspect run manifest: {error}")))?;
+    if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
+        return Err(ServiceError::Internal(
+            "run manifest is not a regular file".into(),
+        ));
+    }
+    let manifest = crate::test_result_store::read_report(&manifest_path)
+        .map_err(|error| ServiceError::Internal(format!("cannot read run manifest: {error}")))?;
+    if manifest["run_id"].as_str() != Some(run_id) {
+        return Err(ServiceError::Internal(
+            "run manifest id does not match database".into(),
+        ));
+    }
+    Ok(Some(run_directory.to_path_buf()))
+}
+
 fn unassigned_expedient_report(
     project: &ProjectSnapshot,
     run_id: &str,
@@ -1629,7 +1874,7 @@ fn unassigned_expedient_report(
         "shared_delivery_execution": false,
         "execution_context": {
             "project_archive": project.archive_path.file_name().and_then(|name| name.to_str()),
-            "project_config_sha256": project.sha256,
+            "project_config_sha256": project.configuration_sha256,
             "engine_version": env!("CARGO_PKG_VERSION"),
             "host_os": std::env::consts::OS,
             "virtualbox_version": "not used"

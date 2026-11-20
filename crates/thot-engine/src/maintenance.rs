@@ -207,6 +207,57 @@ fn remove_empty_generated_parents(root: &Path, report: &mut MaintenanceReport) {
     }
 }
 
+async fn run_output_directory(pool: &SqlitePool, run_id: &str) -> Result<Option<PathBuf>, String> {
+    let report_paths = sqlx::query_scalar::<_, String>(
+        "SELECT report_path FROM vm_activity_expedients WHERE run_id=? ORDER BY expedient_id",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| format!("cannot locate reports for run {run_id:?}: {error}"))?;
+    let Some(first_report) = report_paths.first() else {
+        return Ok(None);
+    };
+    let Some(directory) =
+        crate::delivery_run_service::validated_run_directory(first_report, run_id)
+            .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    for report_path in &report_paths {
+        let report =
+            crate::test_result_store::read_report(Path::new(report_path)).map_err(|error| {
+                format!("cannot inspect run {run_id:?} before maintenance: {error}")
+            })?;
+        let context = &report["agent_context"];
+        if context.get("vm_name").is_some() && context["cleaned"].as_bool() != Some(true) {
+            return Err(format!(
+                "run {run_id:?} has a VirtualBox agent cleanup pending; clean its expedients before pruning or resetting"
+            ));
+        }
+    }
+    Ok(Some(directory))
+}
+
+fn remove_run_output_directories(
+    directories: Vec<(String, PathBuf)>,
+    report: &mut MaintenanceReport,
+) {
+    for (run_id, directory) in directories {
+        match fs::remove_dir_all(&directory) {
+            Ok(()) => report.removed_paths.push(directory.display().to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                report.preserved_paths.push(directory.display().to_string());
+                report.failures.push(format!(
+                    "cannot remove files for run {run_id:?} at {}: {error}",
+                    directory.display()
+                ));
+            }
+        }
+    }
+}
+
 pub async fn prune_runs(
     pool: &SqlitePool,
     artifact_root: &Path,
@@ -237,6 +288,12 @@ pub async fn prune_runs(
             retained.push(run_id);
         } else {
             deleted.push((run_id, project_id));
+        }
+    }
+    let mut run_directories = Vec::new();
+    for (run_id, _) in &deleted {
+        if let Some(directory) = run_output_directory(pool, run_id).await? {
+            run_directories.push((run_id.clone(), directory));
         }
     }
     let mut tx = pool
@@ -285,6 +342,7 @@ pub async fn prune_runs(
         },
     };
     report.operation = "prune".into();
+    remove_run_output_directories(run_directories, &mut report);
     report.retained_run_ids = retained;
     report.deleted_run_ids = deleted.into_iter().map(|(run_id, _)| run_id).collect();
     Ok(report)
@@ -310,6 +368,12 @@ pub async fn reset_data(
             .fetch_all(pool)
             .await
             .map_err(|e| format!("cannot list runs for reset: {e}"))?;
+    let mut run_directories = Vec::new();
+    for run_id in &deleted {
+        if let Some(directory) = run_output_directory(pool, run_id).await? {
+            run_directories.push((run_id.clone(), directory));
+        }
+    }
     let mut tx = pool
         .begin()
         .await
@@ -366,6 +430,7 @@ pub async fn reset_data(
         },
     };
     report.operation = "reset".into();
+    remove_run_output_directories(run_directories, &mut report);
     report.deleted_run_ids = deleted;
     Ok(report)
 }

@@ -100,17 +100,8 @@ pub async fn resolve(
             ProjectContextError::Invalid(format!("cannot resolve project path: {error}"))
         })?;
         let project_name = if metadata.is_dir() {
-            let config_path = canonical.join("configuration.yaml");
-            let config_metadata = std::fs::symlink_metadata(&config_path).map_err(|error| {
-                ProjectContextError::Invalid(format!(
-                    "project folder must contain configuration.yaml: {error}"
-                ))
-            })?;
-            if config_metadata.file_type().is_symlink() || !config_metadata.is_file() {
-                return Err(ProjectContextError::Invalid(
-                    "project configuration.yaml must be a regular file".into(),
-                ));
-            }
+            let config_path = crate::project_config::configuration_file(&canonical)
+                .map_err(ProjectContextError::Invalid)?;
             let bytes = std::fs::read(&config_path).map_err(|error| {
                 ProjectContextError::Invalid(format!("cannot read project configuration: {error}"))
             })?;
@@ -150,7 +141,7 @@ pub async fn resolve(
         })
         .ok_or_else(|| {
             ProjectContextError::Invalid(
-                "no current project is selected; run `thot run create PROJECT` or use a project folder containing configuration.yaml".into(),
+                "no current project is selected; run `thot run create PROJECT` or use a project folder containing configuration.thot.yaml (or legacy configuration.yaml)".into(),
             )
         })
 }

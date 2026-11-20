@@ -1,5 +1,6 @@
 //! Purpose: Validates, imports, and retrieves student records through the repository interface.
 use sqlx::SqlitePool;
+use std::path::Path;
 use thiserror::Error;
 use thot_core::{
     GetStudentsResponse, ImportStudentsRequest, ImportStudentsResponse, RejectedStudent,
@@ -37,6 +38,29 @@ impl StudentService {
         let project = project_context::resolve(pool, request.project_path.as_deref()).await?;
         let (imported, discarded, rejected) =
             import_project_students(pool, &project.project_id, request.students).await?;
+        if Path::new(&project.project_path).is_dir() {
+            let current = self
+                .repository
+                .list_for_project(&project.project_id)
+                .await?;
+            let roster = current
+                .into_iter()
+                .map(|student| StudentInput {
+                    source_row: None,
+                    name: student.name,
+                    surname: student.surname,
+                    email: student.email,
+                    external_id: student.external_id,
+                    group_name: student.group_name,
+                    center: student.center,
+                    birth_date: student.birth_date,
+                })
+                .collect::<Vec<_>>();
+            crate::student_csv::persist_project_students(Path::new(&project.project_path), &roster)
+                .map_err(|error| {
+                    StudentServiceError::Project(ProjectContextError::Invalid(error))
+                })?;
+        }
         Ok(ImportStudentsResponse {
             project_id: project.project_id,
             project_name: project.project_name,

@@ -6,7 +6,7 @@ use std::{collections::HashSet, fs, path::Path, time::Instant};
 use crate::{
     test_executor::execute_project_tests,
     test_result_store,
-    vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime},
+    vm_activity::{DeliveryInput, ProjectSnapshot, VmActivityRuntime},
 };
 
 /// Keep the grade formula definitions with each saved expedient without copying test secrets.
@@ -98,7 +98,7 @@ pub async fn execute_delivery(
         "run_id": run_id,
         "execution_context": {
             "project_archive": project.archive_path.file_name().and_then(|n| n.to_str()),
-            "project_config_sha256": project.sha256,
+            "project_config_sha256": project.configuration_sha256,
             "engine_version": env!("CARGO_PKG_VERSION"),
             "host_os": std::env::consts::OS,
             "virtualbox_version": virtualbox_version
@@ -152,15 +152,32 @@ pub async fn execute_delivery(
         report["orchestration_error"] = json!(error);
     }
 
-    // Cleanup is independent of configured test results. If import never created a manifest,
-    // there is no VM resource owned by this delivery to delete.
-    let manifest_path = report_dir.join("cleanup-manifest.json");
-    let cleanup = if manifest_path.is_file() {
-        vm_activity::cleanup_from_manifest(runtime, report_dir, &input.delivery_id).await
-    } else {
-        json!({"status":"passed", "vm_unregistered":true, "run_storage_removed":true, "details":["no VirtualBox import manifest was created"]})
-    };
+    // Cleanup is an agent task and remains independent of the configured test sequence.
+    let mut agent_context = report
+        .get("_agent_context")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let cleanup = crate::tests::virtualbox::cleanup(
+        run_id,
+        input,
+        report_dir,
+        agent_context.clone(),
+        runtime.shutdown_grace + runtime.ssh_timeout,
+    )
+    .await;
+    if cleanup["status"] == "passed"
+        && agent_context.is_object()
+        && !agent_context
+            .as_object()
+            .is_some_and(|object| object.is_empty())
+    {
+        agent_context["cleaned"] = json!(true);
+    }
     report["cleanup"] = cleanup;
+    report["agent_context"] = agent_context;
+    if let Some(object) = report.as_object_mut() {
+        object.remove("_agent_context");
+    }
     report["finished_at"] = json!(Utc::now().to_rfc3339());
     report["duration_ms"] = json!(started.elapsed().as_millis());
     let failed = report["test_results"].as_array().is_some_and(|rows| {

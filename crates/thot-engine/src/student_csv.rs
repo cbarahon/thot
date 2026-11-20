@@ -1,5 +1,6 @@
 //! Purpose: Parses project students.csv files and maps localized headers to student fields.
-use std::collections::HashMap;
+use serde::Deserialize;
+use std::{collections::HashMap, fs, path::Path};
 use thot_core::StudentInput;
 
 pub fn parse_students_csv(
@@ -212,4 +213,129 @@ fn push_row(
         row.clear();
         error.take();
     }
+}
+
+#[derive(Deserialize)]
+struct StudentsFile {
+    students: Vec<StudentInput>,
+}
+
+/// Loads exactly one supported roster source from the project snapshot.
+pub(crate) fn load_project_students(
+    project_root: &Path,
+) -> Result<Option<(Vec<StudentInput>, Vec<(u64, String)>)>, String> {
+    let csv_path = project_root.join("students.csv");
+    let yaml_path = project_root.join("students.yaml");
+    let regular = |path: &Path| -> Result<bool, String> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                Err(format!(
+                    "project roster {} must be a regular non-symlink file",
+                    path.display()
+                ))
+            }
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!(
+                "cannot inspect project roster {}: {error}",
+                path.display()
+            )),
+        }
+    };
+    let has_csv = regular(&csv_path)?;
+    let has_yaml = regular(&yaml_path)?;
+    if has_csv && has_yaml {
+        return Err(
+            "project contains both students.csv and students.yaml; keep exactly one roster source"
+                .into(),
+        );
+    }
+    if has_csv {
+        let contents = fs::read_to_string(&csv_path)
+            .map_err(|e| format!("cannot read project students.csv: {e}"))?;
+        let (students, malformed) = parse_students_csv(&contents)?;
+        return Ok(Some((students, malformed)));
+    }
+    if has_yaml {
+        let contents =
+            fs::read(&yaml_path).map_err(|e| format!("cannot read project students.yaml: {e}"))?;
+        let file: StudentsFile = serde_yaml::from_slice(&contents)
+            .map_err(|e| format!("invalid project students.yaml: {e}"))?;
+        return Ok(Some((file.students, Vec::new())));
+    }
+    Ok(None)
+}
+
+/// Writes current project roster data in the selected source format.
+pub(crate) fn persist_project_students(
+    project_path: &Path,
+    students: &[StudentInput],
+) -> Result<(), String> {
+    if !project_path.is_dir() {
+        return Ok(());
+    }
+    let csv_path = project_path.join("students.csv");
+    let yaml_path = project_path.join("students.yaml");
+    let csv_exists = fs::symlink_metadata(&csv_path).is_ok();
+    let yaml_exists = fs::symlink_metadata(&yaml_path).is_ok();
+    if csv_exists && yaml_exists {
+        return Err(
+            "project contains both students.csv and students.yaml; keep exactly one roster source"
+                .into(),
+        );
+    }
+    let (path, bytes) = if csv_exists {
+        let mut output = String::from("name,surname,email,external_id,group,center,birth_date\n");
+        for student in students {
+            let fields = [
+                student.name.as_str(),
+                student.surname.as_deref().unwrap_or(""),
+                student.email.as_str(),
+                student.external_id.as_deref().unwrap_or(""),
+                student.group_name.as_deref().unwrap_or(""),
+                student.center.as_deref().unwrap_or(""),
+                student.birth_date.as_deref().unwrap_or(""),
+            ];
+            output.push_str(
+                &fields
+                    .iter()
+                    .map(|value| csv_quote(value))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            output.push('\n');
+        }
+        (csv_path, output.into_bytes())
+    } else {
+        let value = serde_json::json!({"students": students});
+        (
+            yaml_path,
+            serde_yaml::to_string(&value)
+                .map_err(|e| e.to_string())?
+                .into_bytes(),
+        )
+    };
+    if fs::symlink_metadata(&path)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        return Err(format!(
+            "project roster {} must be a regular non-symlink file",
+            path.display()
+        ));
+    }
+    atomic_write(&path, &bytes).map_err(|e| format!("cannot persist project roster: {e}"))
+}
+
+fn csv_quote(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
+    }
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&temporary, bytes)?;
+    fs::rename(temporary, path)
 }

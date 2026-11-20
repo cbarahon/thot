@@ -187,12 +187,9 @@ pub fn extract_project_archive(archive: &Path, destination: &Path) -> Result<Pat
         let _ = fs::remove_dir_all(destination);
         return Err(error);
     }
-    let config = destination.join("configuration.yaml");
-    let config_meta = fs::symlink_metadata(&config)
-        .map_err(|_| "archive root must contain configuration.yaml")?;
-    if config_meta.file_type().is_symlink() || !config_meta.is_file() {
+    if let Err(error) = crate::project_config::configuration_file(destination) {
         let _ = fs::remove_dir_all(destination);
-        return Err("archive root configuration.yaml must be a regular file".into());
+        return Err(format!("invalid project archive root: {error}"));
     }
     Ok(destination.to_path_buf())
 }

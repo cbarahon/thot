@@ -1,10 +1,9 @@
 /target/
 /dist/
 /data/
- .env
- .env.*
- !.env.example
- *.log
- .DS_Store
- *.vdi
-
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+*.vdi

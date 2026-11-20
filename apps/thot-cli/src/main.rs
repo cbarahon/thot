@@ -120,10 +120,19 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
 pub(crate) fn current_project_path() -> Result<Option<String>, Box<dyn Error>> {
     let current = std::env::current_dir()?;
-    let configuration = current.join("configuration.yaml");
+    let canonical = current.join("configuration.thot.yaml");
+    let legacy = current.join("configuration.yaml");
+    if canonical.exists() && legacy.exists() {
+        return Err("project contains both configuration.thot.yaml and configuration.yaml".into());
+    }
+    let configuration = if canonical.exists() {
+        canonical
+    } else {
+        legacy
+    };
     match fs::symlink_metadata(&configuration) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            Err("current project configuration.yaml must not be a symlink".into())
+            Err("current project configuration must not be a symlink".into())
         }
         Ok(metadata) if metadata.is_file() => {
             Ok(Some(current.canonicalize()?.to_string_lossy().into_owned()))

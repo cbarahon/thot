@@ -1,15 +1,60 @@
 //! Purpose: Parses and validates the root configuration.yaml project test model.
 use regex::Regex;
 use serde_json_path::JsonPath;
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+};
 use thot_core::{
     LABELED_GREP_FILTER_PREFIX, LABELED_JSONPATH_FILTER_PREFIX, ProjectCheck, ProjectEvaluation,
     ProjectRubric, ProjectTest, VMActivityProject,
 };
 
+pub const PROJECT_CONFIGURATION: &str = "configuration.thot.yaml";
+pub const LEGACY_PROJECT_CONFIGURATION: &str = "configuration.yaml";
+
+/// Selects the canonical project file, accepts the legacy POC name, and rejects ambiguity.
+pub fn configuration_file(project_root: &Path) -> Result<PathBuf, String> {
+    let canonical = project_root.join(PROJECT_CONFIGURATION);
+    let legacy = project_root.join(LEGACY_PROJECT_CONFIGURATION);
+    let exists = |path: &Path| -> Result<bool, String> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                Err(format!(
+                    "project configuration {} must be a regular non-symlink file",
+                    path.display()
+                ))
+            }
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!(
+                "cannot inspect project configuration {}: {error}",
+                path.display()
+            )),
+        }
+    };
+    let has_canonical = exists(&canonical)?;
+    let has_legacy = exists(&legacy)?;
+    if has_canonical && has_legacy {
+        return Err(format!(
+            "project contains both {PROJECT_CONFIGURATION} and {LEGACY_PROJECT_CONFIGURATION}"
+        ));
+    }
+    if has_canonical {
+        Ok(canonical)
+    } else if has_legacy {
+        Ok(legacy)
+    } else {
+        Err(format!(
+            "project root must contain {PROJECT_CONFIGURATION} (legacy {LEGACY_PROJECT_CONFIGURATION} is also accepted)"
+        ))
+    }
+}
+
 pub fn parse_configuration(bytes: &[u8]) -> Result<VMActivityProject, String> {
     let project: VMActivityProject =
-        serde_yaml::from_slice(bytes).map_err(|e| format!("invalid configuration.yaml: {e}"))?;
+        serde_yaml::from_slice(bytes).map_err(|e| format!("invalid project configuration: {e}"))?;
     validate_project(&project)?;
     Ok(project)
 }
