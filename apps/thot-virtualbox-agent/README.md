@@ -1,0 +1,13 @@
+# thot-virtualbox-agent
+
+`thot-virtualbox-agent` runs VirtualBox project tests independently from `thotd`. The engine sends version 1 JSON tasks over HTTP and polls task status until a normalized result is available. Tasks include a stable task ID, test reference, submission ID, read-only deliverable path, assigned test output folder, VM storage path, parameters, timeout, and the engine-owned context returned by earlier tests.
+
+The service implements `VirtualBox/import_ova`, `VirtualBox/start_vm`, `VirtualBox/stop_vm`, and `VirtualBox/destroy_vm`. It serializes host VM operations, applies bounded SSH output capture and timeouts, and only writes local evidence such as `cleanup-manifest.json` inside the task's test folder. It never opens or writes expedient reports. Engine result records live in `runs/<run-id>/tests/<submission-id>/<test-id>/`; expedients are separate files under `runs/<run-id>/expedients/`.
+
+## Configure and start
+
+Copy `apps/thot-virtualbox-agent.config.yaml.example` to `thot-virtualbox-agent.config.yaml`. Set the SSH host, user, port, host key database, remote `VBoxManage` path, dedicated `VBOX_USER_HOME`, and qualified VirtualBox version. The capability check verifies the pinned version and requires the dedicated profile to have an empty VM registry before a run. Configure the allowed project output, delivery, and remote VM storage roots. The sample maps `/var/lib/thot/artifacts` to `/srv/thot-artifacts` and `/var/lib/thot/vms` to `/srv/thot-vms` on the VirtualBox host; provision those mounts and grant the SSH account access to its VM storage directory. Adjust the local and remote mappings for your deployment. The service binds to `127.0.0.1:8090` by default. A non-loopback bind requires `auth_token`; set the same token in `THOT_VBOX_AGENT_TOKEN` for `thotd`.
+
+Start with `thot-virtualbox-agent [CONFIG_PATH]`; otherwise it reads `THOT_VIRTUALBOX_AGENT_CONFIG` or `thot-virtualbox-agent.config.yaml`. On first start it generates an Ed25519 key pair at `ssh.private_key` if needed and logs the public key. Add that public key to a dedicated SSH user's `authorized_keys` on the VirtualBox host. Pin the server key in the configured `known_hosts` file and provision a dedicated, empty VirtualBox profile for that user. Restrict the authorized key from port, agent, and X11 forwarding and interactive TTY use. The private key belongs to the agent host and must not be copied into a project, run folder, or expedient.
+
+The task API is `GET /health`, `GET /v1/capabilities`, `POST /v1/tasks`, `GET /v1/tasks/{task_id}`, and `DELETE /v1/tasks/{task_id}`. Mutating routes require `Authorization: Bearer <auth_token>` when a token is configured. Submission is idempotent by task ID and rejects reuse with a different payload.

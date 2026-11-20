@@ -1,0 +1,31 @@
+# Copy to thot-virtualbox-agent.config.yaml and adjust host-specific values.
+bind: 127.0.0.1:8090
+# Required when bind is not loopback. Prefer a protected token file in deployment.
+auth_token: null
+ssh:
+  host: virtualbox-host.example.org
+  port: 22
+  user: thot-vbox
+  private_key: /var/lib/thot/vbox-agent/ssh/id_ed25519
+  known_hosts: /etc/thot/virtualbox-agent/known_hosts
+  vboxmanage: /usr/bin/VBoxManage
+  vbox_user_home: /var/lib/thot-vbox/.config/VirtualBox
+  expected_vbox_version: REPLACE_WITH_QUALIFIED_VERSION
+  connect_timeout_seconds: 10
+allowed_output_roots:
+  - /srv/thot-projects
+  - /var/lib/thot/artifacts/projects
+allowed_delivery_roots:
+  - /srv/thot-projects
+  - /var/lib/thot/artifacts/sources
+allowed_vm_storage_roots:
+  - /srv/thot-vms
+# Map engine-visible paths to paths mounted on the VirtualBox host.
+path_mappings:
+  - local: /srv/thot-projects
+    remote: /srv/thot-projects
+  - local: /var/lib/thot/artifacts
+    remote: /srv/thot-artifacts
+  - local: /var/lib/thot/vms
+    remote: /srv/thot-vms
+output_limit: 1048576

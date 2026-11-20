@@ -1,210 +1,267 @@
-//! Purpose: Dispatches VirtualBox tests and provides shared VM ownership and command helpers.
-mod destroy_vm;
-mod import_ova;
-mod start_vm;
-mod stop_vm;
-
+//! Purpose: Sends VirtualBox test tasks to the independent thot-virtualbox-agent service.
+use crate::{
+    test_execution::{TestInvocation, TestOutcome},
+    vm_activity::DeliveryInput,
+};
+use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     path::{Component, Path, PathBuf},
     time::Duration,
 };
-use thot_runner::vbox::LocalVirtualBoxRunner;
-
-use crate::{
-    test_execution::{TestInvocation, TestOutcome},
-    vm_activity::atomic_write,
+use thot_core::{
+    agent_protocol::{
+        AGENT_PROTOCOL_VERSION, AgentCapabilities, AgentResult, AgentTask, AgentTaskStatus,
+    },
+    test_results::TestStatus,
 };
 
-pub async fn run(invocation: &TestInvocation) -> TestOutcome {
-    match invocation.test_reference.as_str() {
-        "VirtualBox/import_ova" => import_ova::run(invocation).await,
-        "VirtualBox/start_vm" => start_vm::run(invocation).await,
-        "VirtualBox/stop_vm" => stop_vm::run(invocation).await,
-        "VirtualBox/destroy_vm" => destroy_vm::run(invocation).await,
-        _ => TestOutcome::error(format!(
-            "unknown VirtualBox test {:?}",
-            invocation.test_reference
-        )),
+fn endpoint() -> String {
+    std::env::var("THOT_VBOX_AGENT_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8090".into())
+        .trim_end_matches('/')
+        .to_owned()
+}
+fn client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())
+}
+fn add_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match std::env::var("THOT_VBOX_AGENT_TOKEN") {
+        Ok(token) if !token.is_empty() => request.bearer_auth(token),
+        _ => request,
     }
 }
 
-pub(super) fn runner(invocation: &TestInvocation) -> LocalVirtualBoxRunner {
-    LocalVirtualBoxRunner::new(
-        invocation.runtime.vbox_manage.clone(),
-        invocation.runtime.vbox_user_home.clone(),
-        invocation.timeout,
-        invocation.runtime.storage_root.clone(),
-        thot_runner::vbox::OutputLimits {
-            stdout_bytes: invocation.runtime.output_limit,
-            stderr_bytes: invocation.runtime.output_limit,
-        },
+pub async fn preflight() -> Result<AgentCapabilities, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(35))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = add_auth(client.get(format!("{}/v1/capabilities", endpoint())))
+        .send()
+        .await
+        .map_err(|e| format!("VirtualBox agent is unavailable: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "VirtualBox agent capability check failed: HTTP {}",
+            response.status()
+        ));
+    }
+    let capabilities: AgentCapabilities = response
+        .json()
+        .await
+        .map_err(|e| format!("invalid VirtualBox agent capability response: {e}"))?;
+    if capabilities.protocol_version != AGENT_PROTOCOL_VERSION {
+        return Err("VirtualBox agent uses an unsupported protocol version".into());
+    }
+    Ok(capabilities)
+}
+
+pub async fn run(invocation: &TestInvocation) -> TestOutcome {
+    submit(
+        invocation,
+        invocation.delivery.validation_error.as_deref(),
+        invocation.agent_context.clone(),
     )
+    .await
 }
 
-pub(super) fn vm_name(invocation: &TestInvocation) -> Result<String, String> {
-    invocation
-        .parameters
-        .get("vm_name")
-        .cloned()
-        .ok_or_else(|| {
-            "vm_name is unavailable; import_ova must pass its generated name to later tests".into()
-        })
-}
-
-pub(super) fn vm_storage(invocation: &TestInvocation) -> Result<PathBuf, String> {
-    let relative = invocation
+async fn submit(
+    invocation: &TestInvocation,
+    validation_error: Option<&str>,
+    context: Value,
+) -> TestOutcome {
+    let vm_path = invocation
         .parameters
         .get("vm_path")
         .map(String::as_str)
         .unwrap_or("./thot_vms");
-    let relative = Path::new(relative);
+    let relative = Path::new(vm_path);
     if relative.is_absolute()
         || relative
             .components()
             .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
     {
-        return Err(
-            "vm_path must be a safe relative path below the project archive directory".into(),
-        );
+        return TestOutcome::error("vm_path must be a safe relative path below the project folder");
     }
-    let base = invocation
-        .project_archive_parent
-        .canonicalize()
-        .map_err(|e| format!("project archive directory is unavailable: {e}"))?;
-    let root = base.join(relative);
-    let run_storage = root
+    let vm_storage_path = invocation
+        .runtime
+        .storage_root
+        .join(relative)
         .join(&invocation.run_id)
         .join(&invocation.delivery.delivery_id);
-    let mut current = root.as_path();
-    while current.starts_with(&base) {
-        if std::fs::symlink_metadata(current)
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
-            return Err("vm_path must not traverse a symlink".into());
+    let mut parameters = invocation.parameters.clone();
+    if let Some(reason) = validation_error {
+        parameters.insert("_validation_error".into(), reason.into());
+    }
+    let test_directory = invocation
+        .artifacts_dir
+        .parent()
+        .unwrap_or(&invocation.artifacts_dir)
+        .to_path_buf();
+    let task = AgentTask {
+        protocol_version: AGENT_PROTOCOL_VERSION,
+        task_id: uuid::Uuid::new_v4().simple().to_string(),
+        test_reference: invocation.test_reference.clone(),
+        test_name: invocation.test_name.clone(),
+        parameters,
+        timeout_seconds: invocation.timeout.as_secs().max(1),
+        run_id: invocation.run_id.clone(),
+        submission_id: invocation.delivery.delivery_id.clone(),
+        deliverable_path: invocation.delivery.source.clone(),
+        test_directory,
+        vm_storage_path,
+        context,
+    };
+    match submit_and_wait(task).await {
+        Ok(result) => outcome_from_agent(result),
+        Err(error) => TestOutcome::error(error),
+    }
+}
+
+async fn submit_and_wait(task: AgentTask) -> Result<AgentResult, String> {
+    let client = client()?;
+    let base = endpoint();
+    let response = add_auth(client.post(format!("{base}/v1/tasks")))
+        .json(&task)
+        .send()
+        .await
+        .map_err(|e| format!("could not submit task to VirtualBox agent: {e}"))?;
+    if response.status() != reqwest::StatusCode::ACCEPTED {
+        return Err(format!(
+            "VirtualBox agent rejected task: HTTP {}",
+            response.status()
+        ));
+    }
+    let status: AgentTaskStatus = response
+        .json()
+        .await
+        .map_err(|e| format!("invalid VirtualBox agent task response: {e}"))?;
+    if status.task_id != task.task_id {
+        return Err("VirtualBox agent returned a different task_id".into());
+    }
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_secs(task.timeout_seconds.saturating_add(60));
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            let _ = add_auth(client.delete(format!("{base}/v1/tasks/{}", task.task_id)))
+                .send()
+                .await;
+            return Err(format!(
+                "VirtualBox agent task {} exceeded its deadline",
+                task.task_id
+            ));
         }
-        if current == base {
-            break;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let response = add_auth(client.get(format!("{base}/v1/tasks/{}", task.task_id)))
+            .send()
+            .await
+            .map_err(|e| format!("could not read VirtualBox agent task status: {e}"))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "VirtualBox agent task status failed: HTTP {}",
+                response.status()
+            ));
         }
-        current = current.parent().ok_or("vm_path has an invalid parent")?;
-    }
-    if paths_overlap(&run_storage, &invocation.runtime.artifact_root)
-        || paths_overlap(&run_storage, &invocation.runtime.vbox_user_home)
-    {
-        return Err("vm_path overlaps VirtualBox profile or artifact storage".into());
-    }
-    Ok(run_storage)
-}
-
-fn paths_overlap(left: &Path, right: &Path) -> bool {
-    left.starts_with(right) || right.starts_with(left)
-}
-
-pub(super) fn manifest_path(invocation: &TestInvocation) -> PathBuf {
-    invocation.report_dir.join("cleanup-manifest.json")
-}
-
-pub(super) fn require_owned_vm(invocation: &TestInvocation, name: &str) -> Result<(), String> {
-    let bytes = std::fs::read(manifest_path(invocation)).map_err(|_| {
-        "VM operation requires a manifest created by this delivery's import_ova test".to_owned()
-    })?;
-    let manifest: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("invalid delivery cleanup manifest: {e}"))?;
-    if manifest["delivery_id"].as_str() != Some(invocation.delivery.delivery_id.as_str())
-        || manifest["run_id"].as_str() != Some(invocation.run_id.as_str())
-        || manifest["vm_name"].as_str() != Some(name)
-        || manifest["vm_uuid"].as_str().is_none()
-        || manifest["may_be_registered"] != true
-    {
-        return Err("VM identity is not owned by this delivery's manifest".into());
-    }
-    Ok(())
-}
-
-pub(super) fn write_manifest(
-    invocation: &TestInvocation,
-    value: &serde_json::Value,
-) -> Result<(), String> {
-    std::fs::create_dir_all(&invocation.report_dir).map_err(|e| e.to_string())?;
-    let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    atomic_write(&manifest_path(invocation), &bytes).map_err(|e| e.to_string())
-}
-
-pub(super) fn output_outcome(
-    result: Result<thot_runner::vbox::VBoxCommandOutput, String>,
-    action: &str,
-) -> TestOutcome {
-    match result {
-        Ok(output) => {
-            let success = output.exit_code == Some(0);
-            TestOutcome {
-                status: if success {
-                    thot_core::test_results::TestStatus::Passed
-                } else {
-                    thot_core::test_results::TestStatus::Failed
-                },
-                stdout: output.stdout,
-                stderr: output.stderr,
-                exit_code: output.exit_code,
-                diagnostics: if success {
-                    String::new()
-                } else {
-                    format!("{action} exited with {:?}", output.exit_code)
-                },
-                observation: serde_json::json!({"duration_ms": output.duration.as_millis()}),
-                evidence: Vec::new(),
+        let status: AgentTaskStatus = response
+            .json()
+            .await
+            .map_err(|e| format!("invalid VirtualBox agent task status: {e}"))?;
+        match status.state.as_str() {
+            "completed" => {
+                return status
+                    .result
+                    .ok_or_else(|| "VirtualBox agent completed without a result".into());
             }
+            "failed" => {
+                return Err(status
+                    .error
+                    .unwrap_or_else(|| "VirtualBox agent task failed".into()));
+            }
+            "cancelled" => return Err("VirtualBox agent task was cancelled".into()),
+            "queued" | "running" | "cancellation_requested" => {}
+            other => {
+                return Err(format!(
+                    "VirtualBox agent returned unknown task state {other:?}"
+                ));
+            }
+        }
+    }
+}
+
+fn outcome_from_agent(result: AgentResult) -> TestOutcome {
+    if result.protocol_version != AGENT_PROTOCOL_VERSION {
+        return TestOutcome::error("VirtualBox agent result has an unsupported protocol version");
+    }
+    let mut observation = result.observation;
+    observation["_agent_task_id"] = json!(result.task_id);
+    observation["_agent_protocol_version"] = json!(result.protocol_version);
+    if !result.context.is_null() {
+        observation["_agent_context"] = result.context;
+    }
+    TestOutcome {
+        status: result.status,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exit_code: result.exit_code,
+        diagnostics: result.diagnostics,
+        observation,
+        evidence: result.evidence,
+    }
+}
+
+pub async fn cleanup(
+    run_id: &str,
+    input: &DeliveryInput,
+    report_dir: &Path,
+    context: Value,
+    timeout: Duration,
+) -> Value {
+    if context.get("vm_name").is_none()
+        || context.get("cleaned").and_then(Value::as_bool) == Some(true)
+    {
+        return json!({"status":"passed","vm_unregistered":true,"run_storage_removed":true,"details":["no registered VirtualBox VM remains"]});
+    }
+    let storage = context
+        .get("storage_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let task = AgentTask {
+        protocol_version: AGENT_PROTOCOL_VERSION,
+        task_id: uuid::Uuid::new_v4().simple().to_string(),
+        test_reference: "VirtualBox/destroy_vm".into(),
+        test_name: "cleanup".into(),
+        parameters: BTreeMap::new(),
+        timeout_seconds: timeout.as_secs().max(1),
+        run_id: run_id.into(),
+        submission_id: input.delivery_id.clone(),
+        deliverable_path: input.source.clone(),
+        test_directory: report_dir
+            .join("tests")
+            .join(&input.delivery_id)
+            .join("cleanup"),
+        vm_storage_path: storage,
+        context,
+    };
+    match submit_and_wait(task).await {
+        Ok(result) => {
+            let mut cleanup = result.observation;
+            cleanup["status"] = json!(if result.status == TestStatus::Passed {
+                "passed"
+            } else {
+                "failed"
+            });
+            if !result.diagnostics.is_empty() {
+                cleanup["details"] = json!([result.diagnostics]);
+            }
+            cleanup
         }
         Err(error) => {
-            let timed_out = error.to_ascii_lowercase().contains("timed out");
-            TestOutcome {
-                status: if timed_out {
-                    thot_core::test_results::TestStatus::TimedOut
-                } else {
-                    thot_core::test_results::TestStatus::Error
-                },
-                stdout: String::new(),
-                stderr: format!("{action}: {error}"),
-                exit_code: None,
-                diagnostics: format!("{action}: {error}"),
-                observation: serde_json::json!({}),
-                evidence: Vec::new(),
-            }
+            json!({"status":"failed","vm_unregistered":false,"run_storage_removed":false,"details":[error]})
         }
     }
-}
-
-pub(super) async fn vm_state(invocation: &TestInvocation, name: &str) -> Result<String, String> {
-    let result = runner(invocation)
-        .run(&["showvminfo".into(), name.into(), "--machinereadable".into()])
-        .await?;
-    if result.exit_code != Some(0) {
-        return Err(format!("cannot inspect VM state: {}", result.stderr));
-    }
-    Ok(result
-        .stdout
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("VMState=\"")
-                .and_then(|s| s.strip_suffix('"'))
-                .map(str::to_owned)
-        })
-        .unwrap_or_default())
-}
-
-pub(super) async fn wait_for_poweroff(
-    invocation: &TestInvocation,
-    name: &str,
-    deadline: Duration,
-) -> Result<(), String> {
-    let until = tokio::time::Instant::now() + deadline;
-    while tokio::time::Instant::now() < until {
-        if matches!(
-            vm_state(invocation, name).await?.as_str(),
-            "poweroff" | "aborted"
-        ) {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    Err("VM did not power off before the deadline".into())
 }

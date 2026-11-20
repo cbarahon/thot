@@ -69,6 +69,7 @@ pub struct GetStudentsResponse {
     pub total: usize,
 }
 
+pub mod agent_protocol;
 pub mod deliveries;
 pub mod expedients;
 pub mod test_results;

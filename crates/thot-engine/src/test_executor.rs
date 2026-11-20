@@ -13,7 +13,7 @@ use thot_core::{VMActivityProject, test_results::TestStatus};
 use crate::{
     test_execution::{TestInvocation, TestOutcome},
     test_result_store, tests,
-    vm_activity::{self, DeliveryInput, ProjectSnapshot, VmActivityRuntime},
+    vm_activity::{DeliveryInput, ProjectSnapshot, VmActivityRuntime},
 };
 
 pub async fn execute_project_tests(
@@ -30,7 +30,7 @@ pub async fn execute_project_tests(
 ) -> Result<(), String> {
     let mut prior: HashMap<String, Vec<bool>> = HashMap::new();
     let mut vm_context = HashMap::<String, String>::new();
-    let mut vm_isolation_error: Option<String> = None;
+    let mut agent_context = json!({});
 
     for definition in &project.tests {
         let mut base_parameters = definition.parameters.into_strings()?;
@@ -64,7 +64,7 @@ pub async fn execute_project_tests(
                 }
             }
             let (record_dir, artifacts_dir) =
-                test_result_store::paths_for_test(report_dir, &input.filename, &test_name)
+                test_result_store::paths_for_test(report_dir, &input.delivery_id, &test_name)
                     .map_err(|e| format!("cannot create test record directory: {e}"))?;
             let mut outcome = if skipped_test_names.contains(&definition.name) {
                 TestOutcome {
@@ -86,10 +86,6 @@ pub async fn execute_project_tests(
                 TestOutcome::skipped(format!(
                     "delivery was rejected before test execution: {reason}"
                 ))
-            } else if let Some(reason) = vm_isolation_error.as_deref() {
-                TestOutcome::skipped(format!(
-                    "VM tests were stopped because host-isolation setup failed: {reason}"
-                ))
             } else {
                 let invocation = TestInvocation {
                     test_name: test_name.clone(),
@@ -106,6 +102,7 @@ pub async fn execute_project_tests(
                     runtime: runtime.clone(),
                     run_id: run_id.into(),
                     expedient_id: expedient_id.into(),
+                    agent_context: agent_context.clone(),
                     prior_test_results: report["test_results"]
                         .as_array()
                         .cloned()
@@ -113,21 +110,29 @@ pub async fn execute_project_tests(
                 };
                 tests::dispatch(&invocation).await
             };
+            if let Some(context) = outcome.observation.get("_agent_context").filter(|value| {
+                value.is_object() && !value.as_object().is_some_and(|object| object.is_empty())
+            }) {
+                agent_context = context.clone();
+                if let Some(observation) = outcome.observation.as_object_mut() {
+                    observation.remove("_agent_context");
+                }
+            }
+            let agent_task_id = outcome
+                .observation
+                .get("_agent_task_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let agent_protocol_version = outcome
+                .observation
+                .get("_agent_protocol_version")
+                .and_then(Value::as_u64);
+            if let Some(observation) = outcome.observation.as_object_mut() {
+                observation.remove("_agent_task_id");
+                observation.remove("_agent_protocol_version");
+            }
             if let Some(name) = outcome.observation.get("vm_name").and_then(Value::as_str) {
                 vm_context.insert("vm_name".into(), name.to_owned());
-            }
-            if definition.test_ref == "VirtualBox/import_ova"
-                && outcome.status == TestStatus::Passed
-            {
-                if let Some(uuid) = outcome.observation.get("vm_uuid").and_then(Value::as_str) {
-                    if let Err(error) = vm_activity::disable_guest_features(runtime, uuid).await {
-                        vm_isolation_error = Some(error);
-                        report["orchestration_error"] = json!(format!(
-                            "imported VM host-isolation setup failed: {}",
-                            vm_isolation_error.as_deref().unwrap_or_default()
-                        ));
-                    }
-                }
             }
             let ended = Utc::now();
             let result_id = format!("result-{}", uuid::Uuid::new_v4().simple());
@@ -135,9 +140,15 @@ pub async fn execute_project_tests(
                 .evidence
                 .iter()
                 .map(|item| {
-                    Path::new(item)
+                    let evidence_path = Path::new(item);
+                    let rooted = if evidence_path.is_absolute() {
+                        evidence_path.to_path_buf()
+                    } else {
+                        record_dir.join(evidence_path)
+                    };
+                    rooted
                         .strip_prefix(report_dir)
-                        .unwrap_or(Path::new(item))
+                        .unwrap_or(&rooted)
                         .to_string_lossy()
                         .into_owned()
                 })
@@ -163,6 +174,8 @@ pub async fn execute_project_tests(
                 "stdout": outcome.stdout,
                 "stderr": outcome.stderr,
                 "diagnostics": outcome.diagnostics,
+                "agent_task_id": agent_task_id,
+                "agent_protocol_version": agent_protocol_version,
                 "evidence": evidence
             });
             report["test_results"]
@@ -187,11 +200,20 @@ pub async fn execute_project_tests(
                     );
                 }
             }
+            if let Some(row) = report["test_results"]
+                .as_array()
+                .and_then(|rows| rows.last())
+            {
+                test_result_store::persist_report(&record_dir.join("result.yaml"), row).map_err(
+                    |e| format!("cannot persist normalized test result {test_name}: {e}"),
+                )?;
+            }
             test_result_store::persist_report(report_path, report)
                 .map_err(|e| format!("cannot persist expedient after test {test_name}: {e}"))?;
         }
         prior.insert(definition.name.clone(), vec![all_passed]);
     }
+    report["_agent_context"] = agent_context;
     Ok(())
 }
 

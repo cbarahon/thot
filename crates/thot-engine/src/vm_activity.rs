@@ -35,6 +35,7 @@ pub struct ProjectSnapshot {
     pub project_id: String,
     pub bytes: Vec<u8>,
     pub sha256: String,
+    pub configuration_sha256: String,
     pub ssh_username: String,
     pub archive_path: PathBuf,
     pub archive_parent: PathBuf,
@@ -56,20 +57,16 @@ pub async fn load_project(
         .map_err(|e| format!("cannot resolve project source: {e}"))?;
     let extracted_root = snapshot_dir.join("project");
     let (archive_path, archive_parent, bytes, configuration_bytes, sha256) = if metadata.is_dir() {
-        let config_path = path.join("configuration.yaml");
-        let config_metadata = fs::symlink_metadata(&config_path)
-            .map_err(|e| format!("project directory must contain configuration.yaml: {e}"))?;
-        if config_metadata.file_type().is_symlink() || !config_metadata.is_file() {
-            return Err("project configuration.yaml must be a regular file".into());
-        }
+        let config_path = crate::project_config::configuration_file(&path)?;
         let configuration_bytes = fs::read(&config_path)
             .map_err(|e| format!("cannot read project configuration.yaml: {e}"))?;
         let configuration = crate::project_config::parse_configuration(&configuration_bytes)?;
         let delivery_path = resolve_project_delivery(&path, &configuration.delivery_folder)?;
+        // Runs live inside project roots. Exclude them to keep snapshots finite and reproducible.
         crate::project_archive::snapshot_project_directory(
             &path,
             &extracted_root,
-            &[delivery_path],
+            &[delivery_path, path.join("runs")],
         )?;
         let sha256 = hash_project_directory(&extracted_root)?;
         (
@@ -97,8 +94,9 @@ pub async fn load_project(
         atomic_write(&retained, &bytes)
             .map_err(|e| format!("cannot retain project snapshot: {e}"))?;
         crate::project_archive::extract_project_archive(&retained, &extracted_root)?;
-        let configuration_bytes = fs::read(extracted_root.join("configuration.yaml"))
-            .map_err(|e| format!("cannot read project configuration.yaml: {e}"))?;
+        let config_path = crate::project_config::configuration_file(&extracted_root)?;
+        let configuration_bytes =
+            fs::read(config_path).map_err(|e| format!("cannot read project configuration: {e}"))?;
         let sha256 = format!("{:x}", Sha256::digest(&bytes));
         let archive_parent = path
             .parent()
@@ -129,6 +127,7 @@ pub async fn load_project(
         project_id,
         bytes,
         sha256,
+        configuration_sha256: format!("{:x}", Sha256::digest(&configuration_bytes)),
         ssh_username,
         archive_parent,
         archive_path,

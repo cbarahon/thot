@@ -1,0 +1,22 @@
+# Purpose: Runs the host-specific VirtualBox execution agent independently of thotd.
+[Unit]
+Description=Thot VirtualBox execution agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thotd
+Group=thotd
+Environment=RUST_LOG=info
+Environment=THOT_VIRTUALBOX_AGENT_CONFIG=/etc/thot/thot-virtualbox-agent.config.yaml
+ExecStart=/usr/local/sbin/thot-virtualbox-agent
+Restart=on-failure
+RestartSec=3
+UMask=0077
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/thot /srv/thot-projects
+
+[Install]
+WantedBy=multi-user.target

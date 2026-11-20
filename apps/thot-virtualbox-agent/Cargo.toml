@@ -1,0 +1,23 @@
+[package]
+name = "thot-virtualbox-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "thot-virtualbox-agent"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+tokio = { workspace = true, features = ["process", "time", "fs"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+thot-core = { path = "../../crates/thot-core" }

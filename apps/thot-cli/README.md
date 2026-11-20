@@ -31,14 +31,14 @@ thot [-h HOST] [-p PORT] prune
 thot [-h HOST] [-p PORT] reset
 ```
 
-Bare `thot run` searches the current directory for exactly one `.thot.gz`,
-`.thot.tgz`, `.thot.zip`, or root `configuration.yaml` project source and starts
-it. A configuration file selects its containing directory. It reports an error
+Bare `thot run` searches the current directory for exactly one supported
+`.thot` archive or a root `configuration.thot.yaml` / legacy
+`configuration.yaml` project source and starts it. A configuration file selects its containing directory. It reports an error
 if no source or multiple sources are found. Use `thot run list` to list saved
 runs. The `create` forms accept an archive path or project directory;
 `--project` is an explicit spelling of the project path. Without
-`--deliveries`, the engine uses `delivery_folder` from `configuration.yaml`;
-relative paths resolve from the archive's containing directory or the project
+`--deliveries`, the engine uses `delivery_folder` from
+`configuration.thot.yaml` (or legacy `configuration.yaml`); relative paths resolve from the archive's containing directory or the project
 directory, and absolute paths are accepted. A delivery override can point
 anywhere the daemon can read. Assignment commands index the project's direct
 `.ova` children before a run begins. Deliveries without assigned students are
@@ -53,14 +53,14 @@ running tests.
 results, recalculates configured rubrics and evaluation items, then updates each
 student's `checks`, `rubrics`, and `evaluation.results` sections. It also applies
 configured CSV imports. Expedients without a delivery retain blank checks and
-rubrics and receive `not_delivered_mark` for each evaluation item. Without an ID, it selects the most recently
-created finished run. When run from the same unpacked project directory used
-by that run, it reads that directory's current `configuration.yaml`; otherwise
-it uses the run's saved configuration.
+rubrics and receive `not_delivered_mark` for each evaluation item. Without an ID,
+it selects the most recently created finished run. It always reads the
+configuration and supporting files from the run snapshot, so later project edits
+do not change a previous run's regrade.
 It does not start or repeat tests. Check results replace the previous `checks`
 section, rubric results and final evaluation marks replace their previous sections.
 
-`rubrics_multiplier` and `evaluation_multiplier` in `configuration.yaml` default
+`rubrics_multiplier` and `evaluation_multiplier` in `configuration.thot.yaml` default
 to 1 and must be positive finite numbers. The first scales check values before
 rubric calculations; the second scales each final evaluation item. If both are
 set to values other than 1, run creation returns a warning because the scales
@@ -77,8 +77,11 @@ Student commands also print structured output as YAML. The explicit
 `thot run status` without an ID requires exactly one queued, running, or
 cancelling run; otherwise specify `RUN_ID`. Status output includes one
 expedient per student, its assigned delivery, and lifecycle state (`pending`,
-`running`, or `finished`). Cleanup uses the persisted manifest and checks
-recorded VM identity and storage ownership.
+`running`, or `finished`). Cleanup uses the persisted agent context and checks
+recorded VM identity and storage ownership. Runs live under the project `runs/`
+directory (archive sources use the managed artifact project root); `run.yaml`
+records configuration/input hashes and agent metadata, and deleting a run removes
+that run folder after validating its manifest.
 
 `thot report runs` shows run status, start/finish time, duration, and test
 progress/error totals. For each active run, it also shows a delivery table with
@@ -103,11 +106,13 @@ use `Ok`, `X`, `R`, or blank, and rubric marks are rounded to at most three
 decimal places. Matrix and statistics reports accept the same export flags.
 
 `thot clean` removes orphaned Thot artifacts and VMs only when ownership can be
-verified. `thot prune` keeps the newest run per project and requires an
-interactive `y` confirmation before deleting older run data. `thot reset`
-requires typing a generated six-digit code; it clears Thot database and runtime
-state while preserving installation configuration, project archives, and
-original delivery files. Unverified external files are reported and preserved.
+verified; the VM inventory portion still uses the daemon's local `VBoxManage`.
+`thot prune` keeps the newest run per project and requires an interactive `y`
+confirmation before removing older run folders and indexed data. `thot reset`
+requires typing a generated six-digit code; it clears Thot's run folders and
+local index while preserving installation configuration, project inputs, and
+original deliveries. Prune and reset stop if a run still has agent cleanup
+pending. Unverified external files are reported and preserved.
 
 API settings resolve from command-line options, then the first available file
 among `./thot-config.yaml`, `./.thot-config.yaml`, and
@@ -119,7 +124,8 @@ columns are ignored, malformed rows are reported on stderr, and validation of
 student data remains in the server.
 
 Student operations are scoped to one project. When the current directory has a
-root `configuration.yaml`, its project is selected automatically. Otherwise the
+root `configuration.thot.yaml` or legacy `configuration.yaml`, its project is
+selected automatically. Otherwise the
 CLI uses the most recently selected project, normally the one passed to
 `thot run create`; commands fail if no project context exists. Student import
 and retrieval responses identify their project. A project's root

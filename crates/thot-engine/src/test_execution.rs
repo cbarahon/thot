@@ -21,6 +21,8 @@ pub struct TestInvocation {
     pub expedient_id: String,
     /// Completed results earlier in the configured test sequence for this delivery.
     pub prior_test_results: Vec<Value>,
+    /// State returned by an agent earlier in this submission execution.
+    pub agent_context: Value,
 }
 
 #[derive(Debug, Clone)]

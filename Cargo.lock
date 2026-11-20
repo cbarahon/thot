@@ -2374,6 +2374,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "thot-virtualbox-agent"
+version = "0.1.43"
+dependencies = [
+ "axum",
+ "chrono",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "thiserror 2.0.21",
+ "thot-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "thotd"
 version = "0.1.43"
 dependencies = [

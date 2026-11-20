@@ -1,37 +1,26 @@
 # `thotd` engine service
 
-`thotd` serves the student import API and the local VirtualBox activity API. For native host setup, see [`deploy/README.md`](../../deploy/README.md).
+`thotd` validates projects, schedules submissions, stores normalized test results, and calculates grades. VirtualBox tests are submitted to the separate `thot-virtualbox-agent` HTTP service; that service connects to the configured host over SSH and runs `VBoxManage`. See [`deploy/README.md`](../../deploy/README.md) and [`apps/thot-virtualbox-agent/README.md`](../thot-virtualbox-agent/README.md) for setup. The CLI uses the daemon API and never invokes `VBoxManage` itself.
 
-## Project execution
+## Project and run files
 
-The activity API accepts an absolute project archive path. The archive root must contain `configuration.yaml`; external tests are stored at paths such as `extern/tests/check.py`. Project configuration controls test order, parameters, timeout, prerequisites, and repeats. A relative `delivery_folder` is resolved from the archive's containing directory; an absolute value is used directly. A run can also supply a delivery directory override.
+The canonical project configuration is `configuration.thot.yaml`; legacy `configuration.yaml` is accepted when the canonical file is absent, and a project containing both is rejected. Roster input is `students.csv` or `students.yaml`; assignment input is `assignments.yaml` or `assignments.json`. Projects may be directories or supported `.thot` archives. Paths to packaged scripts and CSV inputs resolve inside the project snapshot.
 
-Built-in tests are divided under `crates/thot-engine/src/tests/` by platform. External test processes receive `key=value` arguments and `THOT_ARTIFACT_DIR`. Both built-in and external results save status, stdout, stderr, exit code, diagnostics, and evidence. Internal observations may guide engine orchestration but are not duplicated in expedient test rows. Per-test artifacts are under each delivery's `test_records/<filename>/<test name>/artifacts` directory; raw `stdout.txt` and `stderr.txt` are retained there even when output filters are configured.
+A directory project stores each run under `runs/<run-id>/`; archive projects use `/var/lib/thot/artifacts/projects/<project-id>/runs/<run-id>/`. A run contains `run.yaml`, `snapshot/project/`, `expedients/<expedient-id>.yaml`, `reports/`, and `tests/<submission-id>/<test-id>/` with `result.yaml`, stdout/stderr, and artifacts. The engine writes expedients; an agent may write only to its assigned test folder. Agent tasks/results use the versioned protocol in `thot-core::agent_protocol`; HTTP routes are `/v1/capabilities` and `/v1/tasks`.
 
-External tests are trusted teacher programs. They run as child processes with the daemon account's permissions and receive timeout and output limits; this is not an isolation sandbox. Run `thotd` under a dedicated unprivileged account. The POC currently allows one active run and processes deliveries sequentially. The configuration's concurrency value is accepted but is not yet used for parallel execution.
+SQLite remains the service's index for run, roster, assignment, and delivery lookups. Project files and run result files provide the portable inputs and evidence. The API currently supports one active run at a time.
 
-## Runtime configuration
+## Runtime configuration and trust
 
-The service defaults to `127.0.0.1:8081` and a SQLite database at `/var/lib/thot/thot.sqlite3`. Artifact, VM storage, and VirtualBox profile paths default below `/var/lib/thot`; project archives and delivery directories are supplied by path and are not bound to a daemon-configured root. `VBoxManage` defaults to `/usr/bin/VBoxManage`. Important variables include:
+The daemon defaults to `127.0.0.1:8081` and `/var/lib/thot/thot.sqlite3`. `THOT_VBOX_AGENT_URL` selects the agent and `THOT_VBOX_AGENT_TOKEN` supplies its optional bearer token. `THOTD_ARTIFACT_ROOT`, `THOTD_STORAGE_ROOT`, timeouts, output limits, and guest firewall confirmation are configured in `/etc/thot/thotd.env`.
 
-- `THOTD_BIND_HOST`, `THOTD_BIND_PORT`, `THOTD_DATABASE_URL`
-- `THOTD_ARTIFACT_ROOT`
-- `THOTD_STORAGE_ROOT`, `THOTD_VBOX_USER_HOME`, `THOTD_VBOX_MANAGE_PATH`
-- `THOTD_EXPECTED_VBOX_VERSION`, `THOTD_OVA_SIZE_LIMIT`, `THOTD_FREE_SPACE_RESERVE`
-- `THOTD_STARTUP_TIMEOUT`, `THOTD_IMPORT_TIMEOUT`, `THOTD_SSH_TIMEOUT`, `THOTD_SHUTDOWN_GRACE`
-- `THOTD_OUTPUT_LIMIT`, `THOTD_FIREWALL_CONFIRMATION`
-
-VM tests require a pinned VirtualBox version, a dedicated profile/storage configuration, free loopback ports 8080 and 2222, and administrator confirmation of firewall and guest egress policy. Guest SSH credentials come from the project's test parameters. Protect project archives that contain real credentials.
+External tests are trusted instructor programs and run with daemon-account permissions. VirtualBox guest access still requires host firewall and guest egress controls. Built-in VirtualBox tests use the remote agent, while existing orphan-VM maintenance commands still use the daemon's local `VBoxManage` settings.
 
 ## API routes
 
 - `GET /health`
 - `POST /import/students`, `GET /get/students`
-- `POST /api/v1/runs`
-- `GET /api/v1/runs/{run_id}`, `POST /api/v1/runs/{run_id}/cancel`
-- `GET /api/v1/expedients/{expedient_id}`
-- `POST /api/v1/expedients/{expedient_id}/cleanup`
+- `POST /api/v1/runs`, `GET /api/v1/runs/{run_id}`, `POST /api/v1/runs/{run_id}/cancel`
+- `GET /api/v1/expedients/{expedient_id}`, `POST /api/v1/expedients/{expedient_id}/cleanup`
 - `GET /api/v1/reports/runs`
 - `GET /api/v1/reports/deliveries?run_id=...&view=summary|tests|checks`
-
-Run metadata is stored in SQLite and expedients and evidence are persisted under the artifact root. VirtualBox integration requires a Linux host with VirtualBox and is not validated by the basic tests when VirtualBox is unavailable.
