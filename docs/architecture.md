@@ -1,440 +1,125 @@
-# Thot — Software Architecture
+# Proposed architecture and justification
 
-**Status:** Target architecture; only a subset is implemented. See [the VM activity POC status](THOT_VM_ACTIVITY_POC.md) for current behavior.
-**Implementation:** Rust engine and CLI  
-**Web server:** lighttpd  
-**Configuration:** YAML  
-**API:** REST over HTTP with JSON  
-**Live progress:** Server-Sent Events (SSE)
+Status: target design v2, 2026-11-15. [Requirements](requirements.md), [model](data-model.md), [contracts](api-spec.md), [plan](implementation-plan.md) and [ADR](decisions/README.md) form a coherent proposal; They do not describe already published functionalities.
 
-## 1. Purpose
+## Starting point
 
-Thot is a lightweight, modular system for automated assessment of student submissions. It evolves the ideas behind Autotest, emphasizing predictable execution, bounded concurrency, a small deployment footprint, and a clear separation between executing tests and interpreting their results.
+The POC catalog and guide documents a Rust `thotd` service, CLI, `configuration.yaml` configuration, SQLite and artifacts, integrated tests and external scripts, checks, rubrics, evaluation, files and PDF/CSV export. POC imports OVA with VirtualBox on Linux; SSH uses shared ports and forces sequential execution. The workspace also contains a transition to the `thot-virtualbox-agent` HTTP v1 agent, which uses SSH to VirtualBox, and to `runs/` folders (see [THOTD README](../apps/thotd/README.md) and [agent](../apps/thot-virtualbox-agent/README.md)). External processes inherit permissions from the service: there is no general KVM/Docker sandbox or web interface. Separation v1 does not credit isolation and is not equivalent to a general distributed fleet. The [catalog](IMPLEMENTED_CATALOG.md), [POC guide](THOT_VM_ACTIVITY_POC.md), and [current deployment](../deploy/README.md) remain operational references. The compilation evidence described there does not prove a real integration with VirtualBox.
 
-The system has three entry points:
+The objective is to keep the evaluation reproducible from evidence, replacing the host-bound execution with an isolated laboratory and making the project a self-sufficient portfolio.
 
-- **Thot Engine (`thotd`)**: the Rust service responsible for projects, assessment runs, scheduling, execution, scoring, and persistence.
-- **Thot CLI (`thot`)**: a Rust command-line client that communicates with the engine through its REST API.
-- **Web UI**: static HTML, CSS, and JavaScript served by `lighttpd`. The browser uses the same REST API as the CLI.
-
-The web UI and CLI are clients, not separate implementations of assessment logic. The engine is the source of truth for run state and results.
-
-## 2. Architectural principles
-
-1. Keep the engine focused on orchestration and assessment semantics.
-2. Separate responsibilities into Rust modules with explicit interfaces.
-3. Use one versioned API contract for the web UI and CLI.
-4. Run tests sequentially for each student, while processing multiple students concurrently under a configurable limit.
-5. Use versioned YAML for teacher-authored configuration.
-6. Normalize built-in and external test outcomes into a common result model.
-7. Keep process, container, and VM execution behind replaceable adapters.
-8. Treat submissions, archives, scripts, and process output as untrusted.
-9. Separate reusable project definitions from run-specific submissions and results.
-10. Persist state so restarts do not silently lose assessment progress.
-
-## 3. Functional workflow
-
-### 3.1 Configure
-
-The teacher loads an **Assessment Project** and imports a student roster and submissions. Optional run settings include the maximum number of students processed concurrently. In the current VM activity POC, a project is a `.thot.zip`, `.thot.tgz`, `.thot.gz`, or project directory containing a root `configuration.yaml`. The configuration is an ordered list of atomic tests, each identified by a platform and test name (for example, `VirtualBox/import_ova`) or by an `extern/<path>` script reference. Test entries can supply parameters, prerequisites, repeat counts, and timeouts; a test timeout overrides the project-wide timeout.
-
-The engine validates YAML schemas, identifiers, paths, test references, prerequisites, rubric aggregations, and learning-outcome formulas before execution.
-
-An **Assessment Project** defines how assessment is performed. An **Assessment Run** is one concrete execution of that project against a roster and a set of submissions.
-
-### 3.2 Prepare
-
-Preparation creates predictable, isolated workspaces for each student. Tasks may include:
-
-- unpacking Moodle or cloud-drive exports;
-- matching files to student identifiers;
-- normalizing directory and filename conventions;
-- copying or transforming files;
-- generating manifests or derived files;
-- provisioning containers or VMs when required.
-
-Preparation tasks have explicit statuses, timeouts, and diagnostics. Tests must not start until their required preparation has succeeded. Common operations can be built into the engine; project-specific operations can use external scripts.
-
-### 3.3 Execute tests
-
-A **Test** is either a **Built-in Test**, implemented in Rust and registered with the engine, or an **External Test**, launched as a process such as Bash or Python, optionally inside a container. Built-in tests are organized in platform modules. External scripts supplied by a project run as child processes with an argument array and no implicit shell interpolation.
-
-For a given student, tests execute sequentially in their declared order. The scheduler may process several students in parallel, up to the configured limit. Tests can declare prerequisites on earlier test outcomes or supported scoring results.
-
-If a prerequisite is not satisfied, the dependent test is marked `skipped` with a reason, not reported as an ordinary failure.
-
-A normalized **Test Result** records the run, student and test identifiers; start/end time and duration; process exit code; captured stdout and stderr within configured limits; status; failure, skip, timeout or cancellation reason; and metadata/artifact references. Structured test information is emitted on stdout instead of being duplicated in an observation field. Per-test artifacts are stored under the delivery's `test_records/<delivery filename>/<test name>/artifacts` directory. The executor reports whether the process ran successfully; evaluation criteria interpret its output.
-
-The exit code is only one part of the result: a process may exit with code zero while a later criterion fails because expected output is missing.
-
-### 3.4 Score basic criteria
-
-A **Basic Criterion** evaluates a test result and returns `1` for pass or `0` for fail. Examples include checking that the exit code is zero, stderr is empty, stdout contains a string, stdout matches a regular expression, or a required file exists.
-
-Each criterion should record an explanation. Timeouts, skipped tests, and runner errors should remain distinguishable from normal failures. By default, their score should be unavailable unless a criterion explicitly defines how to handle them.
-
-### 3.5 Aggregate rubric criteria
-
-A **Rubric Criterion** combines basic criteria using an aggregation method such as arithmetic mean, median, minimum, maximum, or weighted mean.
-
-For example, `Correct users` can aggregate `user1 exists`, `user2 exists`, and `user3 exists`. Each aggregation must define how missing or unavailable inputs are handled. Weights and references must be validated before execution, and the calculated result should retain the inputs used.
-
-### 3.6 Evaluate learning outcomes
-
-A **Learning Outcome (LO)** corresponds to a Spanish **Resultado de Aprendizaje (RA)**. It applies a configured formula to selected rubric criteria.
-
-Use a constrained expression language with documented operators and functions. Do not execute arbitrary shell, Python, JavaScript, or Rust code from YAML. Validate formulas before a run, reject unknown references and invalid operations, and record the formula version and inputs used.
-
-### 3.7 Review and export
-
-The teacher can inspect run progress, student status, test output, exit codes, timings, basic scores, rubric aggregates, learning-outcome scores, and errors or skips. CSV is a useful first export format.
-
-Scoring and LO evaluation should be repeatable from stored test results without re-running tests, unless a new execution is explicitly requested.
-
-### 3.8 Current VM activity implementation
-
-The run skips deliveries assigned to no student. It creates one expedient for every imported project student, including students with no delivery; those expedients have empty test, check, and rubric results. `not_delivered_mark` (number or null, default null) supplies the evaluation result for each configured evaluation item when a student has no delivery. Assigned students sharing a delivery receive separate expedients, but tests execute once for that delivery and results are copied to every assigned student. Expedients expose `pending`, `running`, and `finished` lifecycle states. Multiple delivery groups may run concurrently up to the project's `concurrency` limit when tests do not use shared VirtualBox or SSH host resources; those adapters are restricted to concurrency one while guest forwarding ports are shared.
-
-The assignment service compares student names, surnames, email usernames and addresses, external IDs, and IDs against delivery filenames using token and edit-distance similarity. A second scoring pass uses agreement across student fields to break close candidate matches. Professors can inspect and replace these suggestions before evaluation. Each student has at most one assigned delivery per project, while one delivery can be assigned to multiple students for group work. Unassigned deliveries remain listed for review.
-
-Students and assignments are scoped to a current project. Assignment commands index the configured delivery folder before a run exists. Assignment imports resolve rows by `student_external_id` and `delivery_filename`; other row fields are ignored and populated from project records in the database. Creating a run selects that project; CLI commands invoked from a directory with root `configuration.yaml` select that directory's project. Root `students.csv` and one optional `assignments.yaml` or `assignments.json` inside the project bundle are imported during run creation. Valid assignment rows replace saved assignments, while project students omitted from the file remain unassigned. Each expedient ID combines the student's `external_id` and the run ID. External IDs are required in stored project records; when CSV has no recognized external-ID column, email is copied to the external ID.
-
-## 4. Logical architecture
+## Generic model
 
 ```mermaid
 flowchart TB
-    BROWSER[Browser: Static Web UI] -->|REST / JSON| API[thotd REST API]
-    CLI[thot CLI] -->|REST / JSON| API
-    LIGHTTPD[lighttpd] -->|Static assets| BROWSER
-    API --> APP[Application Services]
-    APP --> CFG[Project Loader and YAML Validator]
-    APP --> SCHED[Assessment Scheduler]
-    SCHED --> PREP[Preparation Orchestrator]
-    SCHED --> TESTS[Test Orchestrator]
-    PREP --> RUNNER[Execution Runner]
-    TESTS --> RUNNER
-    RUNNER --> BUILTIN[Built-in Rust Tests]
-    RUNNER --> PROC[External Process Adapter]
-    RUNNER --> CONTAINER[Container Adapter]
-    RUNNER --> VM[Optional VM Adapter]
-    APP --> BASIC[Basic Criterion Evaluator]
-    BASIC --> RUBRIC[Rubric Aggregator]
-    RUBRIC --> LO[Learning Outcome Evaluator]
-    APP --> STORE[(SQLite + Filesystem)]
-    APP --> EVENTS[SSE Event Publisher]
-    EVENTS -->|text/event-stream| BROWSER
+    P[Profesor: plantilla y carpeta] --> C[CLI / futura interfaz guiada]
+    C --> E[Motor: validar, planificar, evaluar, informar]
+    E <--> F[(Proyecto portable: entradas y resultados)]
+    E --> B[Contrato de proveedor de sandbox]
+    B --> S[Supervisor local con autoridad limitada]
+    S --> L[Disposable laboratory per assessment unit]
+    L --> A[Coordinator y agentes]
+    A --> W[Shared workspace: code, services and machines]
+    A -->|observaciones y artefactos validados| E
 ```
 
-This is a logical diagram, not a requirement to run each component as a separate process. Most engine components can initially be Rust modules inside one `thotd` process.
+An **evaluation unit** is the explicit set of deliverables that are tested together. It can represent a group with several files or repositories. Comparisons between submissions require a declared joint unit, never implicit access to another student's laboratory. All agents in a unit share a laboratory, network, and resource registry. A class execution contains many units; it does not use a single VM for the entire class. This allows interaction without contamination between students.
 
-`lighttpd` serves the static frontend and may reverse-proxy API traffic. It does not execute tests or evaluate rubrics.
+The engine maintains the DAG, selects units, authorizes each task, persists observations, and calculates notes. The coordinator only dispatches authorized actions to agents and maintains processes/resources; It does not change the plan or calculate grades. Git, filesystem, exec, Docker, KVM, and SSH agents enforce typed action contracts. Communication between steps uses declared outputs and named resources, without depending on global ports or text accidentally extracted from a log.
 
-## 5. Main components
+## Initial Linux deployment
 
-### 5.1 `thotd` — engine service
-
-Responsibilities:
-
-- expose the versioned REST API;
-- load and validate assessment projects;
-- import and associate rosters and submissions;
-- create and manage assessment runs;
-- schedule preparation and test execution;
-- enforce per-student ordering and global concurrency limits;
-- evaluate basic criteria, rubrics, and learning outcomes;
-- persist state and results;
-- publish progress events;
-- retrieve and export results.
-
-Keep the HTTP layer thin: it validates requests, calls application services, and serializes responses. Scheduler and scoring rules belong in their respective modules.
-
-### 5.2 Project loader and YAML validator
-
-This module parses project YAML into typed Rust structures and validates schema versions, identifiers, paths, references, prerequisites, dependency cycles, test types, aggregation parameters, formulas, and required runtime capabilities.
-
-YAML is a configuration format, not the REST wire format. The engine parses YAML into typed structures; REST request and response bodies use JSON, which is convenient for browser clients and standard HTTP tooling.
-
-### 5.3 Assessment scheduler
-
-Use a bounded pool of student-level workers:
-
-- one worker owns one student's preparation and test sequence;
-- that worker executes the student's tests sequentially;
-- a global limit controls the number of active student workers;
-- prerequisites are checked before dependent operations;
-- transitions and results are persisted as work progresses.
-
-Avoid unbounded task creation. Define cancellation, timeouts, retry semantics, and restart recovery explicitly.
-
-### 5.4 Preparation orchestrator
-
-The preparation orchestrator runs preparation tasks and creates student workspaces. Each task has explicit inputs/outputs, working directory, timeout, status, and diagnostics. It can use built-in operations or external scripts and can request containers/VMs through adapters.
-
-Preparation should be modeled separately from tests even if both use the same process runner.
-
-### 5.5 Execution runner
-
-The runner provides a common interface for built-in and external work. It sets the working directory and controlled environment, launches and supervises processes, enforces deadlines and output limits, terminates process groups on cancellation, captures stdout/stderr, and normalizes outcomes.
-
-Represent external commands as an executable plus an argument array rather than concatenating shell strings. Shell interpretation should be explicit when a script requires it.
-
-### 5.6 Built-in test registry
-
-Built-in tests are small Rust implementations registered through a stable internal interface. Examples include file-existence checks, directory-layout checks, content matching, and structured-file validation.
-
-They must return the same normalized result model as external tests. A registry is sufficient for the first release; dynamically loaded native plugins are not required.
-
-### 5.7 Basic criterion evaluator
-
-Evaluate declarative predicates over normalized test results. Keep criteria pure where possible so they can be unit-tested and re-evaluated without rerunning tests. Store score, status, explanation, and source-result references.
-
-### 5.8 Rubric aggregator
-
-Calculate rubric scores from basic criteria and, if explicitly supported, other rubric criteria. Validate aggregation types, weights, dependencies, and missing-value semantics. Store the aggregate and its input values.
-
-### 5.9 Learning-outcome evaluator
-
-Evaluate constrained formulas over rubric scores. It must not execute arbitrary code from project files. Parse and validate formulas before execution, and report invalid references, division by zero, unsupported functions, and missing inputs explicitly.
-
-### 5.10 Persistence and artifacts
-
-For a simple single-instance deployment, use:
-
-- **SQLite** for project metadata, runs, student states, test results, scores, and artifact metadata;
-- **filesystem storage** for project bundles, submissions, workspaces, large stdout/stderr artifacts, and reports.
-
-Hide persistence behind Rust interfaces so a different database can be introduced later. Persist transitions often enough to recover after a restart; never silently mark interrupted work as complete.
-
-## 6. Rust implementation: workspace and module boundaries
-
-Use a Cargo workspace to separate the engine executable, CLI executable, and reusable domain/API types. This creates compile-time boundaries without requiring a microservice architecture.
-
-Suggested repository layout:
-
-```text
-thot/
-├── Cargo.toml
-├── crates/
-│   ├── thot-core/       # Domain types and assessment semantics
-│   ├── thot-config/     # YAML parsing and validation
-│   ├── thot-runner/     # Process execution and runner interfaces
-│   ├── thot-storage/    # SQLite and filesystem persistence
-│   ├── thot-api/        # Shared REST DTOs and API contract
-│   ├── thotd/           # Engine service binary
-│   └── thot-cli/        # CLI binary: thot
-├── web/
-│   ├── index.html
-│   ├── css/
-│   ├── js/
-│   └── assets/
-├── examples/
-│   └── example-assessment/
-├── docs/
-│   └── ARCHITECTURE.md
-└── packaging/
-    ├── Dockerfile
-    └── lighttpd.conf
+```mermaid
+flowchart TB
+  subgraph HOST[Instructor Linux host - control plane]
+    UI[CLI] --> ENGINE[Motor sin privilegios]
+    ENGINE --> DISK[(Project folder)]
+    ENGINE -->|authenticated Unix socket| SUP[Minimal supervisor]
+    SUP --> HV[libvirt / QEMU / KVM]
+    FW[Outer policy: network, quotas, watchdog]
+  end
+  subgraph VM[VM L1 desechable - frontera exterior]
+    CO[Coordinator] --> AG[Observation agents]
+    AG --> WS[Workspace compartido]
+    AG --> DC[Docker local a L1]
+    AG --> KV[KVM anidado local a L1]
+    KV --> L2[VM L2 del trabajo]
+    AG -->|SSH red privada| L2
+  end
+  HV --> VM
+  SUP <-->|virtio-vsock: canal por laboratorio| CO
+  FW -.-> VM
 ```
 
-This is a starting point, not a requirement to create a crate for every small module immediately. Keep the domain model independent of HTTP and storage. Start with fewer crates if that makes the first implementation simpler, then split along stable boundaries.
+KVM/QEMU using libvirt is proposed for the outer VM. Docker organizes tools and services within L1; it does not constitute the security border against the host. A base image is selected by digest, with verified agents and tools; Each lab starts with a new overlay and limited working disk. No teacher directories are mounted on L1, neither via virtiofs/9p nor via bind mounts. Entries are transferred as blobs, verified, and extracted within the lab; The outputs are copied using a bounded receiver.
 
-### 6.1 `thot-core`
+The supervisor has only the operations of creating, querying, stopping and destroying resources from its own namespace. It does not offer shell, arbitrary libvirt XML, host paths, or general access to the Docker/libvirt socket. The engine does not belong to the Docker/libvirt groups with general administrative access. An administrator-installed policy limits images, sizes, networks, CPUs, and devices; the teacher's YAML can only restrict it. Exact implementation of libvirt permissions requires phase 0 testing.
 
-Contains domain types and rules: project metadata, test definitions, prerequisites, run/student/test states, normalized results, basic criterion results, rubric scores, and LO scores. It should not depend on the HTTP framework, CLI parser, or database.
+## Borders and threats
 
-### 6.2 `thot-config`
+Any repository, image, file, output and student service is considered hostile. A faulty teaching script or compromised agent is also contained within L1. The kernel/hypervisor, supervisor, engine, and base image form the foundation of trust. Portable folders are data: opening or importing a project does not run scripts or install agents.
 
-Owns YAML parsing, schema-version handling, safe path checks, reference validation, and conversion into typed project definitions. Return structured errors suitable for CLI diagnostics and REST responses.
+| Risk | Mandatory external control | Residual limit |
+|---|---|---|
+| Host Erase/Read | No folders, devices or host sockets on L1; Supervisor API closed | Hypervisor escape remains a risk |
+| Escape from Docker or root on L1 | Destruction of all L1, limits imposed from L0 | Can alter evidence within L1 |
+| Exfiltration, LAN, cloud metadata | No network by default; external filter blocks host, LAN, link-local, unauthorized IPv6 and other laboratories | Allowed HTTPS can also exfiltrate to authorized destinations |
+| Fork bomb, memory/disk, logs | L0 quotas, fixed CPU/RAM, physical limit disk, byte/inode/event limits and watchdog | Activity may end incomplete |
+| Malicious artifact | Extraction without links/devices/traversal, quotas and copy to staging; viewer escapes HTML and terminal | Do not open student binaries as host applications |
+| Stolen credentials | External broker, minimum scopes, ephemeral tokens; writing before persisting | A secret given to hostile code is no longer a secret |
+| Manipulation of observations | Separate student container agents, attributed results and hashes | There is no attestation of truth against root in L1 |
 
-### 6.3 `thot-runner`
+Privileged Docker, host networking, and libvirt control by student code are not allowed in the regular profile. For `make` that manages infrastructure, a profile `nested-lab` is enabled: its sockets and privileges only exist in L1. The grant may compromise observers of that same VM; the report indicates lower confidence. Separating observation in another VM would be an extension for adversarial evaluations, pending design. The engine checks only interpret data with limited parsers, without executing templates or scripts provided in results.
 
-Owns the runner interface and implementations: built-in test dispatch, child-process execution, output capture, timeouts, cancellation, and optional container/VM adapters. Keep runtime-specific code behind interfaces so the scheduler does not depend on Docker or a VM implementation.
+## Networks and acquisition
 
-### 6.4 `thot-storage`
+The acquisition phase supports Git HTTPS via outbound proxy with allowed targets, without direct LAN/host access. Every DNS redirect and resolution is re-validated, including submodules/LFS; `file://`, `ext::`, external helpers, and project checkout hooks are not supported. The exact commit and the tree are archived; branch names are not enough. For private repositories, the proxy embeds a read token without delivering it to the student processes. Dependencies and images are preloaded or unloaded by the same controlled mechanism. After acquisition, exit is withdrawn; An activity that needs it during testing must declare it.
 
-Owns SQLite, filesystem artifact management, transactions, and persistence models. Do not expose raw database types to the domain or API layers.
+The labs have separate isolated networks and no port publications to the host. Services are found through a resource record within L1. The vsock control channel has dedicated service and typed messages; it is not a tunnel to the engine API. L2 does not receive access to the control channel.
 
-### 6.5 `thot-api`
+## Flow, status and faults
 
-Defines shared request/response data-transfer objects, API version constants, and serialization contracts. The engine and CLI can reuse these types, but the CLI should not import internal scheduler or storage modules.
-
-### 6.6 `thotd`
-
-Composes modules into a service. It owns application services, REST routes, SSE endpoints, listen address configuration, and startup/shutdown. A framework such as Axum with Tokio is a reasonable Rust implementation choice. Keep blocking operations from monopolizing async executor threads.
-
-### 6.7 `thot` CLI
-
-The CLI is an API client. It parses commands, sends HTTP requests, displays structured errors/status, uploads project/roster/submissions, starts and cancels runs, watches progress, retrieves test output, and exports results.
-
-It must not independently implement scheduling, prerequisite evaluation, rubric aggregation, or LO formulas. This avoids discrepancies between the CLI and web UI.
-
-Illustrative commands:
-
-```text
-thot --server http://localhost:8080 project validate ./assessment.tar.gz
-thot --server http://localhost:8080 project upload ./assessment.tar.gz
-thot --server http://localhost:8080 students import ./students.csv
-thot --server http://localhost:8080 submissions import ./submissions/
-thot --server http://localhost:8080 run create /path/to/assessment.thot.tgz
-thot --server http://localhost:8080 run status RUN_ID
-thot --server http://localhost:8080 run watch RUN_ID
-thot --server http://localhost:8080 run results RUN_ID
-thot --server http://localhost:8080 run cancel RUN_ID
+```mermaid
+sequenceDiagram
+    participant P as Profesor
+    participant E as Motor
+    participant S as Supervisor
+    participant A as Coordinator L1
+    P->>E: Validate and run project
+    E->>E: Bloqueo, snapshot, plan y cuotas
+    E->>S: Crear laboratorio con lease
+    S->>A: Arranque, identidad y capacidades
+    E->>A: Adquirir repositorio y fijar commit
+    A-->>E: Entrada materializada y hash
+    E->>A: Files, make, VM inspection, SSH
+    A-->>E: Eventos, recursos, resultados y blobs
+    E->>E: Validar y confirmar resultados
+    E->>S: Destruir laboratorio siempre
+    S-->>E: Limpieza verificada o pendiente
+    E->>E: Checks, rubrics, review and reports
+    E-->>P: Summary and issues requiring review
 ```
 
-These commands illustrate the intended UX; exact syntax should follow the first API contract. The CLI should accept a configurable server URL and a sensible local default. Credentials, if needed, must not be stored in project files or printed in logs.
+In a unit the steps are sequential by default. A DAG allows explicit parallelism if there are no concurrent writes to a resource; exclusive/shared locks are declared. `after` only commands; `requires` demands success. In the event of an infrastructure error, the branch is blocked, other units can continue. Exterior cleaning is independent of the teacher's `always` steps: these are not a safety barrier.
 
-## 7. Web UI and lighttpd
+A timeout kills the process group/container and its descendants. If your detention cannot be proven or you could have left an arbitrary status, L1 is terminated and live resources are invalidated. The supervisor observes leases; When the engine dies, it stops and destroys orphan laboratories. Logs already committed are kept; Incomplete results are marked discontinued. Pending cleanup prevents declaring the environment released and blocks new admissions if unsafe resources remain.
 
-### 7.1 Static frontend
+There is no promise to resume memory or processes from a destroyed VM. Extending a run preserves compatible observations, but for a new step requiring live services the chain is rebuilt from inputs set in a clean lab. Repeating non-idempotent actions requires stated authorization or intervention. See ADR-0004.
 
-The web interface is static HTML, CSS, and JavaScript. It does not require Node.js in production. A build tool can be used during development, but the deployed output should be ordinary static files.
+## System requirements and operation
 
-The UI calls REST for actions and queries, and uses SSE for live progress. REST remains authoritative: after reconnecting, the browser queries current state rather than relying on event history alone.
+Reference profile to certify: Maintained Linux x86_64, systemd, cgroups v2, KVM, QEMU/libvirt, LSM AppArmor or SELinux and local storage with reliable locking, atomic renaming and quotas. The exact list of supported distributions/versions is fixed after testing; It is not universal support for any Linux.
 
-### 7.2 Why lighttpd
+Sizing starting point, no accredited minimum: 8 threads, 32 GiB RAM and 100 GiB free for a nested laboratory with 4 vCPUs, 12 GiB RAM and 40 GiB disk; reserve at least 8 GiB to the host. Each activity declares needs and the planner adds reserves before admitting it. L2 and Docker consume L1's budget, not unlimited additional reserves. VT-x/AMD-V hardware and nesting should be tested by booting an L2; detecting `/dev/kvm` is not enough. An already virtualized Linux is only suitable if it passes the same test.
 
-`lighttpd` is well suited to serving a small static UI with low resource overhead. It is not the application engine: it serves files and can optionally reverse-proxy API traffic.
+An administrative installer prepares network, permissions, image and service. The teacher receives a "pass/not pass" diagnosis with concrete actions and a template; choose folder, check associations, validate, run and open the report. CLI first, future interface guided on the same API. The first use supports a technical installation, but subsequent evaluations do not require hypervisor commands.
 
-Two deployment patterns are possible:
+The engine writes with the identity of the teacher or dedicated service with explicit ACL for the chosen folder; read-only entries during run, writable `runs/`, directories 0700 and files 0600 by default. The owner of foreign folders is not recursively changed. Exclusive lock prevents concurrent edits; consistent export only from a committed snapshot. Project backup and credential store are separate operations. Explicit retention by project, without automatically deleting original deliverables; Temporary disks are always deleted except for administrative quarantine with expiration. Deleting files on SSD is not equivalent to cryptographic deletion; encrypt the volume when necessary.
 
-1. **Single container:** run `lighttpd` and `thotd` as separate processes in one container. This reduces deployment units but requires deliberate process supervision and couples their lifecycle.
-2. **Separate containers:** run a static web container and an engine container on the same Docker Compose network. This allows independent updates and makes it easier to expose only the web server publicly.
+## Evolution and justification
 
-**Recommendation:** use separate `lighttpd` and `thotd` containers within one Docker Compose deployment. It is still easy to distribute, while keeping the UI replaceable and the engine API on an internal network. If a single-container deployment becomes a hard requirement, preserve the same process and API boundaries.
+The outer VM adds cost and requires nesting, but contains both ordinary processes and Docker and student-created VMs. Docker on the host reduces cost but shares kernel and increases control plane exposure; it is discarded for the first version. A single class VM would facilitate data contamination and leakage; is discarded. The local modular monolith and file system avoid premature distributed infrastructure.
 
-### 7.3 Routing
+The future remote provider can implement the same identifiers, tasks, leases, and transfers, but will need mTLS, project authorization, organization quotas, and remote storage. The local protocol is not opened to the Internet to obtain a server. SQLite will only be a rebuildable index after completing and verifying the POC migration.
 
-Configure `lighttpd` to serve the static UI and proxy `/api/` and the SSE endpoint to `thotd`. Ensure proxy timeouts and buffering are compatible with SSE; buffering must not delay progress events. Same-origin proxying is preferable to cross-origin requests because it avoids unnecessary CORS configuration.
-
-Example request flow:
-
-```text
-Browser
-  ├── GET /                         -> lighttpd (HTML)
-  ├── GET /css/app.css              -> lighttpd (CSS)
-  ├── POST /api/v1/runs              -> thotd (create run)
-  ├── GET /api/v1/runs/123            -> thotd (run state)
-  └── GET /api/v1/runs/123/events     -> thotd (SSE)
-```
-
-The CLI sends equivalent HTTP requests directly to `thotd`, normally without going through `lighttpd`.
-
-## 8. REST API and progress events
-
-Use REST over HTTP for commands and queries. JSON is the wire format. YAML remains the human-authored project format and is parsed by the engine.
-
-Illustrative endpoints:
-
-- `GET /api/v1/health` — health/readiness;
-- `GET /api/v1/projects` — list loaded projects;
-- `POST /api/v1/projects` — upload/import a project;
-- `POST /api/v1/students/import` — import a roster;
-- `POST /api/v1/submissions/import` — import submissions;
-- `POST /api/v1/runs` — create a run;
-- `GET /api/v1/runs/{run_id}` — retrieve state and summary;
-- `GET /api/v1/runs/{run_id}/students` — student statuses and scores;
-- `GET /api/v1/runs/{run_id}/students/{student_id}/tests` — test results;
-- `GET /api/v1/runs/{run_id}/events` — subscribe to SSE;
-- `POST /api/v1/runs/{run_id}/cancel` — request cancellation;
-- `GET /api/v1/runs/{run_id}/export` — export results.
-
-The exact contract is provisional. Define stable identifiers, pagination, request-size limits, API versioning, and consistent error responses before the UI and CLI depend on it.
-
-SSE is the recommended default for one-way progress. Include event IDs or sequence numbers for reconnection, but make REST retrieval the recovery mechanism. WebSockets are unnecessary unless a future feature requires sustained bidirectional communication.
-
-## 9. Project-defined test bundles
-
-The VM activity run loader accepts `.thot.zip`, `.thot.tgz`, and `.thot.gz` archives with `configuration.yaml` at the root, as well as unpacked project directories with that file. A project can also contain teacher-supplied programs, for example:
-
-```text
-linux_competition.thot.tgz
-├── configuration.yaml
-└── extern/
-    └── tests/
-        └── vm_start_time.py
-```
-
-`configuration.yaml` defines the activity name, a delivery folder (relative to the archive's containing directory or project directory, or an absolute path), maximum concurrency, global test timeout, an ordered list of tests, and optional `checks`, `rubrics`, and `evaluation` lists. A test has a unique name and a `test` reference. Built-in references use `Platform/test_name`, such as `VirtualBox/import_ova` or `ssh/get_host_info`. External references use `extern/<project-relative-path>`. Optional fields provide scalar parameters, test timeout, earlier-test requirements, and repeat count. The engine expands repeats to names such as `start_time_01` and only runs a dependent test if all repetitions of each requirement pass. `aggr/select` selects exactly one earlier result matching a condition and copies its stdout, stderr, and exit code; by default it selects a result with `status == passed`. `aggr/join` concatenates output from a list of earlier tests and can filter by a result property. A check has a unique name, optional description, internal implementation name in `check`, related configured test name in `test`, and optional scalar parameters. `pass` returns 1 only when the named test (including all repeats) passed; otherwise it returns 0. `regex_match` returns 1 when its regex matches the selected scalar property for every result of the configured test; it requires only a regex and does not need a capture group. `yaml_match` returns 1 when its `JSONPath` expression selects one or more nodes from a JSON or YAML property in every result; it returns 0 if any result has no matches. `regex_extract` captures the first regex group from a configured test-result property, while `yaml_extract` selects exactly one scalar from a JSON/YAML property using its `JSONPath` parameter. These comparison checks compare the extracted scalar with a constant using `number`, `text`, `date`, or `datetime` conversion and a comparison operator. Conditions may also use `r'<regex>'` to match the candidate text or `json'<JSONPath>'` to test for a match in a JSON/YAML candidate; predicate conditions do not require a comparison value or data type. `aggr/checks` combines named 0/1 results with `all`, `any`, `one`, `none`, or `majority`; comparison conditions (`>=`, `<=`, `<`, `>`, `==`, `!=`) compare the passing-check count with a non-negative integer `value`. Referenced checks must be configured, and aggregate dependencies cannot contain cycles. `stats/regex_extract` and `stats/yaml_extract` collect one usable sample per unique tested delivery, calculate a run-wide statistic, and compare the current delivery's value with that statistic. For a repeated test, a statistical check must name one expanded result such as `start_time_01`. Statistics include max, min, mode (`freq`), average, population variance and standard deviation, and percentiles p1, p5, p10, p20, p30, p40, p50, p60, p70, p80, p90, p95, and p99; percentile values use linear interpolation. Average, variance, standard deviation, and percentiles require numeric data. Statistical results include the statistic and number of samples in addition to the usual check result. Check results, nullable errors, and execution timestamps are stored in each student expedient's `checks` list. A rubric has a unique name, optional description, an ordered list of check names (the configuration accepts `checks` or `checks_list`), a calculation, and optional parameters. Rubrics calculate from the referenced check values for that student. `rubrics_multiplier` defaults to 1 and scales check values before rubric calculation; the original check results remain 0 or 1. Rubric calculations are documented in [the implemented tests, checks, rubrics, and evaluation reference](IMPLEMENTED_CATALOG.md). Evaluation items have a unique name, optional description, an ordered list of rubric names (`rubrics` or `rubrics_list`), a calculation, and optional parameters. They calculate final marks from those rubric results using the same aggregation methods as rubrics. `evaluation_multiplier` defaults to 1 and scales each final evaluation item. Both multipliers must be finite positive numbers. If both differ from 1, run creation returns a warning and expedients preserve it because the two scaling stages multiply together. Rubric rows are stored in each expedient's top-level `rubrics` list; final evaluation rows are in `evaluation.results`. The CLI accepts project paths anywhere readable by the daemon and can discover one source when `thot run` is invoked without a subcommand.
-
-Project-defined `import/csv` adapters provide alternate results keyed by exactly one of `external_id` or `delivery_name`. `external_id` targets one student; `delivery_name` matches the assigned delivery filename and applies the row to every student sharing that delivery. The `import/csv` test reads `filepath` with the chosen key, `stdout`, and `exit_code` columns plus optional `stderr`; optional `override_test` replaces that test's result for matching students or the matching delivery group. If the importer is declared before its override target and covers every student in the shared delivery group, the target is omitted from the shared run. CSV check, rubric, and evaluation definitions are declared respectively with `check: import/csv` or `calculation: import/csv`; their files contain the chosen key and one numeric result column per item. Optional `descriptions` maps result column names to descriptions. A CSV row overrides same-named configured results for matching students or all students assigned to the named delivery; absent rows preserve actual results. All import paths are relative to the project root and must stay inside the project snapshot.
-
-
-Tests are atomic reusable functions grouped by platform under `crates/thot-engine/src/tests/`. A common invocation carries test parameters, timeout, project and delivery context, and artifact paths. A common outcome carries status, stdout, stderr, exit code, diagnostics, internal observations used for engine orchestration, and evidence. Expedient test rows persist the outcome without the duplicate observation field. Any test can use `filter_grep` to keep matching stdout lines or `filter_jsonpath` to select values from JSON/YAML stdout. Each filter accepts one expression, a list, or a label-to-expression mapping. Use a scalar or list for unlabeled raw results; mappings add labels. An unlabeled JSONPath scalar emits the selected value directly and a list emits a YAML list; grep emits its matching lines. Every expression in a JSONPath list queries the complete original document and selected values are combined in expression order. A labeled mapping emits a YAML object using the configured labels as keys; for labeled grep, each expression independently returns its matching line or list of lines. Every grep expression scans the full text entering that filter stage, with list matches combined once in original order. If both are configured, JSONPath runs first and grep scans its complete YAML output. A filter expression with no result contributes an empty value and does not fail the test; remaining expressions and filter stages continue. The expedient stores filtered stdout; raw output remains in the test's `stdout.txt` and `stderr.txt` artifacts. Expedient YAML output lists general run/delivery information first, followed by student data, test results, checks, rubric results, and final evaluation results. External scripts receive other configured parameters as `key=value` arguments and run as child processes with bounded time and output; they are trusted teacher code, not sandboxed code.
-
-For the current POC, archive extraction rejects path traversal and links, limits archive size and entry count, and requires a regular root `configuration.yaml`. Importing a project does not run its scripts; an external program runs only when its configured test is reached. Built-in tests include VirtualBox import/start/stop/destroy, SSH host information, `network/nmap`, `stats/regex_extract`, `stats/yaml_extract`, `aggr/select`, `aggr/join`, `libguestfs/disk_info`, `libguestfs/linux_rootfs_info`, and `libguestfs/linux_tinycore_info`. The libguestfs tests inspect disk images offline with `libguestfs-tools`; `disk_path` is required and `disk_name` optionally selects an image under a directory. `network/nmap` requires the system Nmap executable and runs a TCP connect scan with service/version detection; its Nmap report is captured in stdout. Its `exclude-ports` parameter passes a comma-separated port/range list to Nmap's `--exclude-ports` option and can be combined with `ports` or `top_ports`. Stats tests select earlier test results from the same delivery by the configured `tests` name or names, extract `property` values using a regex capture group or JSONPath, and print a YAML summary to `stdout`. Repeated configured tests contribute all their result rows. Aggregation tests can select a unique earlier result or join output from named earlier tests, optionally filtering by result properties. Numeric summaries include max, min, mode, average, population variance and standard deviation, and percentiles p1/p5/p10/p20/p30/p40/p50/p60/p70/p80/p90/p95/p99; nonnumeric types include max, min, and mode. Additional platform adapters can be added without changing the project format.
-
-The archive reader rejects path traversal and links, applies compressed/expanded size and entry limits, and requires a regular root `configuration.yaml`. Directory sources are snapshotted with symlink rejection. The CLI offers `thot run list`; bare `thot run` discovers exactly one supported archive or root configuration file, and bare `thot run status` resolves only when exactly one run is active. Run and expedient details, plus structured student command results, are rendered as YAML for terminal readability; the REST API continues to exchange JSON. Maintenance commands `thot clean`, `thot prune`, and `thot reset` reconcile orphan runtime data, prune old runs, or clear Thot database/runtime records with explicit confirmations for destructive operations.
-
-The engine `report` module summarizes saved runs and aggregates delivery reports once per unique delivery, while statistics and expedient matrices use one row per student expedient. Run reports include timing and test lifecycle/error counts, delivery-level passed/failed test and check totals, and optional per-test or per-check status maps. Running runs also include per-delivery status and timing plus test pending, running, failed, completed, and total counts. Test, check, and rubric statistics include outcome counts, durations, score distributions where applicable, and signals for possible test/check defects, low discrimination, high skips, or slow execution. Expedient reports provide test, check, rubric, and final evaluation matrices. The API exposes these through `GET /api/v1/reports/runs`, `GET /api/v1/reports/deliveries`, `GET /api/v1/reports/test_stats`, `GET /api/v1/reports/checks_stats`, `GET /api/v1/reports/rubric_stats`, and `GET /api/v1/reports/expedients`; report routes accept an optional `run_id`, defaulting to the newest run. The CLI adds corresponding `thot report` commands. `thot report grades --students --pdf` creates a student-facing progress PDF per expedient with inline image artifacts, monospace text/source artifacts, links to other files, and a calculation appendix showing test/check criteria, rubric inputs, formulas, weights, multipliers, and resulting marks. `GET /api/v1/expedients/{id}/artifacts` lists files in the test artifact directories recorded in that expedient; `GET /api/v1/expedients/{id}/artifacts/{path}` serves a listed file. `--professor --pdf` creates professor grade matrices and a calculation appendix. `--evaluation-items --csv` exports final marks for Moodle or spreadsheet import. `thot report grades --all` creates student PDFs in a `students/` subfolder and places `professor_grades.pdf` with `moodle_grades.csv` in the same run output directory. Grade reports use the newest run by default; output defaults to `grades/<run-id>/` and `--output-dir` selects another destination. The terminal client renders width-constrained tables by default and prints a delivery table beneath each active run; `--csv`, `--yaml`, and `--json` select export formats.
-
-Per-delivery expedients and artifacts are stored outside the reusable project. Each test result records process output and exit code. Artifacts are scoped under `test_records/<delivery filename>/<test name>/artifacts` within that delivery's artifact directory. Tests run in order within a delivery. Delivery concurrency follows the project setting for projects without shared resources; VirtualBox and SSH projects are restricted to one because their current adapters share loopback ports.
-
-## 10. State model and failure semantics
-
-A run may follow:
-
-`created → validating → preparing → running → scoring → completed`
-
-Other terminal states include `failed` and `cancelled`. Partial student failures should remain visible in the summary rather than collapsing all outcomes into one ambiguous status.
-
-Test statuses should distinguish `passed`, `failed`, `skipped`, `timed_out`, `cancelled`, and `error`. Exit code is data, not the complete semantic status. Define retry behavior explicitly; preserving attempt history is preferable to overwriting previous results.
-
-## 11. Security and operations
-
-Treat project archives, student submissions, scripts, and process output as untrusted.
-
-- Run with unprivileged accounts wherever feasible.
-- Apply timeouts, output limits, and CPU/memory limits where supported.
-- Terminate process groups on timeout/cancellation.
-- Use separate per-student workspaces.
-- Mount inputs read-only when modification is unnecessary.
-- Keep secrets out of YAML and logs.
-- Restrict API access beyond a trusted host/network.
-- Define cleanup and retention policies.
-- Record engine/project versions and execution metadata.
-- Avoid unrestricted access to the Docker socket from the main engine process.
-
-Docker socket access effectively grants powerful host control. Prefer a restricted runner/helper or another execution boundary. Direct access may be acceptable in a trusted lab, but document it as a security trade-off. A container alone is not a complete security boundary for arbitrary malicious code.
-
-## 12. Testing strategy
-
-- **Unit tests:** YAML validation, prerequisites, criterion predicates, aggregations, formulas, state transitions.
-- **Runner tests:** exit codes, stdout/stderr, timeouts, cancellation, missing executables, output flooding.
-- **Scheduler tests:** sequential tests per student, concurrency bounds, prerequisite skips, cancellation.
-- **Integration tests:** import project/roster, stage submissions, execute tests, score, aggregate, evaluate LOs.
-- **Recovery tests:** restart during preparation, execution, and persistence.
-- **Security tests:** archive traversal, malicious paths, symlinks, oversized archives, workspace isolation.
-- **API contract tests:** JSON schemas, error responses, CLI compatibility.
-
-## 13. Recommended implementation sequence
-
-1. Define domain types and versioned YAML schemas.
-2. Implement safe project loading and validation.
-3. Implement persistence and run state transitions.
-4. Implement process execution with timeout, cancellation, and output capture.
-5. Implement bounded scheduling and sequential per-student execution.
-6. Add learning-outcome formula evaluation over saved rubric results.
-7. Expose REST endpoints and SSE events.
-8. Implement the Rust CLI as an API client.
-9. Implement the static UI and `lighttpd` routing.
-10. Add container execution through an adapter, then VM support if needed.
-11. Add reporting, recovery, security hardening, and operations documentation.
-
-## 14. Decisions to confirm
-
-1. Are teacher-authored scripts trusted, or must they be treated as potentially malicious?
-2. Is the deployment single-teacher/single-host, or is concurrent multi-user access required?
-3. Confirm separate `lighttpd` and `thotd` containers in one Compose deployment.
-4. Which roster and submission formats are required in the first release?
-5. What are the missing-value and rounding rules for aggregations and LO formulas?
-6. What is the retry policy for failed or interrupted tests?
-7. What authentication and authorization does the API require?
-
-## 15. Summary
-
-The recommended design is a Rust engine (`thotd`) with modular configuration, scheduling, runner, scoring, and storage components; a Rust CLI (`thot`) that consumes the same REST API; and a static HTML/CSS/JavaScript frontend served by `lighttpd`.
-
-Use YAML for project definitions and JSON for HTTP. Use SSE for progress. Start with SQLite and filesystem artifacts. Run tests sequentially per student and bound the number of concurrent student workers. Keep container and VM execution behind adapters and treat isolation as a first-class security decision.
-
-This provides a compact initial implementation with clear extension points for importers, test types, execution backends, rubric methods, learning-outcome formulas, and reporting.
+Primary technical sources consulted on 2026-11-15: [Docker security](https://docs.docker.com/engine/security/) and [resource limits](https://docs.docker.com/engine/containers/resource_constraints/) support the need to configure isolation and quotas; [Nested KVM](https://docs.kernel.org/virt/kvm/x86/running-nested-guests.html) describes L0/L1/L2 and their conditions; [libvirt domains](https://libvirt.org/formatdomain.html) provides the resource/device configuration mechanisms. The selection and policies above are decisions proposed by Thot, subject to validation, not guarantees of those tools.

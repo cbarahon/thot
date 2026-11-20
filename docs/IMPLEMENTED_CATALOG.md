@@ -1,6 +1,10 @@
-# Implemented tests, checks, rubrics, and evaluation
+# Implemented functionality catalog
 
-This reference lists the test adapters and evaluation methods currently implemented by the engine. Project files configure tests under `tests`, checks under `checks`, rubric aggregations under `rubrics`, and final evaluation aggregations under `evaluation` in `configuration.yaml`.
+> POC reference: some sections retain the earlier deployment model. The working tree also includes the [HTTP v1 VirtualBox agent](../apps/thot-virtualbox-agent/README.md) and [project-folder changes](../apps/thotd/README.md). The [v2 architecture](architecture.md) is a proposal, not an implemented sandbox.
+
+This is the reference for the behavior and options implemented by the current Thot POC. It covers project configuration, tests, scoring, CLI workflows, reports, and operational limits. Project files configure tests under `tests`, checks under `checks`, rubric aggregations under `rubrics`, and final evaluation aggregations under `evaluation` in `configuration.yaml`.
+
+Thot currently ships as the Rust `thotd` service and `thot` CLI. It targets native Linux-hosted VirtualBox OVA assessment, with generic process, CSV, scoring, and report features that can be reused for other project types. A browser UI, SSE, container runner, and distributed workers are not implemented. See [proposed architecture and current baseline](architecture.md), the [VM activity POC guide](THOT_VM_ACTIVITY_POC.md), [deployment instructions](../deploy/README.md), and the [proposed implementation plan](implementation-plan.md).
 
 | Kind | Reference or methods | Purpose |
 |---|---|---|
@@ -12,17 +16,36 @@ This reference lists the test adapters and evaluation methods currently implemen
 | Test | `stats/regex_extract`, `stats/yaml_extract` | Summarizes values extracted from earlier tests for one delivery. |
 | Test | `aggr/select` | Selects exactly one earlier test result matching a condition and forwards its process output. |
 | Test | `aggr/join` | Joins process output from earlier tests, optionally filtering the selected results. |
-| Test | `import/csv` | Imports stdout, stderr, and exit code from a project CSV by student external ID; can override another test result. |
+| Test | `import/csv` | Imports stdout, stderr, and exit code from a project CSV by student external ID or assigned delivery filename; can override another test result. |
 | Test | `extern/<path>` | Runs a project-provided Python, shell, or executable test program. |
 | Check | `pass`, `regex_match`, `regex_extract`, `yaml_match`, `yaml_extract`, `stats/regex_extract`, `stats/yaml_extract`, `aggr/checks`, `import/csv` | Evaluates tests, aggregates check results, or imports per-student check results. |
-| Rubric | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates configured checks or imports per-student rubric marks. |
-| Evaluation | `avg`, `max`, `min`, `median`, `p1`…`p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates rubric marks or imports per-student final marks for a learning outcome. |
+| Rubric | `avg`, `max`, `min`, `median`, `p1`, `p5`, `p10`…`p90`, `p95`, `p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates configured checks or imports per-student rubric marks. |
+| Evaluation | `avg`, `max`, `min`, `median`, `p1`, `p5`, `p10`…`p90`, `p95`, `p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates rubric marks or imports final marks for an evaluation item. |
 
 ## Configuration and result conventions
+
+### Project-level options
+
+| Option | Meaning and constraints |
+|---|---|
+| `activity_name` | Human-readable project/activity title. |
+| `delivery_folder` | Required delivery location. Relative paths resolve from the project directory or archive's containing directory; absolute paths are supported when readable by `thotd`. A `thot run create PROJECT --deliveries DIR` override is also available. |
+| `concurrency` | Number of distinct delivery groups processed in parallel; integer from 1 to 64. Use `1` for projects using VirtualBox or SSH adapters because they share loopback ports. |
+| `timeout` | Global test timeout in seconds; integer from 1 to 86,400. A test-level `timeout` overrides it and has the same allowed range. |
+| `rubrics_multiplier`, `evaluation_multiplier` | Positive finite numeric scaling factors, both defaulting to `1`. If both differ from `1`, run creation emits a warning because the stages compound. |
+| `not_delivered_mark` | Finite number or `null` (default); assigns the given value, or a blank result, to each evaluation item for a student with no delivery. Their tests, checks, and rubrics remain empty. |
+| `tests` | Required non-empty ordered list of unique test names and references. Tests can define `description`, `parameters`, `requirements`, `repeat`, and `timeout`. |
+| `checks`, `rubrics`, `evaluation` | Optional lists of unique named scoring definitions. Rubrics accept `checks` or `checks_list`; evaluation items accept `rubrics` or `rubrics_list`. |
+
+Project sources may be a directory with root `configuration.yaml` or `.thot.zip`, `.thot.tgz`, and `.thot.gz` archives with the config at archive root. Archive extraction is limited to 100 MiB compressed, 500 MiB expanded, and 2,000 entries; absolute paths, traversal, duplicate paths, and links are rejected. Directory snapshots reject symlinks and exclude the configured delivery directory. Project imports do not execute external scripts; those run only as part of a configured test.
+
+### Run and result behavior
 
 Each configured test has a unique `name` and a `test` reference. It can also define an optional student-facing `description`, scalar `parameters`, a test-specific `timeout`, earlier-test `requirements`, and `repeat`. Repetitions produce result IDs such as `boot_01`, `boot_02`. Check evaluation happens after tests; tests that require another test only run when all repetitions of that requirement pass.
 
 Test results record `test_id`, `test_reference`, the optional configured `test_description`, `test_result_id`, `status`, `exit_code`, timing, `stdout`, `stderr`, `diagnostics`, artifact paths, and evidence. Structured test data is emitted through `stdout`; expedient test rows do not duplicate it in an `observation` field. A passed test has exit code 0, a failed test normally has a nonzero code, and timeout or setup errors may have no process exit code. Checks produce 0 or 1; malformed inputs or unavailable properties are reported in the check row's `err` field and have result 0.
+
+Recognized test statuses include `passed`, `failed`, `skipped`, `timed_out`, `error`, and `cancelled`. Run/expedient lifecycle status is separate: an expedient is `pending`, `running`, or `finished`. Shared-delivery test results are generated once and copied to every student's expedient assigned to that delivery. Project students without an assignment still receive an expedient; deliveries without students do not block or run.
 
 Configured parameters are scalar values unless a test describes a list. The engine passes project-provided test parameters as `key=value` arguments to external scripts. Use `timeout` at the test level to override the project's global timeout.
 
@@ -144,7 +167,7 @@ The two `stats/...` tests compute `count`, `max`, `min`, and `freq` (mode) for s
 
 ## Checks
 
-Every check has a unique `name`, a configured test name in `test`, an implementation in `check`, and optionally `description`, `property`, and `parameters`. A check over a repeated test evaluates each repetition and passes only when every repetition passes. Results are stored in each student expedient's `checks` list with `name`, `description`, numeric `result`, nullable `err`, and `date_time`.
+An ordinary check has a unique `name`, a configured test name in `test`, an implementation in `check`, and optionally `description`, `property`, and `parameters`. The `aggr/checks` and `import/csv` implementations are exceptions: they aggregate or import check rows and do not read a single test property. An ordinary check over a repeated test evaluates each repetition and passes only when every repetition passes. Results are stored in each student expedient's `checks` list with `name`, `description`, numeric `result`, nullable `err`, and `date_time`.
 
 | Check reference | Required fields and parameters | Behavior |
 |---|---|---|
@@ -253,4 +276,31 @@ Every project student receives an expedient, even if no delivery is assigned. Su
 
 `thot report expedients [RUN_ID]` prints four matrices: `expedient_x_test`, `expedient_x_check`, `expedient_x_rubric`, and `expedient_x_evaluation`. Test/check cells show `Ok`, `X`, `R`, or blank; rubric marks are rounded to three decimal places. Report endpoints return JSON, while the CLI supports terminal tables and `--csv`, `--yaml`, or `--json` output.
 
-`thot report grades --students --pdf [RUN_ID]` creates an individual progress-report PDF for each student, including final evaluation marks, rubric and check details, a test-results appendix, and a calculation appendix showing test-to-check rules, rubric inputs, calculation methods, multipliers, weights, and results. Test artifacts are included with each test: supported images are embedded, text and source files are shown in a shaded monospace block, and other files are copied beside the PDF and linked from it. `thot report grades --professor --pdf [RUN_ID]` creates a PDF with evaluation-item, rubric, check, and test matrices across the run's students, followed by a calculation appendix explaining the test/check/rubric/evaluation chain and its weights. `thot report grades --all [RUN_ID]` creates all student PDFs under `students/`, `professor_grades.pdf`, and `moodle_grades.csv` together in the same run output folder; `--output-dir DIR` chooses that folder. Full names and descriptions are used in section labels; abbreviated EI/R/C codes appear only in matrix column headers when full names do not fit. Check outcomes are shown as `v` or `X`, and marks are rounded to three significant digits. `thot report grades --evaluation-items --csv [RUN_ID]` writes student name, external ID, email, and one column per final evaluation item to stdout. All grades reports default to the newest run; PDF output defaults to `grades/<run-id>/` and accepts `--output-dir DIR`.
+`thot report grades --students --pdf [RUN_ID]` creates an individual progress-report PDF for each student, including final evaluation marks, rubric and check details, a test-results appendix, and a calculation appendix showing test-to-check rules, rubric inputs, calculation methods, multipliers, weights, and results. Test artifacts are included with each test: supported images are embedded, text and source files are shown in a shaded monospace block, and other files are copied beside the PDF and linked from it. `thot report grades --professor --pdf [RUN_ID]` creates a PDF with evaluation-item, rubric, check, and test matrices across the run's students, followed by a calculation appendix explaining the test/check/rubric/evaluation chain and its weights. `thot report grades --all [RUN_ID]` creates all student PDFs under `students/`, `professor_grades.pdf`, and `moodle_grades.csv` together in the same run output folder; `--output-dir DIR` chooses that folder. Full names and descriptions are used in section labels; abbreviated EI/R/C codes appear only in matrix column headers when full names do not fit. Check outcomes are drawn as a check mark or `X`, and marks are rounded to three significant digits. PDF Unicode glyph coverage is limited by the current built-in font; see [plan de implementación](implementation-plan.md). `thot report grades --evaluation-items --csv [RUN_ID]` writes student name, external ID, email, and one column per final evaluation item to stdout. All grades reports default to the newest run; PDF output defaults to `grades/<run-id>/` and accepts `--output-dir DIR`.
+
+## CLI workflows
+
+The CLI uses `localhost:8081` by default. `-h/--host` and `-p/--port` override the endpoint; local `thot-config.yaml` / `.thot-config.yaml` or `~/.config/thot/thot-config.yaml` can provide connection settings. Use `thot --help` for command syntax.
+
+| Command family | Implemented operations |
+|---|---|
+| Project runs | `thot run` or `thot run create PROJECT [--deliveries DIR]` starts a run. Bare `thot run` discovers exactly one archive or `configuration.yaml` in the current directory. `thot run list` lists runs; `status [RUN_ID]` shows run/expedient progress (an omitted ID requires exactly one active run); `checks [RUN_ID]` recalculates saved scoring; `delete RUN_ID` removes an inactive run's database records; `expedient ID` fetches a report; `cancel RUN_ID` requests cancellation; `cleanup ID` retries manifest-scoped VM cleanup. |
+| Students | `thot import students FILE.csv` imports a roster for the current project; `thot get students` returns YAML, and `thot get students csv` returns CSV. Root `students.csv` is imported automatically at run creation. A project context is required. Roster headers accept common English, Spanish, and Catalan aliases; `external_id` is mandatory in storage and defaults to email when absent. |
+| Assignments | `thot assignments guess`, `get`, and `import FILE` propose, inspect, and replace project-scoped assignments. Input can be YAML or JSON; only `student_external_id` and `delivery_filename` are used to resolve rows. Errors are reported per row with successful-import counts. Optional `--json` selects JSON output; default is YAML. Root `assignments.yaml` or `assignments.json` is imported automatically during run creation; having both is invalid. |
+| Maintenance | `thot clean` removes confirmed orphan runtime data; `thot prune` keeps the latest run per project and asks for interactive `y`; `thot reset` requests a generated six-digit challenge. Uncertain ownership is retained. These commands do not erase project archives or original deliveries. |
+| Reports | `thot report` provides runs, deliveries, per-test/per-check delivery matrices, test/check/rubric statistics, and expedient matrices. Most report commands default to the latest run. Default terminal output is a width-adapted table; `--csv`, `--yaml`, or `--json` selects a machine-readable format. `thot report grades` supports student PDFs, professor PDF, evaluation-item CSV, or `--all`. |
+
+The JSON API also exposes `GET /health`; `POST /import/students` and `GET /get/students`; `POST /api/v1/assignments/guess`, `GET /api/v1/assignments/get`, and `POST /api/v1/assignments/import`; `GET`/`POST /api/v1/runs`, `POST /api/v1/runs/checks`, `GET`/`DELETE /api/v1/runs/{run_id}`, `POST /api/v1/runs/{run_id}/cancel`, and expedient retrieval, artifact listing/download, and cleanup routes under `/api/v1/expedients/{expedient_id}`. Maintenance routes are `/api/v1/maintenance/{clean,prune,reset}`. Reports are exposed at `/api/v1/reports/runs`, `/deliveries`, `/test_stats`, `/checks_stats`, `/rubric_stats`, and `/expedients`; delivery views use the optional `view=summary|tests|checks` query, and other run-specific reports accept optional `run_id`. The service currently has no API authentication layer and should remain bound to a trusted local interface unless protected by deployment-level controls.
+
+## External runtime dependencies and boundaries
+
+| Feature | Host requirement / limitation |
+|---|---|
+| VirtualBox tests | Linux host with compatible VirtualBox, dedicated `VBOX_USER_HOME`, expected-version preflight, and the systemd privilege-gain behavior described in the deployment guide. `thotd` does not need direct `/dev/vboxdrv` access. VM storage must be writable by the service account. |
+| SSH tests | Guest reachable at the configured host/port. Current POC commonly uses loopback forwarding on 2222; shared SSH/VirtualBox projects require concurrency one. |
+| `network/nmap` | `nmap` executable must be installed and on the daemon's `PATH`; it performs an unprivileged TCP connect scan. |
+| `libguestfs/*` | Compatible libguestfs command-line tools must be installed and on the daemon's `PATH`; disk inspection does not require booting the guest. Implemented specialized Linux detectors are generic Linux rootfs and Tiny Core. A generalized Puppy/other live-system detector is not implemented. |
+| `extern/<path>` | Project-supplied `.py` uses `python3`, `.sh` uses `sh`, and other paths must be executable. Runs as `thotd`, with configured timeout/output limits, and is not sandboxed. Treat bundles as trusted code. |
+| `thotd` persistence | SQLite database plus service-managed filesystem roots for snapshots, reports, artifacts, and VM storage. This POC has no multi-host worker, web UI, container runner, or remote object-storage backend. |
+
+For Unicode glyph rendering in PDF reports, see the open documentation task in [plan de implementación](implementation-plan.md). PDF font support remains a known presentation limitation.
