@@ -10,6 +10,93 @@ The objective is to keep the evaluation reproducible from evidence, replacing th
 
 ## Generic model
 
+## Sandbox platforms and test phases
+
+Thot defines a **sandbox platform** as the execution boundary selected for a named group of tests. The first design supports three platform kinds. Each platform is independent: a test can consume its submission and declared platform inputs, but cannot depend on another platform's test result, filesystem, running service, or VM. Thot's engine can combine results from all platforms into one student expedient after execution, but that is a reporting/evaluation step rather than cross-platform test interaction.
+
+```mermaid
+flowchart LR
+  E[Thot engine on instructor host] -->|prepare, dispatch, collect| K[KVM platform: Debian 13]
+  E -->|dispatch, collect| D[Docker platform]
+  E -->|dispatch, collect| H[Direct host platform]
+  K --> KR[Platform-scoped test results]
+  D --> DR[Platform-scoped test results]
+  H --> HR[Platform-scoped test results]
+  KR --> X[Engine checks, rubrics, expedients]
+  DR --> X
+  HR --> X
+```
+
+| Platform | Proposed lifecycle | Suitable use | Isolation and constraints |
+|---|---|---|---|
+| `kvm` | Create a Debian 13 base VM; install pinned Thot agent and required tools; run the instructor's one-time preparation phase; stop and snapshot the prepared disk; for each student create a linked clone, copy only that student's delivery and declared instructor test files, run steps sequentially, collect bounded results, then destroy clone | Dangerous scripts, packages, system changes, Docker, or activities requiring guest VMs | Strongest of the three choices, but uses the most disk, RAM, CPU, and setup time. KVM, storage quotas, networking, clone/snapshot consistency, image patching, and cleanup must be proven. Linked clones depend on an unchanged parent image and are not independent backups. |
+| `docker` | Build or fetch a pinned base image; for each student create a fresh container and writable layer, mount only declared inputs, execute sequential tests, collect bounded results, then remove the container and its writable layer | Lightweight Linux command-line tools and dependencies when a shared host kernel is acceptable | Container isolation shares the host kernel and is weaker than a VM boundary. No privileged mode, host PID/network, Docker socket, arbitrary host mounts, or unbounded capabilities. A container must not be presented as equivalent to KVM for hostile code. |
+| `host` | Execute a declared read-only or otherwise low-risk adapter on the Thot host and capture its result | Static parsing of PDFs, source archives, or other files using reviewed tools, without executing student programs | No sandbox boundary. Only permitted by administrator policy after the action is classified as safe. If Thot itself runs in an administrator-managed VM, that VM can provide an outer boundary, but the project must not assume this without a verified host capability declaration. |
+
+The KVM family has two planned profiles, selected as distinct platform kinds rather than an ambiguous OS field: `kvm-debian` for the general-purpose Debian 13 environment and `kvm-alpine` for the low-resource Alpine environment. Both share the KVM lifecycle and task/result contract, but have separate image, guest-agent, package/preparation assumptions, and resource profiles. `kvm-alpine` is a viability experiment, not yet a supported production platform. Its lifecycle and acceptance criteria are in the [KVM Alpine POC](KVM_ALPINE_POC.md).
+
+Each platform has two distinct phases. **Preparation** runs once per platform invocation to install/configure common resources from a pinned base and instructor-controlled preparation files. For KVM, Thot then shuts down the prepared VM and creates a snapshot. **Student execution** starts from that clean baseline for each student (or declared group), transfers only the selected submission and required instructor test assets, and runs tests in order. Preparation output is not a student's evidence and must not affect another platform. Preparation failure blocks that platform before student work begins. A student test failure does not stop later tests unless its declared dependency policy says so.
+
+The in-guest agent is an execution and collection component. It receives an authorized, bounded task sequence, executes one test at a time, enforces timeouts, captures stdout/stderr/exit status and platform diagnostics, and returns progress and artifacts to the engine. It does not create expedients, apply checks, calculate grades, choose new tests, or interpret academic success. The engine validates each result, stores it under `(run, student-or-group, platform, test, attempt)`, then computes checks/rubrics and expedients centrally. A nonzero process exit can be a valid observation; infrastructure failure is separate from academic failure.
+
+```mermaid
+sequenceDiagram
+  participant T as Thot engine
+  participant P as Platform provider
+  participant A as Platform agent
+  T->>P: preflight(platform configuration)
+  T->>P: create baseline and run preparation
+  P->>A: start pinned agent
+  A-->>T: preparation result and diagnostics
+  T->>P: snapshot prepared KVM baseline (KVM only)
+  loop each student or group
+    T->>P: create clean student environment
+    T->>A: submission and ordered tests
+    A-->>T: progress, streams, exit status, artifacts
+    T->>T: validate and persist; destroy student environment
+  end
+  T->>T: evaluate combined platform results
+```
+
+### Declarative platform configuration
+
+The project configuration has a list of named `sandbox_platforms`. Each platform owns its kind-specific resource limits, preparation steps, test list, network policy, and artifact policy. Tests belong to exactly one platform. Cross-platform dependencies are rejected at project validation. Platform test dependencies must be acyclic and refer only to tests in the same platform. The same test definition may be reused by explicit duplication, but it does not share runtime state across platforms.
+
+```yaml
+sandbox_platforms:
+  - id: isolated-vm
+    kind: kvm
+    image: debian-13-thot@sha256:<pinned-digest>
+    vm:
+      name_prefix: thot-assessment
+      vcpu: 2
+      memory_mib: 4096
+      disk_gib: 24
+      snapshot: prepared-baseline
+    network: deny-by-default
+    preparation:
+      timeout_seconds: 900
+      packages: [python3, make, gcc]
+      scripts: [extern/vm/prepare.sh]
+    tests: [files, unit, integration]
+  - id: static-files
+    kind: host
+    policy: reviewed-read-only
+    tests: [pdf-metadata, archive-inventory]
+  - id: lint-container
+    kind: docker
+    image: debian:13-slim@sha256:<pinned-digest>
+    limits: {cpus: 2, memory_mib: 2048, disk_gib: 4}
+    network: deny
+    tests: [lint]
+```
+
+This is a conceptual schema, not the current parser contract. Before implementation, decide if Docker runs directly under an administrator-controlled host daemon or inside the KVM platform. Direct host Docker offers lower resource cost but does not have KVM's outer isolation. When Docker runs inside the per-student KVM clone, it is an execution mode within the KVM boundary rather than a third independent boundary. Both modes should not share a `kind: docker` label without a required `isolation_scope` field. For now, independent host-Docker is permitted only for trusted/low-risk tasks or an explicitly isolated Thot host, and must be visibly reported as lower assurance.
+
+Preparation is privileged project content. It is trusted instructor code, pinned and hashed in the run snapshot, constrained by a separate timeout and network policy, and never copied from a student submission. Installing arbitrary `apt` packages requires network access and may introduce non-reproducible versions or compromised repositories. Prefer prebuilt, digest-pinned images or package version pins from a controlled mirror. If preparation uses `apt`, record package versions, repository identity, image digest, and complete output; a later rerun must state whether it reuses the recorded snapshot or rebuilds it.
+
+The platform boundary is not a result dependency. Common assessment logic may refer to result IDs from any platform after all applicable platform executions reach terminal state. A test may not read another platform's files, environment variables, resource registry, live network service, stdout, or exit code. If an activity truly requires interaction, put those steps in one platform (usually a KVM guest, where Docker and nested services can coexist) or define a future explicit bridge contract with a separate threat review. No implicit file copy or host path bridge is allowed.
+
 ```mermaid
 flowchart TB
     P[Profesor: plantilla y carpeta] --> C[CLI / futura interfaz guiada]

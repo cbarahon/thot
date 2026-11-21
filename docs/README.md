@@ -19,3 +19,5 @@ All of the following documents are design, not published functionality:
 | [Proposal Review](PROJECT_PLATFORM_PROPOSAL_REVIEW.md) | Difficulties, risks and pending decisions |
 
 `ROADMAP.md` and `TODO.md` have been replaced by the deployment plan, which retains the Unicode reporting work and evolution options. The POC guidelines are maintained because they are still necessary to operate/migrate the existing implementation.
+
+The [KVM Alpine POC](KVM_ALPINE_POC.md) describes the proposed low-resource `kvm-alpine` platform and a synthetic project fixture.

@@ -32,6 +32,12 @@ Thot preserves the workflow: submission → tests and evidence → checks → ru
 | FR-18 | Simple instructor workflow | Validate, run, review, correct, and export are straightforward operations |
 | FR-19 | Import the POC | Convert database/files without deleting the source; report incompatibilities |
 | FR-20 | Privacy-aware import/export | Complete and shareable modes; shareable mode omits personal data and secrets by default |
+| FR-21 | Configure multiple named sandbox platforms per project | Each test belongs to exactly one platform; platform-specific configuration is validated before any preparation begins |
+| FR-22 | Run platform preparation once and student tests from a clean baseline | KVM preparation produces a recorded snapshot; each student/group gets a fresh linked clone; Docker gets a new container; host actions use only administrator-approved adapters |
+| FR-23 | Keep platform execution independent | Reject a test dependency across platform IDs and reject implicit reads of another platform's artifacts or live resources |
+| FR-24 | Keep agent and engine responsibilities separate | Agent executes ordered tests and reports observations; engine validates results and alone creates expedients and grades |
+| FR-25 | Communicate platform assurance and failure clearly | Reports name the platform kind, isolation scope, image/runtime identity, preparation status, cleanup status, and any infrastructure error |
+| FR-26 | Distinguish Debian and low-resource Alpine KVM profiles | `kvm-debian` and `kvm-alpine` have independent pinned templates, agents, preparations, and resource limits while sharing the provider result contract |
 
 ## Non-functional requirements
 
@@ -48,9 +54,13 @@ Thot preserves the workflow: submission → tests and evidence → checks → ru
 | NFR-09 | Private permissions by default, external credential management, configurable retention, explicit exports |
 | NFR-10 | Negotiate versions/capabilities and reject unknown major versions or unsupported features before execution |
 | NFR-11 | Offline execution after inputs and images are acquired; network denied by default |
+| NFR-12 | Platform isolation is explicit and administrator-bounded; project YAML may reduce but never raise host resource, device, network, or privilege limits |
+| NFR-13 | KVM is the high-isolation option; Docker shares the host kernel; direct host execution is an explicitly lower-assurance exception, never described as sandboxed |
+| NFR-14 | Student execution starts from clean per-student/per-group state; one student's filesystem and processes cannot be reused by another |
+| NFR-15 | Preparation and each test have bounded wall time, CPU, memory, disk, process count, output bytes, and network access where supported |
 
 ## Scope
 
-Initial target: maintained Linux x86_64, KVM/QEMU and libvirt for the outer VM, Docker inside it, and nested virtualization for activities that create VMs. No initial macOS, Windows, Kubernetes, distributed execution, multi-instructor concurrency, or direct execution of student code in host Docker. VirtualBox remains a migration-era POC.
+Initial target: Linux, with proposed execution kinds `kvm-debian`, `kvm-alpine`, Docker container, and direct host action. Their assurance levels differ. KVM is the default for arbitrary student scripts and system changes; Docker is lower assurance because it shares the host kernel; direct host execution is limited to reviewed read-only or similarly safe adapters unless Thot itself runs inside a verified outer sandbox. `kvm-alpine` is an early low-resource viability POC, not an implementation commitment. No initial macOS, Windows, Kubernetes, distributed execution, or multi-instructor concurrency. VirtualBox remains a migration-era POC.
 
 The design aims to contain hostile code and mistakes; it cannot guarantee protection against all kernel or hypervisor vulnerabilities.

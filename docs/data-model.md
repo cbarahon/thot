@@ -37,6 +37,14 @@ erDiagram
 | File | student, review, deliveries, references to attempts, checks, rubrics, calculated grade, correction and effective grade |
 | Overriding | base revision, student, destination check/rubric/evaluation, value, author, reason, date; always validated against scale |
 
+### Sandbox platform identity
+
+Add a project-level `SandboxPlatform` record with a stable `platform_id`, kind (`kvm`, `docker`, or `host`), kind-specific validated parameters, preparation definition, test membership, resource/network policy, and provider version. Every test belongs to exactly one platform. Every preparation record and test attempt carries its platform ID, platform invocation ID, student/group unit ID, environment ID, and baseline reference where applicable. Results remain unambiguous if test names are reused on different platforms.
+
+A KVM preparation record includes Debian/image digest, preparation input and script hashes, installed package inventory, completion result, shutdown/flush confirmation, snapshot ID, backing-chain hashes, and provider version. Each per-student linked clone references that baseline and records its overlay identity. Docker environments record image digest and runtime identity. Host actions record the allowlisted adapter and policy version, with explicit `isolation_assurance: host-restricted`. Docker records whether it shares the host kernel or runs inside a KVM guest. Project and run records must never imply that these options provide equal isolation.
+
+Platform-local dependency edges must have the same `platform_id` at both ends. Validation rejects cross-platform test dependencies and live-resource references. Final checks, rubrics, and expedients may combine completed results from multiple platforms inside the trusted engine; this does not grant a test access to another platform's files or live environment. Any future artifact bridge must be explicit, copied, hashed, read-only, and recorded as an imported input with provenance.
+
 Internal IDs do not contain routes. `run_id` combines readable label and UTC seconds; Exclusive creation rejects collision and proposes suffix only when necessary. A teacher is not trusted to be the only client. Folder names derived from tags replace unsupported characters with `_` and add `_1`, `_2` suffixes in collisions. The original mapping → route is stored; identity is never deduced from the route. External references of the students are preserved exactly, without destructively normalizing accents.
 
 ## Portable folder

@@ -29,6 +29,26 @@ Revisions do not turn the project into an immutable repository or force the teac
 
 ## Difficulties and open decisions
 
+### Sandbox platform questions
+
+The proposed `kvm`, `docker`, and `host` choices are execution boundaries with different assurances, not interchangeable deployment labels. A platform ID must scope tests, inputs, results, resource handles, network policy, and cleanup. The engine can aggregate completed results after platform execution; allowing a test to read another platform's live state would create an implicit bridge and is outside the initial model.
+
+| Question | Why it is difficult | Current recommendation / decision needed |
+|---|---|---|
+| Is host execution really safe? | Read-only analysis still invokes parsers on hostile files; malformed PDFs/archives can exploit parser bugs or exhaust CPU, memory, and disk. “No student script” is not a complete safety test. | Start with a small allowlist of maintained parsers, strict limits, copied/read-only inputs and no project-defined executables. Decide whether host mode is excluded by default and enabled by administrator policy. |
+| Where does Docker run? | Host Docker shares the host kernel and access to the Docker socket can be equivalent to host administration. Docker inside a KVM guest has the VM's outer boundary but costs KVM resources. | Make `isolation_scope: host-kernel|inside-kvm` explicit. Do not call host Docker equivalent to KVM. Decide which scope is supported in phase one. |
+| Is Debian 13 a reproducible baseline? | A release name alone does not pin package versions, repositories, updates, kernel, or image contents. `apt` can change over time and needs network access. | Pin VM/image digest, repository snapshot and package versions where possible; record actual inventory and preparation outputs. Decide update cadence and whether preparation is offline. |
+| When is the KVM snapshot valid? | A running guest may have pending package writes or services; memory snapshots can preserve secrets or transient state. | Complete preparation, flush filesystems, shut down, snapshot disks only, verify snapshot identity. Decide if suspend/memory snapshots are ever needed. |
+| Are linked clones portable and recoverable? | A linked clone depends on its backing image/snapshot and storage format. Parent deletion or mutation corrupts every child; copying only the clone cannot restore it. | Protect parent chain read-only and hash it; export parent chain or label artifacts non-replayable. Choose qcow2/storage semantics and retention policy. |
+| What does the guest agent prove? | The agent shares the guest with student code. A student obtaining root may alter it, forge output, or kill reporting. | Treat returned observations as untrusted evidence with transport integrity, not hardware attestation. Decide when a separate observer or second VM is needed. |
+| What is the network boundary? | Preparation needs package sources and Git may need private credentials; tests may intentionally configure networks. Egress can leak student data or tokens. | Deny by default, separate acquisition/preparation/test network phases, proxy and scope credentials, block host/LAN/metadata by default. Decide allowed destinations and offline mirror. |
+| What is the unit of isolation? | Group work may share a submission; separate students must not inherit each other's process or disk state. | Create one clean environment per student or explicitly configured group with stable unit ID. Decide how late group membership changes trigger reruns. |
+| How should resource limits compose? | VM, container, nested VMs, package builds, and artifact capture consume the same host resources. Setting limits only inside the guest does not protect the host. | Enforce outer CPU/RAM/disk/process quotas at host level and inner quotas as additional controls. Decide default caps, admission policy, and behavior under host pressure. |
+| How do failures affect grades? | Failed boot, package mirror outage, guest-agent loss, and a student's non-zero exit code have different meanings. | Keep platform diagnostics separate from academic checks; infrastructure failure yields incomplete/pending evaluation until retry or instructor override. Decide retry limits and whether remaining tests run. |
+| When is cleanup complete? | A timed-out process can leave descendants, linked overlays, containers, or libvirt domains behind. | Cleanup is a provider operation independent of instructor `finally` steps; verify resource removal, quarantine uncertain leftovers, and block unsafe reuse. Decide operator escalation and retention. |
+
+See [ADR-0007](decisions/0007-sandbox-platforms.md) for the proposed platform contract and validation gates.
+
 | ID/priority | Difficulty or decision | Proposal / alternatives | Evidence of closure and phase |
 |---|---|---|---|
 | O-01 Blocker | Nesting varies by CPU, firmware and VM vendor | KVM L1/L2 as initial profile; require certified equipment or limit activity | Boot two L2, Docker and SSH with quotas and measure degradation; P0 |

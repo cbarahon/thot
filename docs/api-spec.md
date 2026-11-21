@@ -120,6 +120,43 @@ There are no loops or scripts embedded in the initial DSL; Bounded repetitions, 
 
 ## Internal engine ports
 
+## Sandbox platform contract
+
+The project-level `sandbox_platforms` list is the only place that chooses an execution boundary. A platform object has a stable `id`, `kind` (`kvm-debian`, `kvm-alpine`, `docker`, or `host`), kind-specific parameters, `preparation`, ordered `tests`, resource/network policy, and cleanup policy. `kvm-debian` and `kvm-alpine` share KVM provider operations but have separate image and guest-agent profiles; Alpine's proposed lifecycle is documented in [KVM_ALPINE_POC.md](KVM_ALPINE_POC.md). A test definition includes `id`, `action`, `timeout_seconds`, input selectors, same-platform `requires`/`after` edges, and output declarations. Unknown platform kinds, duplicate IDs, test membership in more than one platform, missing references, dependency cycles, and cross-platform edges are validation errors.
+
+Provider interface:
+
+| Operation | Contract |
+|---|---|
+| `preflight(platform)` | Check host/runtime capability, image availability/digest, quotas, network policy, storage, and agent compatibility. No student code runs. |
+| `prepare(platform, run_snapshot)` | Create the common baseline, install only declared tools, execute trusted instructor preparation scripts under separate limits, and return a preparation manifest. |
+| `snapshot(baseline)` | KVM-only: stop/flush guest, verify disk identity, and create a named immutable baseline. Snapshot failures block this platform. |
+| `create_student_environment(platform, baseline, student_unit)` | KVM: create a linked clone from the named baseline; Docker: create a new container/writable layer; host: issue an allowlisted read-only task context. |
+| `dispatch(environment, tests)` | Send only this platform's task sequence and inputs to its agent/adapter. The agent executes sequentially and cannot alter the sequence or evaluate checks. |
+| `collect(task)` | Return progress and one normalized result per test, with process fields, platform diagnostics, and content-addressed artifacts. |
+| `destroy(environment)` | Stop all descendants and delete per-student writable state; return verified cleanup status. A cleanup failure is an infrastructure result and blocks unsafe resource reuse. |
+
+The `host` provider is deliberately not a sandbox. It accepts only registered action types, such as bounded PDF metadata extraction or archive inventory, whose adapters do not execute student-controlled code. Arbitrary `exec`, shell, package installation, student-supplied plugins, or writable access to the instructor's project directory is forbidden on this provider. An installation that declares itself to run inside an outer VM must pass an administrator-owned capability check; project YAML cannot assert that fact.
+
+KVM and Docker providers create one environment per student or explicitly assigned group, not one mutable environment shared by the class. `student_unit_id` is stable for the run. KVM preparation is shared only through a read-only baseline; student writes go to a linked overlay that is destroyed after evidence collection. The base image, preparation manifest, snapshot identity, parent chain, and guest agent version are recorded. A linked clone is not portable alone: export must include the base image and snapshot or mark the run non-replayable.
+
+Preparation output and test output are separate result classes. Preparation can declare installed package inventory, scripts run, hashes, stdout/stderr, exit code, elapsed time, and errors, but it cannot add a student test mark. Test result status distinguishes `completed`, `timed_out`, `resource_exceeded`, `platform_error`, `cancelled`, and `interrupted`; `process.exit_code` is nullable. A completed non-zero exit code is an observation for engine checks, not automatically an infrastructure failure.
+
+Transport is engine-initiated and scoped to a platform run, student unit, and task ID. The guest agent authenticates the engine using a per-run credential delivered through a protected bootstrap channel; do not embed a long-lived shared token in the base image. The engine can cancel and query progress but the agent cannot access engine APIs for roster, grading, or expedients. Use bounded messages and artifact transfer from the protocol section above. Host platform actions run locally through the same task/result envelope, with their weaker assurance recorded.
+
+Platform independence is enforced both in configuration validation and at runtime: result references carry `platform_id`; an edge is legal only when producer and consumer have the same `platform_id`. Engine checks/rubrics are permitted to consume finalized results across platforms after execution completes. They are not test actions and cannot create a live bridge. If a future use case requires platform-to-platform exchange, define an explicit export/import artifact edge with a copied, hashed, read-only payload and a new threat review; no such bridge is part of v2.
+
+### Platform-specific configuration questions
+
+| Question | Initial recommendation | Still to decide |
+|---|---|---|
+| KVM VM identity/resources | `image` digest, name prefix, vCPU, RAM MiB, disk GiB, boot timeout, snapshot name | Supported libvirt connection and permissions; linked-clone format; whether snapshots are disk-only or include memory (recommend disk-only) |
+| Debian preparation | Version-pinned packages and instructor scripts, with per-step timeout and captured package inventory | Offline mirror versus controlled online access; package pinning policy and reproducibility guarantee |
+| Guest agent | Signed/versioned package in image, engine-authenticated session, no grade authority | Bootstrap mechanism, update/rollback policy, and how to verify guest identity |
+| Docker | Immutable image digest, per-container CPU/RAM/PID/disk/output limits, no privileged mode or host sockets | Whether initial Docker provider runs on host or only inside KVM; rootless/runtime choice and storage quota enforcement |
+| Host actions | Allowlist of read-only adapters, input/output paths copied or opened read-only | Exact action catalogue and administrator override mechanism; no arbitrary project-defined executable |
+| Cleanup | Always destroy student environment after artifact ACK; retain only bounded diagnostics | Quarantine duration and operator workflow for unkillable VM/container |
+
 | Interface | Operations and responsibility |
 |---|---|
 | ProjectRepository | `validate`, `snapshot`, `lock`, `import`, `export`; without running content |

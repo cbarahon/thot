@@ -8,3 +8,4 @@ All ADRs are proposed. They will be accepted after the indicated validations; th
 - [ADR-0004: Edit and reuse with light provenance](0004-edit-and-reuse.md)
 - [ADR-0005: Versioned and bounded agent contract](0005-versioned-agent-contract.md)
 - [ADR-0006: Separate observation from rating](0006-observation-and-assessment.md)
+- [ADR-0007: Multiple independent sandbox platforms](0007-sandbox-platforms.md)

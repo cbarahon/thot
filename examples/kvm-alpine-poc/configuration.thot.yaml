@@ -1,0 +1,93 @@
+schema_version: thot.dev/v2
+project_id: kvm-alpine-poc-sum-two-integers
+name: Alpine KVM quick viability check
+language: en
+students_file: students.yaml
+assignments_file: assignments.yaml
+
+# Proposed POC contract. The engine/provider described in docs does not implement these settings yet.
+sandbox_platforms:
+  - id: low-resource-alpine
+    kind: kvm-alpine
+    isolation_scope: kvm-guest
+    lifecycle:
+      template_name: thot-alpine-platform
+      template_image:
+        distribution: Alpine Linux
+        release: 3.24.4
+        architecture: x86_64
+        iso_flavor: virt
+        iso_url: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.4-x86_64.iso
+        checksum_url: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.4-x86_64.iso.sha256
+        verify_checksum: true
+      template_vm:
+        vcpu: 1
+        memory_mib: 512
+        disk_gib: 2
+        firmware: bios
+      template_packages: [openssh, ca-certificates]
+      agent:
+        install_from: pinned-static-binary
+        version: "<pin-before-running>"
+        listen: guest-initiated-only
+      project_clone:
+        name: thot-alpine-poc-sum-project
+        linked: true
+        source_snapshot: prepared-baseline
+      preparation:
+        timeout_seconds: 180
+        packages: [bash]
+        scripts: []
+      student_clone:
+        name_prefix: thot-alpine-poc-student
+        linked: true
+        reset_from: prepared-baseline
+        cleanup: always
+    limits:
+      vcpu: 1
+      memory_mib: 512
+      disk_gib: 2
+      preparation_timeout_seconds: 180
+      student_timeout_seconds: 30
+      stdout_bytes: 4096
+      stderr_bytes: 4096
+    network:
+      template_install: allow-configured-alpine-mirror-only
+      preparation: allow-configured-alpine-mirror-only
+      student_tests: deny
+    inputs:
+      - role: student-deliverable
+        path_template: students/{student_id}/sum.sh
+        copy_to: /work/submission/sum.sh
+        read_only: true
+      - role: instructor-tests
+        path: extern/tests
+        copy_to: /work/instructor-tests
+        read_only: true
+    tests:
+      - id: syntax
+        action: exec
+        argv: [sh, /work/instructor-tests/check-syntax.sh, /work/submission/sum.sh]
+        timeout_seconds: 5
+        expect_exit_code: 0
+      - id: sum-result
+        action: exec
+        requires: [syntax]
+        argv: [sh, /work/instructor-tests/check-sum.sh, /work/submission/sum.sh, "42"]
+        timeout_seconds: 5
+        capture: [stdout, stderr, exit_code, duration_ms]
+        expect_exit_code: 0
+        expected_stdout: "42\n"
+        comparison: exact
+    evaluation:
+      syntax_check: syntax.exit_code == 0
+      functional_check: sum-result.exit_code == 0 and sum-result.stdout == "42\n"
+      rubric:
+        calculation: weighted_sum
+        scale: 10
+        criteria:
+          - {check: syntax_check, points: 2}
+          - {check: functional_check, points: 8}
+      infrastructure_errors:
+        grade: pending
+        never_convert_to_zero: true
