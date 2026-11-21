@@ -90,6 +90,19 @@ pub struct DeliveryRunRequest {
     pub delivery_directory: Option<String>,
 }
 
+mod sandbox_v2 {
+    pub mod config {
+        pub use super::super::agent_protocol::{SandboxConfig, SandboxConfigV2};
+    }
+
+    pub mod protocol {
+        pub use super::super::agent_protocol::{GuestProtocol, GuestProtocolV2};
+    }
+}
+
+pub use sandbox_v2::config::*;
+pub use sandbox_v2::protocol::*;
+
 #[cfg(test)]
 mod tests {
     use super::*;

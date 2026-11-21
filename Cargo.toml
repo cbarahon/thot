@@ -8,6 +8,7 @@ members = [
   "apps/thot-cli",
   "crates/thot-runner",
   "apps/thot-virtualbox-agent",
+  "apps/thot-alpine-agent",
 ]
 
 [workspace.package]

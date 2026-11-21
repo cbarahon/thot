@@ -28,7 +28,7 @@ sandbox_platforms:
       template_packages: [openssh, ca-certificates]
       agent:
         install_from: pinned-static-binary
-        version: "<pin-before-running>"
+        version: "0.1.43"
         listen: guest-initiated-only
       project_clone:
         name: thot-alpine-poc-sum-project

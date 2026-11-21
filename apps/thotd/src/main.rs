@@ -1,5 +1,6 @@
 //! Purpose: Daemon entry point that loads runtime settings and starts the Thot API service.
 mod vm_activity_config;
+mod config;
 
 use std::{env, net::SocketAddr};
 use thot_engine::{
@@ -47,15 +48,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         DeliveryRunService::connect(&database, config.artifact_root.clone(), runtime).await?;
     let assignment_service = AssignmentService::connect(&database).await?;
 
+    let alpine_config = config::AlpineConfig::from_env().map_err(std::io::Error::other)?;
+    let alpine_host = thot_runner::kvm_alpine::KvmAlpineHost::new(alpine_config);
+    let engine_provider = thot_engine::provider::EngineProviderAdapter::new(alpine_host);
+    let sandbox_run_service = thot_runner::SandboxRunService::new(engine_provider);
+
     let app = thot_api::router_with_runs(
         StudentService::new(student_repository),
         run_service,
         assignment_service,
     );
+    let v2_app = thot_api::router_v2(sandbox_run_service);
+
     let bind_ip = config.bind_host.parse()?;
     let address = SocketAddr::new(bind_ip, config.bind_port);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, %database, "thotd started");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.merge(v2_app)).await?;
     Ok(())
 }
