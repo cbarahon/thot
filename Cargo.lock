@@ -2291,6 +2291,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "thot-alpine-agent"
+version = "0.1.43"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thot-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "thot-api"
 version = "0.1.43"
 dependencies = [
@@ -2368,6 +2380,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "ssh2",
  "thot-core",
  "tokio",

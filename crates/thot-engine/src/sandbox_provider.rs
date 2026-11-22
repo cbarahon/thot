@@ -71,7 +71,7 @@ pub struct AgentTaskStatus {
 
 #[derive(Debug, Error)]
 pub enum SandboxError {
-    #[error("Infrastructre error: {0}")]
+    #[error("Infrastructure error: {0}")]
     InfrastructureError(String),
     #[error("Validation error: {0}")]
     ValidationError(String),
@@ -79,25 +79,32 @@ pub enum SandboxError {
 
 #[async_trait]
 pub trait SandboxProvider {
+    type TemplateHandle;
+    type BaselineHandle;
+    type StudentEnvHandle;
+
     async fn preflight(
         &self,
         config: &AgentTask,
-        baseline_handle: &PathBuf,
+        baseline_handle: &Self::BaselineHandle,
     ) -> Result<(), SandboxError>;
 
-    async fn prepare(
+    async fn ensure_template(&self) -> Result<Self::TemplateHandle, SandboxError>;
+
+    async fn prepare_baseline(
         &self,
         config: &AgentTask,
-        baseline_handle: &PathBuf,
-        run_id: &String,
-    ) -> Result<(), SandboxError>;
+        baseline_handle: &Self::BaselineHandle,
+    ) -> Result<Self::BaselineHandle, SandboxError>;
 
     async fn create_environment(
         &self,
         config: &AgentTask,
         run_id: &String,
         student_unit_id: &String,
-    ) -> Result<(), SandboxError>;
+        baseline_handle: &Self::BaselineHandle,
+        guest_files: &Vec<(String, Vec<u8>)>,
+    ) -> Result<Self::StudentEnvHandle, SandboxError>;
 
     async fn dispatch_task(
         &self,
@@ -105,17 +112,13 @@ pub trait SandboxProvider {
         task_data: &serde_json::Value,
         run_id: &String,
         student_unit_id: &String,
+        env_handle: &Self::StudentEnvHandle,
+    ) -> Result<AgentResult, SandboxError>;
+
+    async fn destroy_environment(
+        &self,
+        env_handle: &Self::StudentEnvHandle,
     ) -> Result<(), SandboxError>;
 
-    async fn cancel(
-        &self,
-        run_id: &String,
-        student_unit_id: &String,
-    ) -> Result<(), SandboxError>;
-
-    async fn destroy(
-        &self,
-        run_id: &String,
-        student_unit_id: &String,
-    ) -> Result<(), SandboxError>;
+    async fn reconcile_resources(&self) -> Result<(), SandboxError>;
 }

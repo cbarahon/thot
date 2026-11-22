@@ -17,14 +17,20 @@ struct StudentEnvironment {
     student_id: String,
     vm_config: VMConfig,
     agent_channel: Option<AgentChannel>,
+    workspace_path: PathBuf,
+    submission_files: Vec<(String, PathBuf)>,
+    instructor_files: Vec<(String, PathBuf)>,
 }
 
 impl StudentEnvironment {
-    fn new(student_id: String, vm_config: VMConfig) -> Self {
+    fn new(student_id: String, vm_config: VMConfig, workspace_path: PathBuf) -> Self {
         Self {
             student_id,
             vm_config,
             agent_channel: None,
+            workspace_path,
+            submission_files: Vec::new(),
+            instructor_files: Vec::new(),
         }
     }
 
@@ -51,6 +57,38 @@ impl StudentEnvironment {
         format!("student-{}-unit", self.student_id)
     }
 
+    fn stage_files(&mut self, submission_files: Vec<(String, PathBuf)>, instructor_files: Vec<(String, PathBuf)>) -> io::Result<()> {
+        for (file_name, file_path) in submission_files {
+            if self.is_safe_path(&file_path) {
+                let target_path = self.workspace_path.join(&file_name);
+                fs::create_dir_all(target_path.parent().unwrap())?;
+                fs::copy(&file_path, &target_path)?;
+                fs::set_permissions(&target_path, fs::Permissions::from_mode(0o444))?;
+                self.submission_files.push((file_name, target_path));
+            } else {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Unsafe file path"));
+            }
+        }
+
+        for (file_name, file_path) in instructor_files {
+            if self.is_safe_path(&file_path) {
+                let target_path = self.workspace_path.join(&file_name);
+                fs::create_dir_all(target_path.parent().unwrap())?;
+                fs::copy(&file_path, &target_path)?;
+                fs::set_permissions(&target_path, fs::Permissions::from_mode(0o444))?;
+                self.instructor_files.push((file_name, target_path));
+            } else {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Unsafe file path"));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_safe_path(&self, path: &Path) -> bool {
+        path.is_absolute() && !path.starts_with("..") && !path.starts_with("/") && !path.is_symlink() && path.file_size().unwrap() < 1024 * 1024 * 10  // 10MB
+    }
+
     fn dispatch_test(&mut self, task: AgentTask) -> io::Result<AgentResult> {
         if let Some(ref mut agent_channel) = self.agent_channel {
             agent_channel.send_task(task)?;
@@ -68,6 +106,12 @@ impl StudentEnvironment {
         stop_vm(&self.vm_config)?;
         delete_vm(&self.vm_config)?;
 
+        for (_, path) in self.submission_files.iter().chain(self.instructor_files.iter()) {
+            fs::remove_file(path)?;
+        }
+
+        fs::remove_dir_all(&self.workspace_path)?;
+
         self.agent_channel = None;
 
         Ok(())
@@ -75,6 +119,6 @@ impl StudentEnvironment {
 
     fn verify_cleanup(&self) -> bool {
         // Verify that the VM and overlay are no longer present
-        !fs::metadata(&self.vm_config.name).is_ok() && !fs::metadata(&self.vm_config.overlay_path).is_ok()
+        !fs::metadata(&self.vm_config.name).is_ok() && !fs::metadata(&self.vm_config.overlay_path).is_ok() && !self.submission_files.iter().any(|(_, path)| fs::metadata(path).is_ok()) && !self.instructor_files.iter().any(|(_, path)| fs::metadata(path).is_ok())
     }
 }

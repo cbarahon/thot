@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, CommandExt};
 use tokio::time::timeout;
 use thiserror::Error;
 
@@ -34,13 +35,13 @@ pub struct SandboxTaskResult {
     pub diagnostics: Option<String>,
 }
 
-pub async fn execute_task(task: Task) -> Result<SandboxTaskResult, AgentError> {
-    if task.version != 1 {
+pub async fn execute_task(task: ExecuteTaskRequest) -> Result<SandboxTaskResult, AgentError> {
+    if task.protocol_version != 1 {
         return Err(AgentError::InvalidVersion);
     }
 
-    let cwd = task.workspace.join(task.cwd);
-    if !cwd.starts_with(&task.workspace) {
+    let cwd = task.working_dir.parse::<PathBuf>().map_err(|_| AgentError::MalformedPath)?;
+    if !cwd.starts_with("/work") {
         return Err(AgentError::MalformedPath);
     }
 
@@ -48,11 +49,11 @@ pub async fn execute_task(task: Task) -> Result<SandboxTaskResult, AgentError> {
         return Err(AgentError::EmptyArgv);
     }
 
-    if task.deadline <= Duration::from_secs(0) {
+    if task.timeout <= 0 {
         return Err(AgentError::ExpiredDeadline);
     }
 
-    if task.stdout_limit <= 0 || task.stderr_limit <= 0 {
+    if task.output_limits.stdout_limit <= 0 || task.output_limits.stderr_limit <= 0 {
         return Err(AgentError::InvalidLimits);
     }
 
@@ -79,9 +80,9 @@ pub async fn execute_task(task: Task) -> Result<SandboxTaskResult, AgentError> {
         .take()
         .ok_or(AgentError::InfrastructureError("could not capture stderr".to_string()))?;
 
-    let stdout_reader = tokio::spawn(read_capped(stdout, task.stdout_limit as usize));
-    let stderr_reader = tokio::spawn(read_capped(stderr, task.stderr_limit as usize));
-    let (status, timed_out) = match timeout(task.deadline, child.wait()).await {
+    let stdout_reader = tokio::spawn(read_capped(stdout, task.output_limits.stdout_limit as usize));
+    let stderr_reader = tokio::spawn(read_capped(stderr, task.output_limits.stderr_limit as usize));
+    let (status, timed_out) = match timeout(Duration::from_secs(task.timeout as u64), child.wait()).await {
         Ok(status) => (
             Some(status.map_err(|e| AgentError::InfrastructureError(e.to_string()))?),
             false,
@@ -105,7 +106,7 @@ pub async fn execute_task(task: Task) -> Result<SandboxTaskResult, AgentError> {
         }
         stderr_text.push_str(&format!(
             "guest command timed out after {:.3} seconds",
-            task.deadline.as_secs_f64()
+            task.timeout as f64
         ));
     }
 
@@ -113,7 +114,7 @@ pub async fn execute_task(task: Task) -> Result<SandboxTaskResult, AgentError> {
         exit_code: status.and_then(|status| status.code()),
         stdout: String::from_utf8_lossy(&stdout.0).into_owned(),
         stderr: stderr_text,
-        elapsed: task.deadline,
+        elapsed: Duration::from_secs(task.timeout as u64),
         timed_out,
         stdout_truncated: stdout.1,
         stderr_truncated: stderr.1,
@@ -121,7 +122,14 @@ pub async fn execute_task(task: Task) -> Result<SandboxTaskResult, AgentError> {
     })
 }
 
-async fn terminate_child(child: &mut Command) {
+async fn read_capped(mut reader: impl AsyncReadExt + Unpin, limit: usize) -> Result<(Vec<u8>, bool), AgentError> {
+    let mut buffer = vec![0; limit];
+    let n = reader.read(&mut buffer).await.map_err(|e| AgentError::InfrastructureError(e.to_string()))?;
+    buffer.truncate(n);
+    Ok((buffer, n < limit))
+}
+
+async fn terminate_child(child: &mut Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         // The test starts in its own process group so timeout also stops child tools it launched.
@@ -132,12 +140,17 @@ async fn terminate_child(child: &mut Command) {
     let _ = child.kill().await;
 }
 
-struct Task {
-    version: u32,
-    workspace: PathBuf,
-    cwd: PathBuf,
-    argv: Vec<String>,
-    deadline: Duration,
-    stdout_limit: u64,
-    stderr_limit: u64,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecuteTaskRequest {
+    pub protocol_version: u32,
+    pub working_dir: String,
+    pub argv: Vec<String>,
+    pub timeout: u32,
+    pub output_limits: OutputLimits,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputLimits {
+    pub stdout_limit: u64,
+    pub stderr_limit: u64,
 }

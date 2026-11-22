@@ -57,10 +57,8 @@ impl From<ServiceError> for ApiError {
         match error {
             ServiceError::Invalid(message) => Self(StatusCode::BAD_REQUEST, message),
             ServiceError::Conflict(message) => Self(StatusCode::CONFLICT, message),
-            ServiceError::Internal(message) => Self(StatusCode::INTERNAL_SERVER_ERROR, message),
-            ServiceError::Storage(error) => {
-                Self(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            }
+            ServiceError::StorageError(message) => Self(StatusCode::INTERNAL_SERVER_ERROR, message),
+            ServiceError::ProviderError(message) => Self(StatusCode::INTERNAL_SERVER_ERROR, message),
         }
     }
 }

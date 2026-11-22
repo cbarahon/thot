@@ -3,10 +3,10 @@ use tokio::sync::Mutex;
 
 use crate::error::ThotError;
 use crate::kvm_alpine::modules::{Preflight, PrepareBaseline, CreateStudentEnvironment, DispatchTask, DestroyStudentEnvironment, ReconcileOwnedResources};
-use crate::settings::Settings;
+use crate::settings::KvmAlpineSettings;
 
 pub struct KvmAlpineHost {
-    admin_policy: Arc<Settings>,
+    admin_policy: Arc<KvmAlpineSettings>,
     preflight: Preflight,
     prepare_baseline: PrepareBaseline,
     create_student_environment: CreateStudentEnvironment,
@@ -16,7 +16,7 @@ pub struct KvmAlpineHost {
 }
 
 impl KvmAlpineHost {
-    pub fn new(settings: Arc<Settings>) -> Result<Self, ThotError> {
+    pub fn new(settings: Arc<KvmAlpineSettings>) -> Result<Self, ThotError> {
         let preflight = Preflight::new(&settings)?;
         let prepare_baseline = PrepareBaseline::new(&settings)?;
         let create_student_environment = CreateStudentEnvironment::new(&settings)?;

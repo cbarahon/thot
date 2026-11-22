@@ -12,7 +12,7 @@ use serde_json::json;
 use thot_core::ImportStudentsRequest;
 use thot_engine::project_context::ProjectContextError;
 use thot_engine::{AssignmentService, DeliveryRunService, StudentService, StudentServiceError};
-use thot_sandbox::SandboxRunService;
+use thot_engine::SandboxRunService;
 
 mod assignments;
 mod delivery_runs;

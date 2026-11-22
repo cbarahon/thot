@@ -1,0 +1,10 @@
+# Configuration filename: harmonia.conf.yaml
+# Harmonia checks these locations in order and loads the first file it finds:
+#   1. ./harmonia.conf.yaml (relative to the process working directory)
+#   2. /etc/harmonia.conf.yaml
+#   3. ~/.config/harmonia.conf.yaml (home of the user running Harmonia)
+# Every section and key is optional; omitted values use the defaults shown here.
+
+workspace:
+  root: /srv/harmonia/workspace/thot
+

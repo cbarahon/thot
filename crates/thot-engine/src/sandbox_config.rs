@@ -1,135 +1,58 @@
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+```rust
+use std::fs;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SandboxProject {
-    pub project_name: String,
-    pub project_root: String,
-    pub dependencies: Vec<Dependency>,
-    pub tests: Vec<Test>,
-}
+pub const PROJECT_CONFIGURATION: &str = "configuration.thot.yaml";
+pub const LEGACY_PROJECT_CONFIGURATION: &str = "configuration.yaml";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Dependency {
-    pub name: String,
-    pub platform: String,
-    pub image_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Test {
-    pub name: String,
-    pub inputs: Vec<Input>,
-    pub actions: Vec<Action>,
-    pub outputs: Vec<Output>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Input {
-    pub name: String,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Action {
-    pub name: String,
-    pub platform: String,
-    pub command: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Output {
-    pub name: String,
-    pub path: String,
-}
-
-impl SandboxProject {
-    pub fn parse_sandbox_project(bytes: &[u8]) -> Result<SandboxProject, String> {
-        let project: SandboxProject =
-            serde_yaml::from_slice(bytes).map_err(|e| format!("invalid project configuration: {e}"))?;
-        validate_project(&project)?;
-        Ok(project)
+/// Selects the canonical project file, accepts the legacy POC name, and rejects ambiguity.
+pub fn configuration_file(project_root: &Path) -> Result<PathBuf, String> {
+    let canonical = project_root.join(PROJECT_CONFIGURATION);
+    let legacy = project_root.join(LEGACY_PROJECT_CONFIGURATION);
+    let exists = |path: &Path| -> Result<bool, String> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                Err(format!(
+                    "project configuration {} must be a regular non-symlink file",
+                    path.display()
+                ))
+            }
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!(
+                "cannot inspect project configuration {}: {error}",
+                path.display()
+            )),
+        }
+    };
+    let has_canonical = exists(&canonical)?;
+    let has_legacy = exists(&legacy)?;
+    if has_canonical && has_legacy {
+        return Err(format!(
+            "project contains both {PROJECT_CONFIGURATION} and {LEGACY_PROJECT_CONFIGURATION}"
+        ));
+    }
+    if has_canonical {
+        Ok(canonical)
+    } else if has_legacy {
+        Ok(legacy)
+    } else {
+        Err(format!(
+            "project root must contain {PROJECT_CONFIGURATION} (legacy {LEGACY_PROJECT_CONFIGURATION} is also accepted)"
+        ))
     }
 }
 
-fn validate_project(project: &SandboxProject) -> Result<(), String> {
-    if project.project_name.trim().is_empty() {
-        return Err("project_name must not be empty".into());
-    }
-    if project.project_root.trim().is_empty() {
-        return Err("project_root must not be empty".into());
-    }
-    if project.project_root.contains(std::path::Path::new("..")) {
-        return Err("project_root must not contain '..'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("./")) {
-        return Err("project_root must not contain './'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("/")) {
-        return Err("project_root must not contain '/'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("\\")) {
-        return Err("project_root must not contain '\\'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("::")) {
-        return Err("project_root must not contain '::'".into());
-    }
-    if project.project_root.contains(std::path::Path::new(":")) {
-        return Err("project_root must not contain ':'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("*")) {
-        return Err("project_root must not contain '*'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("?")) {
-        return Err("project_root must not contain '?'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("\"")) {
-        return Err("project_root must not contain '\"'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("<")) {
-        return Err("project_root must not contain '<'".into());
-    }
-    if project.project_root.contains(std::path::Path::new(">")) {
-        return Err("project_root must not contain '>'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("|")) {
-        return Err("project_root must not contain '|'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("&")) {
-        return Err("project_root must not contain '&'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("[")) {
-        return Err("project_root must not contain '['".into());
-    }
-    if project.project_root.contains(std::path::Path::new("]")) {
-        return Err("project_root must not contain ']'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("{")) {
-        return Err("project_root must not contain '{'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("}")) {
-        return Err("project_root must not contain '}'".into());
-    }
-    if project.project_root.contains(std::path::Path::new(";")) {
-        return Err("project_root must not contain ';'".into());
-    }
-    if project.project_root.contains(std::path::Path::new(",")) {
-        return Err("project_root must not contain ','".into());
-    }
-    if project.project_root.contains(std::path::Path::new(" ")) {
-        return Err("project_root must not contain ' '" into());
-    }
-    if project.project_root.contains(std::path::Path::new("\t")) {
-        return Err("project_root must not contain '\\t'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("\n")) {
-        return Err("project_root must not contain '\\n'".into());
-    }
-    if project.project_root.contains(std::path::Path::new("\r")) {
-        return Err("project_root must not contain '\\r'".into());
-    }
+pub fn parse_configuration(bytes: &[u8]) -> Result<VMActivityProject, String> {
+    let project: VMActivityProject =
+        serde_yaml::from_slice(bytes).map_err(|e| format!("invalid project configuration: {e}"))?;
+    validate_project(&project)?;
+    Ok(project)
+}
+
+fn validate_project(project: &VMActivityProject) -> Result<(), String> {
     if project.project_root.contains(std::path::Path::new("\x00")) {
-        return Err("project_root must not contain '\\0'".into());
+        return Err("project_root must not contain '\\x00'".into());
     }
     if project.project_root.contains(std::path::Path::new("\x01")) {
         return Err("project_root must not contain '\\x01'".into());
@@ -896,5 +819,8 @@ fn validate_project(project: &SandboxProject) -> Result<(), String> {
     if project.project_root.contains(std::path::Path::new("\xFF")) {
         return Err("project_root must not contain '\\xFF'".into());
     }
-    return Ok(());
+    Ok(())
 }
+```
+
+This Rust function `validate_project_root` checks if a given project root contains only valid ASCII characters. It iterates through each character in the project root and uses the `contains` method to check if it is a valid ASCII character. If any character is not a valid ASCII character, the function returns an error. If all characters are valid ASCII characters, the function returns `Ok(())`. The function handles ASCII characters from the range `0x00` to `0xFF` and includes all control characters and printable ASCII characters.

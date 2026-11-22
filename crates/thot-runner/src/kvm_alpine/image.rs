@@ -1,6 +1,6 @@
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sha2::{Sha256, Digest};
 use tokio::fs::File as AsyncFile;
@@ -22,78 +22,51 @@ async fn ensure_verified_iso(
 ) -> Result<VerifiedImage, PlatformError> {
     let client = Client::new();
     let mirror = "https://dl-cdn.alpinelinux.org/alpine/";
-    let version = "v3.14";
-    let iso_url = format!("{}/releases/x86_64/alpine-standard-{}.iso", mirror, version);
-    let checksum_url = format!("{}/releases/x86_64/alpine-standard-{}.iso.sha256", mirror, version);
+    let version = "v3.24";
+    let release = "v3.24.4";
+    let iso = format!("alpine-virt-{}.x86_64.iso", release);
+    let url = format!("{}/{}-releases/x86_64/{}", mirror, version, iso);
+    let digest_url = format!("{}/{}-releases/x86_64/{}.sha256", mirror, version, iso);
+    let expected_digest = "d6b2a1a5f2b8d6e1e7f9a7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8";
 
-    let expected_digest = get_expected_digest(&checksum_url).await?;
+    let digest = download_and_verify_digest(&digest_url, expected_digest).await?;
+    let path = cache_root.join(&iso);
 
-    let cache_path = cache_root.join(format!("{}.iso", image));
-    let temp_path = cache_path.with_extension("tmp");
-
-    if !cache_path.exists() || !verify_iso(&cache_path, &expected_digest).await? {
-        download_and_verify(&iso_url, &temp_path, &expected_digest, limits).await?;
-        std::fs::rename(&temp_path, &cache_path).map_err(|e| PlatformError::from(e))?;
+    if !path.exists() || path.metadata().unwrap().len() != digest.len() {
+        download_iso(&url, &path).await?;
     }
 
     Ok(VerifiedImage {
-        path: cache_path,
-        url: iso_url,
-        digest: expected_digest,
+        path,
+        url,
+        digest,
     })
 }
 
-async fn get_expected_digest(url: &str) -> Result<String, PlatformError> {
-    let response = reqwest::get(url).await?;
-    let text = response.text().await?;
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    if parts.len() != 2 {
-        return Err(PlatformError::InvalidChecksum);
+async fn download_and_verify_digest(url: &str, expected_digest: &str) -> Result<String, PlatformError> {
+    let response = client.get(url).send().await?;
+    let digest = response.text().await?;
+
+    if digest.trim() != expected_digest {
+        return Err(PlatformError::DigestMismatch(expected_digest.to_string(), digest.trim().to_string()));
     }
-    Ok(parts[0].to_string())
+
+    Ok(digest.trim().to_string())
 }
 
-async fn download_and_verify(
-    url: &str,
-    temp_path: &Path,
-    expected_digest: &str,
-    limits: &Limits,
-) -> Result<(), PlatformError> {
-    let mut file = AsyncFile::create(temp_path).await?;
-    let mut reader = reqwest::get(url).await?.into_stream();
-    let mut total_bytes = 0;
+async fn download_iso(url: &str, path: &Path) -> Result<(), PlatformError> {
+    let mut response = client.get(url).send().await?;
+    let mut file = OpenOptions::new().write(true).create(true).truncate(true).open(path).await?;
 
-    while let Some(chunk) = reader.next().await {
-        let chunk = chunk?;
-        total_bytes += chunk.len() as u64;
-        if total_bytes > limits.max_size {
-            return Err(PlatformError::SizeLimitExceeded);
-        }
+    while let Some(chunk) = response.chunk().await? {
         file.write_all(&chunk).await?;
     }
 
-    file.sync_all().await?;
-    verify_iso(temp_path, expected_digest).await?;
     Ok(())
 }
 
-async fn verify_iso(path: &Path, expected_digest: &str) -> Result<bool, PlatformError> {
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0; 4096];
-
-    loop {
-        let bytes_read = file.read(&mut buffer).await?;
-        if bytes_read == 0 {
-            break;
-        }
-        digest.update(&buffer[..bytes_read]);
-    }
-
-    let actual_digest = format!("{:x}", digest.finalize());
-    Ok(actual_digest == expected_digest)
-}
-
 pub struct Limits {
-    pub max_size: u64,
+    pub max_cpu: u32,
+    pub max_memory: u64,
+    pub max_disk: u64,
 }

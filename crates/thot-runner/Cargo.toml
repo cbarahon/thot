@@ -12,4 +12,4 @@ serde_json.workspace = true
 reqwest.workspace = true
 ssh2 = "0.9.6"
 libc = "0.2"
-sha2 = { version = "0.10", workspace = true }
+sha2.workspace = true

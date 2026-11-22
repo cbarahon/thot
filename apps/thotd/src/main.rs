@@ -1,6 +1,6 @@
 //! Purpose: Daemon entry point that loads runtime settings and starts the Thot API service.
 mod vm_activity_config;
-mod config;
+mod kvm_alpine_config;
 
 use std::{env, net::SocketAddr};
 use thot_engine::{
@@ -8,7 +8,7 @@ use thot_engine::{
     vm_activity::VmActivityRuntime,
 };
 use tracing_subscriber::EnvFilter;
-use vm_activity_config::VmActivityConfig;
+use kvm_alpine_config::KvmAlpineConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,19 +18,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let config = VmActivityConfig::from_env().map_err(std::io::Error::other)?;
+    let config = KvmAlpineConfig::from_env().map_err(std::io::Error::other)?;
     for root in [
         &config.artifact_root,
         &config.storage_root,
-        &config.vbox_user_home,
+        &config.virsh_path.parent().unwrap(),
     ] {
         std::fs::create_dir_all(root)?;
     }
     let database = env::var("THOTD_DATABASE").unwrap_or_else(|_| config.database_url.clone());
     let student_repository = SqliteStudentRepository::connect(&database).await?;
     let runtime = VmActivityRuntime {
-        vbox_manage: config.vbox_manage_path.clone(),
-        vbox_user_home: config.vbox_user_home.clone(),
+        vbox_manage: config.virsh_path.clone(),
+        vbox_user_home: config.storage_root.clone(),
         expected_vbox_version: config.expected_vbox_version.clone(),
         storage_root: config.storage_root.clone(),
         artifact_root: config.artifact_root.clone(),
@@ -48,22 +48,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         DeliveryRunService::connect(&database, config.artifact_root.clone(), runtime).await?;
     let assignment_service = AssignmentService::connect(&database).await?;
 
-    let alpine_config = config::AlpineConfig::from_env().map_err(std::io::Error::other)?;
-    let alpine_host = thot_runner::kvm_alpine::KvmAlpineHost::new(alpine_config);
+    let alpine_host = thot_runner::kvm_alpine::KvmAlpineHost::new(config);
     let engine_provider = thot_engine::provider::EngineProviderAdapter::new(alpine_host);
     let sandbox_run_service = thot_runner::SandboxRunService::new(engine_provider);
 
-    let app = thot_api::router_with_runs(
+    let app = thot_api::router_with_sandbox_runs(
         StudentService::new(student_repository),
         run_service,
         assignment_service,
+        sandbox_run_service,
     );
-    let v2_app = thot_api::router_v2(sandbox_run_service);
 
     let bind_ip = config.bind_host.parse()?;
     let address = SocketAddr::new(bind_ip, config.bind_port);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, %database, "thotd started");
-    axum::serve(listener, app.merge(v2_app)).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }

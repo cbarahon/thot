@@ -38,3 +38,12 @@ pub enum EngineError {
     #[error("error de inicialización de almacenamiento: {0}")]
     StorageInit(String),
 }
+
+pub mod provider;
+pub mod sandbox_config;
+pub mod sandbox_provider;
+pub mod sandbox_run_service;
+
+pub use provider::EngineProviderAdapter;
+pub use sandbox_run_service::{SandboxRunService, RunRecord};
+pub use engine_error::ServiceError;

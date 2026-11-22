@@ -7,7 +7,6 @@ mod template;
 mod baseline;
 mod agent_channel;
 mod student_environment;
-mod provider_orchestration;
 
 pub use self::command::*;
 pub use self::preflight::*;
@@ -16,7 +15,6 @@ pub use self::template::*;
 pub use self::baseline::*;
 pub use self::agent_channel::*;
 pub use self::student_environment::*;
-pub use self::provider_orchestration::*;
 
 pub struct KvmAlpineSettings {
     host_paths: Vec<String>,
@@ -24,6 +22,7 @@ pub struct KvmAlpineSettings {
     resource_ceilings: ResourceCeilings,
     image_cache: ImageCache,
     agent_binary: String,
+    firewall_confirmation: bool,
 }
 
 pub struct ResourceCeilings {
