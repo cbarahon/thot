@@ -96,19 +96,6 @@ pub mod sandbox_protocol;
 pub use sandbox::SandboxRunRequest;
 pub use sandbox_protocol::*;
 
-mod sandbox_v2 {
-    pub mod config {
-        pub use super::super::agent_protocol::{SandboxConfig, SandboxConfigV2};
-    }
-
-    pub mod protocol {
-        pub use super::super::agent_protocol::{GuestProtocol, GuestProtocolV2};
-    }
-}
-
-pub use sandbox_v2::config::*;
-pub use sandbox_v2::protocol::*;
-
 #[cfg(test)]
 mod tests {
     use super::*;

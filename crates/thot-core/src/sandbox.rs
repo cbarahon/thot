@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, deny_unknown_fields};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SandboxRunRequest {
@@ -7,112 +8,33 @@ pub struct SandboxRunRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Project {
-    pub project_name: String,
-    pub platform: Platform,
+    pub schema_version: String,
+    pub project_id: String,
+    pub name: String,
+    pub language: String,
+    pub students_file: PathBuf,
+    pub assignments_file: PathBuf,
+    pub sandbox_platforms: Vec<SandboxPlatform>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxPlatform {
+    pub id: String,
+    pub kind: String,
+    pub isolation_scope: String,
+    pub lifecycle: Lifecycle,
     pub limits: Limits,
-    pub network_policy: NetworkPolicy,
-    pub inputs: Inputs,
+    pub network: NetworkPolicy,
+    pub inputs: Vec<InputDeclaration>,
     pub tests: Vec<Test>,
-    pub evaluation_criteria: Vec<EvaluationCriterion>,
-    pub roster: Roster,
-    pub assignments: Vec<Assignment>,
+    pub evaluation: Evaluation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum Platform {
-    KvmAlpine,
-    // Add other platform variants as needed
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Limits {
-    pub cpu: Option<u32>,
-    pub memory: Option<u64>,
-    pub vcpu: Option<u32>,
-    pub memory_mib: Option<u64>,
-    pub disk_gib: Option<u64>,
-    pub preparation_timeout_seconds: Option<u64>,
-    pub student_timeout_seconds: Option<u64>,
-    pub stdout_bytes: Option<u64>,
-    pub stderr_bytes: Option<u64>,
-    // Add other resource limits as needed
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NetworkPolicy {
-    pub inbound: Vec<String>,
-    pub outbound: Vec<String>,
-    // Add other network policies as needed
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Inputs {
-    pub declarations: Vec<InputDeclaration>,
-    // Add other input-related fields as needed
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct InputDeclaration {
-    pub name: String,
-    pub description: Option<String>,
-    pub requires: Vec<String>,
-    pub parameters: Vec<Parameter>,
-    pub timeout: Option<u64>,
-    pub expected_exit_code: Option<u32>,
-    pub expected_stdout: Option<String>,
-    pub read_only: bool,
-    // Add other input declaration fields as needed
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Parameter {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Test {
-    pub name: String,
-    pub test_ref: String,
-    pub description: Option<String>,
-    pub requirements: Vec<String>,
-    pub repeat: usize,
-    pub timeout_seconds: Option<u64>,
-    pub parameters: HashMap<String, String>,
-    // Add other test-related fields as needed
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EvaluationCriterion {
-    pub name: String,
-    pub description: Option<String>,
-    pub checks: Vec<String>,
-    pub calculation: String,
-    pub parameters: HashMap<String, String>,
-    // Add other evaluation criterion fields as needed
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Roster {
-    pub students: Vec<Student>,
-    // Add other roster-related fields as needed
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Student {
-    pub student_id: String,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Assignment {
-    pub student: String,
-    pub tasks: Vec<String>,
-    // Add other assignment-related fields as needed
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Lifecycle {
     pub template_name: String,
     pub template_image: Image,
@@ -125,6 +47,7 @@ pub struct Lifecycle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Image {
     pub distribution: String,
     pub release: String,
@@ -136,6 +59,7 @@ pub struct Image {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Vm {
     pub vcpu: u32,
     pub memory_mib: u64,
@@ -144,6 +68,7 @@ pub struct Vm {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Agent {
     pub install_from: String,
     pub version: String,
@@ -151,6 +76,7 @@ pub struct Agent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Clone {
     pub name: String,
     pub linked: bool,
@@ -158,8 +84,112 @@ pub struct Clone {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Preparation {
     pub timeout_seconds: u64,
     pub packages: Vec<String>,
     pub scripts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Limits {
+    pub cpu: Option<u32>,
+    pub memory: Option<u64>,
+    pub vcpu: Option<u32>,
+    pub memory_mib: Option<u64>,
+    pub disk_gib: Option<u64>,
+    pub preparation_timeout_seconds: Option<u64>,
+    pub student_timeout_seconds: Option<u64>,
+    pub stdout_bytes: Option<u64>,
+    pub stderr_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicy {
+    pub inbound: Vec<String>,
+    pub outbound: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct InputDeclaration {
+    pub role: String,
+    pub path: Option<PathBuf>,
+    pub path_template: Option<String>,
+    pub copy_to: Option<PathBuf>,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Test {
+    pub id: String,
+    pub action: String,
+    pub argv: Vec<String>,
+    pub requires: Vec<String>,
+    pub timeout_seconds: Option<u64>,
+    pub expect_exit_code: Option<u32>,
+    pub expected_stdout: Option<String>,
+    pub comparison: Option<String>,
+    pub capture: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Evaluation {
+    pub expressions: Vec<String>,
+    pub calculation: String,
+    pub scale: Option<f64>,
+    pub rubric_criteria: Vec<RubricCriterion>,
+    pub infrastructure_error_policy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RubricCriterion {
+    pub name: String,
+    pub description: Option<String>,
+    pub checks: Vec<String>,
+    pub calculation: String,
+    pub parameters: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub enum AssessmentStatus {
+    Passed,
+    Failed,
+    Skipped,
+    Pending,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StudentsFile {
+    pub schema_version: String,
+    pub identity_field: String,
+    pub students: Vec<Student>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Student {
+    pub student_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AssignmentsFile {
+    pub schema_version: String,
+    pub assignments: Vec<Assignment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Assignment {
+    pub student_id: String,
+    pub deliverable: String,
 }

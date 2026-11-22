@@ -2294,8 +2294,10 @@ dependencies = [
 name = "thot-alpine-agent"
 version = "0.1.43"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "thot-core",
  "tokio",
  "tracing",
@@ -2382,8 +2384,10 @@ dependencies = [
  "serde_json",
  "sha2",
  "ssh2",
+ "thiserror 2.0.21",
  "thot-core",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2411,6 +2415,7 @@ dependencies = [
  "axum",
  "thot-api",
  "thot-engine",
+ "thot-runner",
  "tokio",
  "tracing",
  "tracing-subscriber",

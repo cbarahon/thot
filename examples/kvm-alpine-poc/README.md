@@ -14,4 +14,4 @@ See [configuration.thot.yaml](configuration.thot.yaml), [synthetic roster](stude
 
 Expected cases: Student One's script is correct; Student Two's valid Bash multiplies instead of adding; Student Three has a syntax error. The expected functional input is `17 25`, producing exactly `42` plus a newline.
 
-The example pins Alpine 3.24.4 x86_64 `virt` ISO for reproducibility. Verify the official checksum/signature and review the current Alpine security/support status before a future implementation uses it. The workspace environment currently lacks `/dev/kvm` and cannot run the guest lifecycle.
+The example pins Alpine 3.24.4 x86_64 `virt` ISO for reproducibility. Verify the official checksum/signature and review the current Alpine security/support status before a future implementation uses it. The repository development host lacks `/dev/kvm`. A separate Debian 13 KVM test host is available, but no Alpine guest lifecycle has completed there; the current code does not build. See the [implementation audit and closure plan](../../docs/KVM_ALPINE_POC.md#implementation-audit-missing-and-incorrect-behavior).

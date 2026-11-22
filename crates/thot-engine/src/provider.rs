@@ -1,18 +1,21 @@
 use super::sandbox_provider::{AgentTask, AgentResult, AgentCapabilities, AgentTaskStatus, SandboxError};
 use crate::provider::SandboxProvider;
-use crate::kvm_alpine::provider::{KvmAlpineHost, Preflight, PrepareBaseline, CreateStudentEnvironment, DispatchTask, DestroyStudentEnvironment, ReconcileOwnedResources};
+use thot_runner::kvm_alpine::provider::KvmAlpineProvider;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+pub type EngineProviderAdapter = thot_runner::kvm_alpine::KvmAlpineProvider;
+
+#[deprecated(since = "0.1.0", note = "Use KvmAlpineProvider directly")]
 pub struct EngineProviderAdapter {
-    kvm_alpine_host: Arc<Mutex<KvmAlpineHost>>,
+    kvm_alpine_provider: Arc<Mutex<KvmAlpineProvider>>,
 }
 
 impl EngineProviderAdapter {
-    pub fn new(kvm_alpine_host: Arc<KvmAlpineHost>) -> Self {
+    pub fn new(kvm_alpine_provider: Arc<KvmAlpineProvider>) -> Self {
         EngineProviderAdapter {
-            kvm_alpine_host: Arc::new(Mutex::new(kvm_alpine_host)),
+            kvm_alpine_provider: Arc::new(Mutex::new(kvm_alpine_provider)),
         }
     }
 
@@ -24,8 +27,8 @@ impl EngineProviderAdapter {
         student_unit_id: &str,
         baseline_handle: &Self::BaselineHandle,
     ) -> Result<AgentResult, SandboxError> {
-        let mut kvm_alpine_host = self.kvm_alpine_host.lock().await;
-        kvm_alpine_host.dispatch_task().await?;
+        let mut kvm_alpine_provider = self.kvm_alpine_provider.lock().await;
+        kvm_alpine_provider.dispatch_task().await?;
         Ok(AgentResult {
             protocol_version: config.protocol_version,
             task_id: config.task_id.clone(),
@@ -55,8 +58,8 @@ impl SandboxProvider for EngineProviderAdapter {
         config: &AgentTask,
         baseline_handle: &Self::BaselineHandle,
     ) -> Result<(), SandboxError> {
-        let mut kvm_alpine_host = self.kvm_alpine_host.lock().await;
-        kvm_alpine_host.preflight().await?;
+        let mut kvm_alpine_provider = self.kvm_alpine_provider.lock().await;
+        kvm_alpine_provider.preflight().await?;
         Ok(())
     }
 

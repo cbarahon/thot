@@ -34,17 +34,87 @@ impl StudentEnvironment {
         }
     }
 
-    fn create(&mut self) -> io::Result<()> {
-        let vm_name = self.generate_vm_name();
-        let unit_id = self.generate_unit_id();
+    async fn create_student_environment(
+        settings: &KvmAlpineSettings,
+        registry: &OwnershipRegistry,
+        project: &Project,
+        run_id: &str,
+        student_id: &str,
+        baseline: &BaselineHandle,
+        files: &[StagedFile],
+    ) -> Result<StudentEnvironmentHandle, ProviderError> {
+        // Validate run/student IDs
+        if !is_safe_component(student_id) || !is_safe_component(run_id) {
+            return Err(ProviderError::InvalidId);
+        }
 
-        self.vm_config.name = vm_name;
-        self.vm_config.unit_id = unit_id;
+        // Validate baseline snapshot
+        if !baseline.is_valid_snapshot() {
+            return Err(ProviderError::InvalidSnapshot);
+        }
 
-        create_linked_clone(&self.vm_config)?;
+        // Validate file paths and byte counts
+        for file in files {
+            if !is_safe_path(&file.guest_path) || file.byte_count > settings.max_file_size {
+                return Err(ProviderError::InvalidFile);
+            }
+        }
 
-        let agent_channel = start_vm(&self.vm_config)?;
-        self.agent_channel = Some(agent_channel);
+        // Create unique clone name
+        let vm_name = format!("student-{}-{}-{}", student_id, run_id, uuid::Uuid::new_v4());
+        let unit_id = format!("student-{}-{}-unit", student_id, run_id);
+
+        // Create linked clone
+        let vm_config = VMConfig {
+            name: vm_name.clone(),
+            unit_id,
+            snapshot: baseline.clone(),
+            ..settings.vm_config.clone()
+        };
+        create_linked_clone(&vm_config).await?;
+
+        // Start VM and claim ownership
+        let agent_channel = start_vm(&vm_config).await?;
+        let ownership = registry.claim_vm(&vm_config.name).await?;
+
+        // Apply isolation and inject credentials
+        apply_isolation(&vm_config.name).await?;
+        inject_credentials(&vm_config.name, settings.credentials).await?;
+
+        // Bind host listener, boot, authenticate, and transfer files
+        bind_listener(&vm_config.name, settings).await?;
+        boot_vm(&vm_config.name).await?;
+        authenticate_peer(&vm_config.name, settings.expected_peer_cid).await?;
+        transfer_files(&vm_config.name, files, settings).await?;
+
+        // Return environment handle
+        Ok(StudentEnvironmentHandle {
+            vm_config,
+            agent_channel,
+            ownership,
+        })
+    }
+
+    async fn destroy_student_environment(
+        settings: &KvmAlpineSettings,
+        registry: &OwnershipRegistry,
+        environment: &StudentEnvironmentHandle,
+    ) -> Result<(), ProviderError> {
+        // Verify ownership and UUID match
+        if !registry.is_owner(&environment.vm_config.name, &environment.ownership.libvirt_uuid) {
+            return Err(ProviderError::OwnershipMismatch);
+        }
+
+        // Shut down gracefully, force-stop after bounded grace
+        stop_vm(&environment.vm_config).await?;
+        delete_vm(&environment.vm_config).await?;
+
+        // Verify absence and release ownership
+        if !vm_absent(&environment.vm_config.name) {
+            return Err(ProviderError::DomainRemovalFailed);
+        }
+
+        registry.release_vm(&environment.vm_config.name, &environment.ownership.libvirt_uuid).await?;
 
         Ok(())
     }
@@ -97,28 +167,110 @@ impl StudentEnvironment {
         Err(io::Error::new(io::ErrorKind::Other, "Agent channel not initialized"))
     }
 
-    fn destroy(&mut self) -> io::Result<()> {
-        if let Some(ref mut agent_channel) = self.agent_channel {
-            agent_channel.stop_vm()?;
-            agent_channel.delete_vm()?;
-        }
-
-        stop_vm(&self.vm_config)?;
-        delete_vm(&self.vm_config)?;
-
-        for (_, path) in self.submission_files.iter().chain(self.instructor_files.iter()) {
-            fs::remove_file(path)?;
-        }
-
-        fs::remove_dir_all(&self.workspace_path)?;
-
-        self.agent_channel = None;
-
-        Ok(())
-    }
-
     fn verify_cleanup(&self) -> bool {
         // Verify that the VM and overlay are no longer present
         !fs::metadata(&self.vm_config.name).is_ok() && !fs::metadata(&self.vm_config.overlay_path).is_ok() && !self.submission_files.iter().any(|(_, path)| fs::metadata(path).is_ok()) && !self.instructor_files.iter().any(|(_, path)| fs::metadata(path).is_ok())
     }
+}
+
+async fn apply_isolation(vm_name: &str) -> Result<(), ProviderError> {
+    // Apply isolation policy
+    // ...
+
+    Ok(())
+}
+
+async fn inject_credentials(vm_name: &str, credentials: Credentials) -> Result<(), ProviderError> {
+    // Inject credentials into VM
+    // ...
+
+    Ok(())
+}
+
+async fn bind_listener(vm_name: &str, settings: &KvmAlpineSettings) -> Result<(), ProviderError> {
+    // Bind host listener for VM
+    // ...
+
+    Ok(())
+}
+
+async fn boot_vm(vm_name: &str) -> Result<(), ProviderError> {
+    // Boot VM
+    // ...
+
+    Ok(())
+}
+
+async fn authenticate_peer(vm_name: &str, expected_peer_cid: &str) -> Result<(), ProviderError> {
+    // Authenticate expected peer
+    // ...
+
+    Ok(())
+}
+
+async fn transfer_files(vm_name: &str, files: &[StagedFile], settings: &KvmAlpineSettings) -> Result<(), ProviderError> {
+    // Transfer files through bounded channel while checking hashes
+    // ...
+
+    Ok(())
+}
+
+fn vm_absent(vm_name: &str) -> bool {
+    // Verify that the VM is no longer present
+    !fs::metadata(vm_name).is_ok()
+}
+
+fn is_safe_component(component: &str) -> bool {
+    // Check if component is a safe identifier
+    component.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+}
+
+fn is_safe_path(path: &Path) -> bool {
+    // Check if path is safe for use in VM
+    path.is_absolute() && !path.starts_with("..") && !path.starts_with("/") && !path.is_symlink() && path.file_stem().map_or(false, |stem| stem.to_str().map_or(false, |s| s.starts_with('0') || s.starts_with('.')))
+}
+
+#[derive(Debug, Clone)]
+struct StudentEnvironmentHandle {
+    vm_config: VMConfig,
+    agent_channel: AgentChannel,
+    ownership: Ownership,
+}
+
+#[derive(Debug, Clone)]
+struct Ownership {
+    libvirt_uuid: String,
+}
+
+#[derive(Debug, Clone)]
+struct Credentials {
+    // Define credentials struct fields
+}
+
+#[derive(Debug, Clone)]
+struct StagedFile {
+    guest_path: PathBuf,
+    byte_count: u64,
+}
+
+#[derive(Debug, Clone)]
+struct KvmAlpineSettings {
+    vm_config: VMConfig,
+    max_file_size: u64,
+    credentials: Credentials,
+    expected_peer_cid: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderError {
+    kind: ProviderErrorKind,
+}
+
+#[derive(Debug, Clone)]
+enum ProviderErrorKind {
+    InvalidId,
+    InvalidSnapshot,
+    InvalidFile,
+    OwnershipMismatch,
+    DomainRemovalFailed,
 }

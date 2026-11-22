@@ -45,5 +45,5 @@ pub mod sandbox_provider;
 pub mod sandbox_run_service;
 
 pub use provider::EngineProviderAdapter;
-pub use sandbox_run_service::{SandboxRunService, RunRecord};
-pub use engine_error::ServiceError;
+pub use sandbox_run_service::{SandboxRunService, SandboxRunRecord};
+pub use sandbox_run_service::ServiceError as SandboxServiceError;

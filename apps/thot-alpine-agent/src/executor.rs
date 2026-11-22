@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -24,7 +26,7 @@ pub enum AgentError {
     ProtocolError(String),
 }
 
-pub struct SandboxTaskResult {
+pub struct TaskResult {
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
@@ -35,31 +37,40 @@ pub struct SandboxTaskResult {
     pub diagnostics: Option<String>,
 }
 
-pub async fn execute_task(task: ExecuteTaskRequest) -> Result<SandboxTaskResult, AgentError> {
-    if task.protocol_version != 1 {
+pub async fn execute_task(request: ExecuteTaskRequest, phase: GuestPhase) -> Result<TaskResult, AgentError> {
+    if request.protocol_version != 1 {
         return Err(AgentError::InvalidVersion);
     }
 
-    let cwd = task.working_dir.parse::<PathBuf>().map_err(|_| AgentError::MalformedPath)?;
-    if !cwd.starts_with("/work") {
+    let cwd = request.working_dir.parse::<PathBuf>().map_err(|_| AgentError::MalformedPath)?;
+    if !cwd.starts_with("/work") || !cwd.is_absolute() {
         return Err(AgentError::MalformedPath);
     }
 
-    if task.argv.is_empty() {
+    if request.argv.is_empty() {
         return Err(AgentError::EmptyArgv);
     }
 
-    if task.timeout <= 0 {
+    if request.timeout <= 0 {
         return Err(AgentError::ExpiredDeadline);
     }
 
-    if task.output_limits.stdout_limit <= 0 || task.output_limits.stderr_limit <= 0 {
+    if request.output_limits.stdout_limit <= 0 || request.output_limits.stderr_limit <= 0 {
         return Err(AgentError::InvalidLimits);
     }
 
-    let mut command = Command::new(&task.argv[0]);
+    let mut allowed_paths = HashSet::new();
+    for path in request.argv.iter().chain(request.env.iter()) {
+        if let Some(path) = path.strip_prefix("/") {
+            if path.starts_with("work") {
+                allowed_paths.insert(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    let mut command = Command::new(&request.argv[0]);
     command
-        .args(&task.argv[1..])
+        .args(&request.argv[1..])
         .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -80,9 +91,9 @@ pub async fn execute_task(task: ExecuteTaskRequest) -> Result<SandboxTaskResult,
         .take()
         .ok_or(AgentError::InfrastructureError("could not capture stderr".to_string()))?;
 
-    let stdout_reader = tokio::spawn(read_capped(stdout, task.output_limits.stdout_limit as usize));
-    let stderr_reader = tokio::spawn(read_capped(stderr, task.output_limits.stderr_limit as usize));
-    let (status, timed_out) = match timeout(Duration::from_secs(task.timeout as u64), child.wait()).await {
+    let stdout_reader = tokio::spawn(read_capped(stdout, request.output_limits.stdout_limit as usize));
+    let stderr_reader = tokio::spawn(read_capped(stderr, request.output_limits.stderr_limit as usize));
+    let (status, timed_out) = match timeout(Duration::from_secs(request.timeout as u64), child.wait()).await {
         Ok(status) => (
             Some(status.map_err(|e| AgentError::InfrastructureError(e.to_string()))?),
             false,
@@ -106,15 +117,15 @@ pub async fn execute_task(task: ExecuteTaskRequest) -> Result<SandboxTaskResult,
         }
         stderr_text.push_str(&format!(
             "guest command timed out after {:.3} seconds",
-            task.timeout as f64
+            request.timeout as f64
         ));
     }
 
-    Ok(SandboxTaskResult {
+    Ok(TaskResult {
         exit_code: status.and_then(|status| status.code()),
         stdout: String::from_utf8_lossy(&stdout.0).into_owned(),
         stderr: stderr_text,
-        elapsed: Duration::from_secs(task.timeout as u64),
+        elapsed: Duration::from_secs(request.timeout as u64),
         timed_out,
         stdout_truncated: stdout.1,
         stderr_truncated: stderr.1,
@@ -143,7 +154,7 @@ async fn terminate_child(child: &mut Child) {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteTaskRequest {
     pub protocol_version: u32,
-    pub working_dir: String,
+    pub working_dir: PathBuf,
     pub argv: Vec<String>,
     pub timeout: u32,
     pub output_limits: OutputLimits,
@@ -153,4 +164,20 @@ pub struct ExecuteTaskRequest {
 pub struct OutputLimits {
     pub stdout_limit: u64,
     pub stderr_limit: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum GuestPhase {
+    Student,
+    Preparation,
+}
+
+impl GuestPhase {
+    pub fn is_student(&self) -> bool {
+        matches!(self, GuestPhase::Student)
+    }
+
+    pub fn is_preparation(&self) -> bool {
+        matches!(self, GuestPhase::Preparation)
+    }
 }

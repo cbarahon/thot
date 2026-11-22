@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
+use thot_runner::{SandboxProvider, ProviderError as SandboxError};
+use thot_core::sandbox_protocol::{ExecutionStatus, AgentRequest, AgentResponse, HandshakeRequest, HandshakeResponse, StageFileChunkRequest, InstallPackageRequest, ExecuteTaskRequest};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTask {
@@ -29,7 +31,7 @@ pub struct AgentTask {
 pub struct AgentResult {
     pub protocol_version: u32,
     pub task_id: String,
-    pub status: crate::test_results::TestStatus,
+    pub status: ExecutionStatus,
     #[serde(default)]
     pub stdout: String,
     #[serde(default)]
@@ -46,35 +48,6 @@ pub struct AgentResult {
     pub started_at: String,
     pub finished_at: String,
     pub duration_ms: u128,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentCapabilities {
-    pub protocol_version: u32,
-    pub agent_id: String,
-    pub agent_version: String,
-    pub tests: Vec<String>,
-    #[serde(default)]
-    pub host_version: Option<String>,
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentTaskStatus {
-    pub task_id: String,
-    pub state: String,
-    #[serde(default)]
-    pub result: Option<AgentResult>,
-    #[serde(default)]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Error)]
-pub enum SandboxError {
-    #[error("Infrastructure error: {0}")]
-    InfrastructureError(String),
-    #[error("Validation error: {0}")]
-    ValidationError(String),
 }
 
 #[async_trait]

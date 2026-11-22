@@ -89,3 +89,8 @@ fn package_hash(package_inventory: &PackageInventory) -> String {
     hasher.update(package_inventory.hash());
     format!("{:x}", hasher.finalize())
 }
+
+// New function to prepare baseline with project settings, ownership registry, project, project root, and template handle
+pub async fn prepare_baseline(settings: &KvmAlpineSettings, registry: &OwnershipRegistry, project: &Project, project_root: &Path, template: &TemplateHandle) -> Result<BaselineHandle, ProviderError> {
+    // Your implementation here
+}

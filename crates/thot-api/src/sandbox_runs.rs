@@ -55,10 +55,11 @@ struct ApiError(StatusCode, String);
 impl From<ServiceError> for ApiError {
     fn from(error: ServiceError) -> Self {
         match error {
-            ServiceError::Invalid(message) => Self(StatusCode::BAD_REQUEST, message),
-            ServiceError::Conflict(message) => Self(StatusCode::CONFLICT, message),
-            ServiceError::StorageError(message) => Self(StatusCode::INTERNAL_SERVER_ERROR, message),
-            ServiceError::ProviderError(message) => Self(StatusCode::INTERNAL_SERVER_ERROR, message),
+            ServiceError::Invalid(_) => Self(StatusCode::BAD_REQUEST, "invalid project/input".to_string()),
+            ServiceError::Conflict(_) => Self(StatusCode::CONFLICT, "conflict".to_string()),
+            ServiceError::StorageError(_) | ServiceError::ProviderError(_) => {
+                Self(StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
         }
     }
 }

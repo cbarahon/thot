@@ -1,12 +1,20 @@
 # KVM Alpine platform POC
 
-Status: design and synthetic test fixture only. No KVM Alpine platform provider, installer, VM image, snapshot, clone, or guest-agent integration has been implemented. The example project at [examples/kvm-alpine-poc](../examples/kvm-alpine-poc/) uses the proposed `thot.dev/v2` configuration shape; it cannot currently be run by Thot.
+Status: **not yet runnable**. The current branch contains an incomplete implementation attempt, but it does not compile and must not be described as an operational provider. The example project at [examples/kvm-alpine-poc](../examples/kvm-alpine-poc/) remains a synthetic fixture; its configuration is not currently executable by Thot. A build and host readiness check performed on 2026-11-22 found the implementation blocked before VM creation. See [Implementation test record](#implementation-test-record).
 
 ## Purpose
 
 The POC asks whether a very small Alpine Linux guest can safely host Thot's test agent and execute one short student script from a clean per-student linked clone. It tests the complete lifecycle, not just whether QEMU starts: ISO verification, automated installation, reusable template creation, project preparation, snapshotting, per-student cloning, bounded transfer/execution/result collection, and cleanup.
 
 The platform is named `kvm-alpine`, distinct from the planned `kvm-debian`. Both use KVM and the same provider-level task/result contract, but must keep separate base images, package managers, init assumptions, agent builds, and preparation. `kvm-alpine` is the low-resource experiment; it is not a replacement for Debian compatibility or a claim of stronger isolation than KVM itself.
+
+## Frozen POC contract (phase 0)
+
+Phase 0 decisions are recorded in [ADR-0008](decisions/0008-kvm-alpine-poc-contract.md). The canonical project file is `configuration.thot.yaml` with `schema_version: thot.dev/v2`; this is the schema represented by the example fixture. Legacy VM activity YAML and `/api/v1` remain unchanged. The Rust v2 project and protocol types belong in `thot-core`; the single async `SandboxProvider` lifecycle interface belongs in `thot-runner`; the engine consumes typed opaque template, baseline, and student-environment handles and remains the only assessment authority.
+
+For this local POC, the guest initiates a per-environment VSOCK connection to a host listener. Frames use a four-byte big-endian length followed by UTF-8 JSON, capped at 1 MiB; blobs are chunked and hashed. A per-clone one-use secret and the expected peer CID scope the session. This authenticates the active VM session, not guest integrity. Execution status (`completed`, `timed_out`, `resource_exceeded`, `platform_error`, `cancelled`, `interrupted`) is separate from engine assessment (`passed`, `failed`, `skipped`, `pending`) and cleanup (`clean`, `pending`, `failed`). Results persist bounded raw streams and artifacts by content hash alongside configuration, input, image, baseline, task, timing, process, diagnostic, assessment, and cleanup provenance. Secrets and VM disks are not ordinary result artifacts.
+
+These are accepted contracts, **not implemented capabilities**. Phase 1 of the closure plan must make the code and fixture conform before host-side VM lifecycle work proceeds.
 
 ## Lifecycle to implement after this design is accepted
 
@@ -69,7 +77,7 @@ The configuration explicitly selects only `kvm-alpine`. It declares no other pla
 
 ## Host limitations observed for this POC
 
-Inspected on 2026-11-21 in the current workspace environment:
+The repository development host was inspected on 2026-11-21. The separately authorized test host `192.168.1.35` was inspected on 2026-11-22 and has KVM available; these are different machines:
 
 | Resource | Observed | Consequence |
 |---|---|---|
@@ -102,6 +110,82 @@ Before implementation, check `lscpu`, `/dev/kvm`, libvirt capabilities, actual o
 | Rebuild/reuse | A project snapshot can go stale after config/scripts/packages change | Content-address preparation inputs and show “reuse” versus “rebuild”; never silently trust name-only matches |
 | Result trust | Student root could alter or kill the in-guest agent | POC scope is workflow viability and accidental containment, not tamper-proof grading; document this limit in each run |
 
+## Implementation audit: missing and incorrect behavior
+
+This audit compares the implementation present in the repository with the lifecycle and success criteria above. It is a source inspection, not a successful runtime test. `cargo check --workspace` was attempted on 2026-11-22 after fixing malformed manifests and invalid core re-exports; it still fails in `thot-runner` with 91 compiler errors and 58 warnings. The items below are closure blockers, not optional cleanup.
+
+### Critical blockers
+
+| Area | Current defect or missing behavior | Required correction |
+|---|---|---|
+| Build integrity | The workspace does not compile. The runner contains references to absent modules/types (`crate::error`, `crate::kvm`, `crate::manifest`, `crate::provenance`, `crate::vm`, `Settings`, `PlatformConfig`, and `KvmAlpineConfig` in the wrong crate), invalid imports, and sync/async API mismatches. | Select one module/API design and make `cargo check --workspace` pass before attempting VM operations. Remove dead placeholder paths rather than adding shims for abstractions that will not be used. |
+| Competing provider contracts | `thot-engine/src/sandbox_provider.rs` defines an async generic provider, while `kvm_alpine_provider.rs` implements a separate synchronous interface with undefined `TestInvocation`/`TestOutcome` types. `thot-runner/src/kvm_alpine/provider.rs` imports nonexistent `modules`, `settings`, and `error` modules. | Define one provider contract, assign host lifecycle to `thot-runner`, assign evaluation/persistence to `thot-engine`, and use typed handles carrying resource identities and ownership metadata. |
+| False passing results | `thot-engine/src/provider.rs::run_task` unconditionally returns `Passed`, exit code 0, empty output, and zero duration. `ensure_template`, `prepare_baseline`, `create_environment`, and `destroy_environment` are empty success stubs. | Remove fabricated success. Every operation must either execute and return observed evidence or return an infrastructure error that leaves assessment pending. |
+| No executable VM lifecycle | The runner's `image.rs`, `template.rs`, `baseline.rs`, and `student_environment.rs` do not create a working Alpine VM lifecycle. They contain placeholders, nonexistent types/methods, a demo `main`, and nonfunctional path/config handling. | Implement and exercise preflight, image acquisition, unattended install, template sealing, project preparation, snapshot, student clone, file staging, guest execution, shutdown, deletion, and reconciliation as real operations. |
+| Guest agent does not build or communicate | `apps/thot-alpine-agent/src/main.rs` has malformed syntax and uses undeclared protocol names/types; it calls async execution synchronously. The agent's `vsock.rs` API does not match `main.rs`. The runner imports an absent `crate::agent_protocol`, and the VSOCK dependency/API is not configured consistently. | Implement one shared, versioned protocol in `thot-core`, use length-delimited bounded frames, compile the guest agent for the selected Alpine ABI, and prove bidirectional task/result exchange in an actual guest. |
+| No end-to-end test route | `thotd/src/main.rs` wires configuration fields absent from `KvmAlpineConfig`, passes config where an `Arc<KvmAlpineSettings>` is expected, calls a runner `SandboxRunService` that is not provided, and constructs engine services with mismatched interfaces. API and engine sandbox run types also disagree. | Wire one daemon configuration and one service/API lifecycle; test run creation, status, cancellation, result retrieval, and restart recovery through the supported interface. |
+| Example project is not executable configuration | `configuration.thot.yaml` declares a proposed `thot.dev/v2` schema. The current `sandbox_config.rs` parses a different `VMActivityProject` schema and does not define these `sandbox_platforms`, `lifecycle`, `inputs`, `tests`, or evaluation fields. The example also describes `install_from: pinned-static-binary`, while the runner expects a different invented `binary_data` shape. | Choose and version a real schema, implement strict parsing and validation for it, and add a fixture test proving this exact example loads and has the expected semantics. |
+
+### Incorrect implementation details by subsystem
+
+| Subsystem | Observed problems |
+|---|---|
+| Preflight | `preflight.rs` invokes `lscpu --cpu` and treats output lines as CPU count; tries to read `stderr` and call `.lines()` on an `io::Error`/byte vector; sums existing file sizes rather than measuring free space; does not verify the configured libvirt URI, domain storage pool, linked-clone support, firewall rules, service-account permissions, or actual resource headroom. Configuration paths and defaults are inconsistent across daemon and runner. |
+| ISO acquisition | `image.rs` constructs the release path/name incorrectly (`v3.24-releases` and `...-v3.24.4.x86_64.iso`); contains a fabricated digest; references an out-of-scope `client`; compares cached ISO byte length with digest text length; has no atomic download, HTTP status/size limit, signature trust chain, or cleanup of partial files. The documented URL and fixture use another filename. |
+| Template | `template.rs` never invokes `virt-install` or installs Alpine; manifest validity always returns true; ownership is only an in-memory map; operations panic through `unwrap`; it hashes an ISO URL as if it were a local file; writes a fixed `/tmp/answer-file.cfg`; uses undefined values and config fields; does not detach boot media, verify reboot, seal storage, or make the parent immutable. Its `main` is a hard-coded demo and must not be part of a library module. |
+| Preparation baseline | `baseline.rs` imports nonexistent VM abstractions, refers to absent configuration fields, uses incompatible hashes/types, and does not implement package installation or script execution. It does not actually create a project VM/snapshot, compare provenance, reuse a valid baseline, or reject stale state safely. |
+| Student environment | `student_environment.rs` declares nested modules that do not exist. Its path predicate requires an absolute path and simultaneously rejects paths starting with `/`, so valid paths are rejected; it tests a source path rather than canonicalized paths beneath an allowed root; calls nonexistent `file_size` and lacks the Unix permissions trait import. It starts a VM before staging files, never sends staged bytes into the guest, and duplicates cleanup through undefined channel methods and local VM functions. Names are collision-prone and not tied to durable run IDs. |
+| Host command execution | `command.rs` mixes `std::process` with Tokio process APIs. Its output reader reads one buffer only, reports truncation incorrectly at the exact limit, and stops draining output; timeout/process-group termination and child reaping are not reliable as written. Output should be bounded while the pipes continue to drain, and timeout must include descendants and cleanup. |
+| Agent execution | `executor.rs` also mixes standard and Tokio `Command` types and has async/sync mismatches. It does not validate argv against the task schema, enforce an unprivileged identity, sanitize environment, enforce CPU/memory/process/disk limits, or constrain writable paths robustly. It reports elapsed time as the configured timeout for every run. Output capture, timeout status, exit status, and infrastructure diagnostics are not consistently represented. |
+| Guest transport | `agent_channel.rs` contains placeholder VSOCK constants, a nonfunctional token implementation, unrelated socket imports, and compares incompatible values. The guest expects a token argument but does not use it. Neither side has correct framing for partial reads/writes, frame-size enforcement, handshake authentication, replay/run scoping, version negotiation, reconnect policy, or channel timeout behavior. |
+| Test semantics | The sample YAML's tests are not parsed/executed. The inline YAML says `argv: [sh, ...]`; the wrapper does call `bash`, but the agent contract does not define whether test wrappers are trusted instructor code or shell commands. Dependency handling (`requires`), skip semantics, exact stdout comparison, and rubric criteria are not implemented in the engine. The engine must distinguish student failure from missing infrastructure evidence. |
+| Results and expedients | Current service code contains incompatible imports/types and incomplete storage. `RunStore` is in-memory, methods are marked async without persistence, and recovery/reconciliation are stubs. The service does not preserve per-test observations, platform diagnostics, timeout/truncation flags, artifact references, or project/config/template provenance. It does not reliably destroy the student clone on all error/cancellation paths. |
+| Resource/network security | YAML declares network denial for student tests and mirror-only setup access, but no implementation enforces either policy. Resource settings in the project file are not bounded against host policy. There is no implemented host-level CPU/memory/disk/process/output/network enforcement, guest isolation profile, or validation that the host service cannot access student-controlled paths. `firewall_confirmation` is a boolean assertion, not evidence of enforced rules. |
+| Ownership and recovery | Names and in-memory metadata are not sufficient ownership records. There is no atomic resource registry, lock around duplicate runs, crash-safe state transition model, or safe reconciliation after daemon restart. Cleanup could target the wrong domain/disk if implemented by name alone. |
+| Documentation and fixture consistency | The general lifecycle is written as future tense, while the implementation-test section describes a later implementation attempt. The final sentence says the “current environment” fails because `/dev/kvm` is absent, but that refers only to the development workspace host; the separately authorized Debian test host has `/dev/kvm`. `examples/kvm-alpine-poc/README.md` and this document therefore need to distinguish those hosts and the fact that no guest run occurred. The fixture's `extern/tests/README.md` says tests are inline while also linking script files, and the project test assets are not actually copied/executed by current code. |
+
+The individual defects above are examples of the broader blockers found by source inspection, not an exhaustive enumeration of every compiler diagnostic. The compile log should be regenerated as implementation progresses; resolving one diagnostic may expose others.
+
+## Plan to close the POC
+
+Work in order. Each phase has a gate; do not move a guest test to “passed” based on mocked output or host execution. Keep student tests sequential for this POC so that resource use and cross-student contamination are easy to reason about.
+
+```mermaid
+flowchart LR
+  A[0 Scope and contracts] --> B[1 Compiling core and runner]
+  B --> C[2 Config and fixture validation]
+  C --> D[3 Host preflight and ownership]
+  D --> E[4 Alpine template install]
+  E --> F[5 Project preparation and snapshot]
+  F --> G[6 Student clone and agent execution]
+  G --> H[7 Engine evaluation and durable records]
+  H --> I[8 End-to-end host run and evidence]
+```
+
+| Phase | Ordered work and dependencies | Exit gate |
+|---|---|---|
+| 0. Freeze the POC contract — complete | ADR-0008 decides the `thot.dev/v2` project shape, Rust model names, single provider lifecycle and opaque handles, guest-initiated VSOCK framing/authentication, execution versus assessment statuses, and durable evidence. Legacy VM activity YAML and `/api/v1` are explicitly unchanged. | Decision recorded in [ADR-0008](decisions/0008-kvm-alpine-poc-contract.md) and summarized above. Implementation must conform; this gate does not claim code is implemented or compiling. |
+| 1. Restore build integrity | Repair Cargo manifests and dependency declarations; delete accidental demo `main` and stale/duplicate modules; make runner, agent, engine, API, daemon compile against the selected contracts. Keep host commands behind testable adapters. | `cargo check --workspace` succeeds, then `cargo test --workspace` succeeds. Add focused contract/unit tests as the implementation requires. No warning is used to mask an unimplemented operation. |
+| 2. Make the fixture authoritative | Implement YAML deserialize/validation, strict unknown-field handling or documented extension handling, path containment, test dependency order, timeout/output/VM limits, and rubric schema. Align `configuration.thot.yaml`, students, assignments, tests, and README. Fix expected scoring to 10/2/0 and infrastructure failures to pending. | A configuration test loads the real example and validates all student mappings, file paths, dependency semantics, limits, and rubric. Invalid paths, unsupported platform fields, and invalid limits fail before any VM is touched. |
+| 3. Host preflight and ownership registry | Measure actual CPU availability, RAM and filesystem free bytes; verify `/dev/kvm`, QEMU/libvirt tools and URI, storage pool/capacity, snapshot/linked-clone capability, firewall/network policy, service user access, and configured ceilings. Add a durable Thot-owned UUID/metadata registry, per-project locks, and safe name collision behavior. | Preflight gives actionable failures for deliberately missing prerequisites. An unrelated same-name VM is neither adopted nor deleted. Duplicate starts are rejected and ownership metadata survives process restart. |
+| 4. Build and verify the Alpine template | Select a pinned ISO and verify the official checksum/signature using a trusted source; correct filename/URL and cache behavior; implement bounded atomic download. Implement documented unattended Alpine install, configure networking/SSH or VSOCK, install minimal runtime and the pinned static/musl guest agent, detach ISO, reboot, verify agent handshake, power off, and seal metadata/disk. | From an empty cache and empty registry, a fresh host setup creates `thot-alpine-platform` noninteractively. A second run verifies and reuses it. Corrupt ISO, changed digest, failed install, and same-name foreign domain are rejected without damaging other resources. |
+| 5. Build prepared project baseline | Create the configured unique project clone from the sealed template; install Bash and declared common resources; execute preparation scripts in deterministic order under limits and declared network policy; record output/status and content hashes; sync and power off; create/verify a disk snapshot and provenance. Implement stale-baseline rebuild policy. | First preparation creates and snapshots a baseline; identical rerun reuses it; changed package/script/config/template hash rebuilds it. Failure prevents student execution and is reported as infrastructure failure. |
+| 6. Execute one student safely | Create a unique linked clone per student from the prepared snapshot; transfer only validated, bounded deliverable and instructor assets; verify guest paths and hashes; run one task at a time through authenticated framed protocol; collect progress and complete results. Enforce host-level resource/network restrictions, output caps with full pipe draining, timeout/descendant termination, and unconditional cleanup. | A deliberately instrumented test proves student writes/processes/network do not survive into the next clone; timeout, oversized output, malformed request, guest crash, and agent disconnect have bounded outcomes and safe cleanup. |
+| 7. Integrate engine assessment and records | Make the engine generate each declared test task and dependency; validate agent protocol/task IDs; evaluate only received observations; preserve student failure separately from infrastructure failure; calculate fixture rubric; write durable run/test/result/expedient records and artifacts; support run status/cancel/restart reconciliation through the API/CLI path selected for the POC. | No path can synthesize `Passed`. The three fixture results are exactly 10/10, 2/10, and 0/10, while infrastructure failures remain pending. Results survive a daemon restart and can be exported/read by the professor. |
+| 8. Run on the authorized KVM host and close | Confirm host capacity and systemd/service identity; use a dedicated test data root and preserve the existing service until a separately verified daemon is ready. Run from an empty template state, then rerun to prove template/baseline reuse. Execute all three students sequentially, inspect guest/domain/disk cleanup, test forced failure/restart recovery, and record measurements. | All six success criteria below have command logs, run IDs, result artifacts, and resource measurements. Update the host record with actual evidence and remaining limitations; only then mark POC complete. |
+
+### Phase ordering and stopping rules
+
+Phases 0–2 are required before any privileged VM action. Phases 3–6 are required before a test can be called sandboxed. Phase 7 is required before results can be called Thot assessments. Phase 8 is the closure evidence. If a phase fails, preserve the failure as a visible infrastructure state, clean up only resources with verified Thot ownership, and stop dependent phases. Never convert startup, transport, timeout, or cleanup failures to a zero grade.
+
+## Implementation test record
+
+On 2026-11-22, `cargo check --workspace` was attempted after correcting malformed Cargo manifests and invalid `thot-core` re-exports. The check still fails in `thot-runner` with 91 compiler errors and 58 warnings. Failures include absent modules and configuration types, mismatched synchronous/asynchronous process APIs, incomplete image download code, nonexistent VM abstractions, and agent-channel type errors. The engine's current KVM adapter also returns a hard-coded successful result instead of running a task, so compilation alone would not establish working evaluation.
+
+The authorized test host is a Debian 13 VM with `/dev/kvm`, 4 vCPUs, approximately 3.8 GiB RAM plus 1.7 GiB swap, and approximately 19 GiB free disk. `virt-host-validate qemu` confirms KVM and the required device; it reports no IOMMU and cannot establish secure-guest support. Libvirt, QEMU, `virt-install`, and image utilities were installed for testing, but no Alpine template, project baseline, student clone, or test run was created because the Thot implementation does not compile. The host's pre-existing `thotd` service was left untouched.
+
+To resume implementation, first replace the nonfunctional provider scaffolding with a coherent provider lifecycle and wire real task/result contracts through engine and runner. Then implement and verify the pinned Alpine installation and guest protocol on this host. Do not interpret a fabricated `Passed` response, a host-side script run, or a successful VM boot as POC success. Close the POC only after all six success criteria below have evidence from actual guest runs.
+
 ## Suggested POC success criteria
 
 1. On a documented KVM-capable Linux host, acquire and checksum-verify the pinned Alpine ISO; install the template without interactive input and boot it after detaching installation media.
@@ -111,7 +195,7 @@ Before implementation, check `lscpu`, `/dev/kvm`, libvirt capabilities, actual o
 5. Demonstrate timeout cancellation, bounded stdout/stderr, agent disconnect handling, host/network isolation, forced cleanup, and safe recovery after engine restart.
 6. Record wall-clock setup/clone/test/cleanup times, peak host RAM/CPU, template/snapshot/overlay sizes, and disk amplification. Decide from measurements whether this is viable on instructor hardware.
 
-The current environment fails criterion 1 before VM creation because `/dev/kvm` is absent. It cannot provide POC results or substantiate resource estimates.
+The repository development host fails criterion 1 because `/dev/kvm` is absent. The separately authorized Debian 13 test host has `/dev/kvm` and management packages installed, but the implementation has not booted an Alpine guest there. Therefore no POC success criterion has yet been demonstrated on the test host, and no resource viability claim can yet be made.
 
 ## External technical references
 

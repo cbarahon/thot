@@ -8,3 +8,16 @@
 workspace:
   root: /srv/harmonia/workspace/thot
 
+architect:
+  # Supported providers: codex (default) or ollama.
+  provider: codex
+  codex:
+    binary: /var/lib/harmonia/.local/bin/codex
+    model: gpt-6-luna
+    timeout_seconds: 600
+
+# Ollama runs workers and can also be selected as the architect provider.
+ollama:
+  timeout_seconds: 1200
+  url: http://192.168.1.106:11434
+  model: qwen2.5-coder:7b
