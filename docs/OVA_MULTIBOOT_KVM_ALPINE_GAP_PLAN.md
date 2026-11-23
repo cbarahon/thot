@@ -159,23 +159,57 @@ For boot testing, keep **one writable OVA copy for the entire deliverable**. Shu
 
 See the [VM activity decisions](THOT_VM_ACTIVITY_POC.md), [disk inspection implementation](../crates/thot-engine/src/tests/libguestfs.rs), [VirtualBox agent](../apps/thot-virtualbox-agent/README.md) and [provider contract](api-spec.md#engine-facing-provider-interface).
 
-## 4. Course configuration and grade contract
+## 4. Proposed project contract
 
-This excerpt specifies the implementation fixture for the proposed v3 reader. Resource values are illustrative. Resolve package names and installer contents for the pinned Alpine image during qualification.
+The project continues to use `configuration.thot.yaml` and
+`schema_version: thot.dev/v2`, but needs a schema revision or compatible v2
+extension. The current Rust type denies unknown fields and validates only
+`action: exec`; adding these keys requires explicit typed model work and
+fixtures. A candidate shape is:
 
 ```yaml
-schema_version: thot.dev/v3
-project_id: multiboot
-students_file: students.yaml
+delivery_agent:
+  kind: gdrive
+  folder_url: https://drive.google.com/drive/folders/COURSE_FOLDER_ID
+  # Authentication remains professor-local and is never copied to a guest.
+
 assignments_file: assignments.yaml
-delivery_agent: {kind: gdrive, folder_url: "https://drive.google.com/drive/folders/COURSE_FOLDER"}
+
 sandbox_platforms:
-  - id: ova
+  - id: multiboot-lab
     kind: kvm-alpine
-    vm: {vcpu: 6, memory_mib: 12288, disk_gib: 80, nested_virtualization: required}
+    vm:
+      vcpu: PROFESSOR_SELECTED
+      memory_mib: PROFESSOR_SELECTED
+      storage_gib: PROFESSOR_SELECTED
+      nested_virtualization: required
+    lifecycle:
+      template_name: thot-alpine-platform
+      project_clone:
+        name: course-multiboot-baseline
+    limits:
+      ova_bytes: PROFESSOR_CONFIGURED_LIMIT
+      expanded_disk_bytes: PROFESSOR_CONFIGURED_LIMIT
+      per_os_boot_seconds: 300
+      total_student_seconds: 1800
+      stdout_bytes: 1048576
+    network:
+      template_install: allowlisted_alpine_repositories
+      preparation: allowlisted_alpine_repositories_and_declared_sources
+      student_tests: deny
     preparation:
-      packages: []   # Add available repository packages for this image.
-      scripts: [extern/platform/prepare-virtualbox-and-libguestfs.sh]
+      timeout_seconds: 1800
+      packages: [<available-package-1>, <available-package-2>]
+      scripts:
+        - path: extern/platform/install-virtualbox.sh
+          sha256: <pinned-script-digest>
+          timeout_seconds: 900
+    inputs:
+      - role: student-deliverable
+        kind: ova
+        read_only: true
+      - role: test-modules
+        resolved_by_engine: true
     tests:
       - {id: import, module: VirtualBox/import_ova}
       - {id: partitions, module: libguestfs/partition_table, requires: [import]}
