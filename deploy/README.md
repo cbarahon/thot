@@ -4,13 +4,32 @@ Thot is a Rust workspace with three runtime pieces: `thotd` coordinates project 
 
 ## Build and install
 
-Create a release with `make deploy` after committing and pushing the release version. GitHub Actions publishes the CLI, daemon, agent, systemd units, and sample configuration. Install a release on an x86_64 Linux systemd machine with:
+Create a release with `make deploy` after committing and pushing the release version. GitHub Actions publishes the CLI, daemon, VirtualBox agent, static Alpine guest agent, systemd units, and sample configuration. The installer places `thot-alpine-agent` beside `thot` so `thot sandbox run` can locate it automatically. Install a release on an x86_64 Linux systemd machine with:
 
 ```sh
 sudo bash thot-install.sh
 ```
 
 The installer creates the `thotd` service account, installs both services, and places configuration at `/etc/thot/thotd.env` and `/etc/thot/thot-virtualbox-agent.config.yaml`. It does not install VirtualBox on the remote execution host.
+
+### KVM Alpine CLI host
+
+For `thot sandbox run`, use a Linux host with hardware virtualization enabled and install the KVM host packages. On Debian 13:
+
+```sh
+sudo apt update
+sudo apt install qemu-system-x86 libvirt-daemon-system libvirt-clients virtinst libguestfs-tools cloud-image-utils curl
+sudo systemctl enable --now libvirtd
+sudo virsh net-autostart default
+```
+
+The release build also packages the static Alpine guest agent. Maintainers building locally before `make deploy` need `musl-tools` and the Rust target `x86_64-unknown-linux-musl`; the GitHub release workflow installs both automatically.
+
+Confirm `/dev/kvm` exists and `sudo virsh net-list --all` shows the `default` network active. The current preparation phase needs the default libvirt NAT network to install configured Alpine packages; student VMs launch without a network device. Run the CLI as `sudo thot sandbox run PROJECT_DIR`. The first run downloads a pinned cloud image and creates its template and prepared baseline under `/var/lib/libvirt/images/thot-alpine-poc` (override with `THOT_KVM_ALPINE_ROOT`). Ensure the host has free disk space for the base image, prepared baseline, and per-student overlays. This KVM workflow is local to the professor's machine; it does not use `thotd`.
+
+### Google Drive deliverables
+
+In Google Cloud, enable Drive API and create an OAuth client of type **Desktop app**. Configure `THOT_GDRIVE_CLIENT_ID` and `THOT_GDRIVE_CLIENT_SECRET` in the professor's shell, then run `thot deliveries list PROJECT_DIR` without sudo to authorize the account. Project YAML stores only the Drive folder URL. The private token cache lives in the professor's `~/.config/thot/` directory and is reused by `sudo thot sandbox run`. Google Drive authorization requires browser access on the machine doing initial consent; ordinary local delivery-agent use requires no OAuth setup.
 
 ## Configure the VirtualBox agent
 

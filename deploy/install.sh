@@ -38,11 +38,11 @@ awk -v asset="${ASSET}" '$2 == asset { print; count++ } END { if (count != 1) ex
 (cd "${temporary_dir}" && sha256sum --check --status asset-checksum) || fail "release archive checksum verification failed"
 
 tar -tzf "${temporary_dir}/${ASSET}" | awk '
-    $0 !~ /^(thot|thotd|thotd\.service|thotd\.env\.example|thot-virtualbox-agent|thot-virtualbox-agent\.service|thot-virtualbox-agent\.config\.yaml\.example|VERSION)$/ { bad=1 }
+    $0 !~ /^(thot|thotd|thotd\.service|thotd\.env\.example|thot-virtualbox-agent|thot-alpine-agent|thot-virtualbox-agent\.service|thot-virtualbox-agent\.config\.yaml\.example|VERSION)$/ { bad=1 }
     END { exit bad }
 ' || fail "release archive contains an unexpected path"
 tar -xzf "${temporary_dir}/${ASSET}" -C "${temporary_dir}"
-for file_name in thot thotd thotd.service thotd.env.example thot-virtualbox-agent thot-virtualbox-agent.service thot-virtualbox-agent.config.yaml.example VERSION; do
+for file_name in thot thotd thotd.service thotd.env.example thot-virtualbox-agent thot-alpine-agent thot-virtualbox-agent.service thot-virtualbox-agent.config.yaml.example VERSION; do
     [[ -f "${temporary_dir}/${file_name}" ]] || fail "release archive is missing ${file_name}"
 done
 installed_version="$(cat "${temporary_dir}/VERSION")"
@@ -77,9 +77,11 @@ if [[ ! -e /etc/thot/thot-virtualbox-agent.config.yaml ]]; then
 fi
 
 install -o root -g root -m 0755 "${temporary_dir}/thot" "${INSTALL_ROOT}/bin/thot.new"
+install -o root -g root -m 0755 "${temporary_dir}/thot-alpine-agent" "${INSTALL_ROOT}/bin/thot-alpine-agent.new"
 install -o root -g root -m 0755 "${temporary_dir}/thotd" "${INSTALL_ROOT}/sbin/thotd.new"
 install -o root -g root -m 0755 "${temporary_dir}/thot-virtualbox-agent" "${INSTALL_ROOT}/sbin/thot-virtualbox-agent.new"
 mv -f "${INSTALL_ROOT}/bin/thot.new" "${INSTALL_ROOT}/bin/thot"
+mv -f "${INSTALL_ROOT}/bin/thot-alpine-agent.new" "${INSTALL_ROOT}/bin/thot-alpine-agent"
 mv -f "${INSTALL_ROOT}/sbin/thotd.new" "${INSTALL_ROOT}/sbin/thotd"
 mv -f "${INSTALL_ROOT}/sbin/thot-virtualbox-agent.new" "${INSTALL_ROOT}/sbin/thot-virtualbox-agent"
 install -o root -g root -m 0644 "${temporary_dir}/VERSION" "${INSTALL_ROOT}/share/thot/VERSION"

@@ -22,6 +22,12 @@ jobs:
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal
 
+      - name: Install Alpine guest-agent target
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
       - name: Check tag version
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -37,7 +43,9 @@ jobs:
           fi
 
       - name: Build release binaries
-        run: cargo build --release --locked -p thot-cli -p thotd -p thot-virtualbox-agent
+        run: |
+          cargo build --release --locked -p thot-cli -p thotd -p thot-virtualbox-agent
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p thot-alpine-agent
 
       - name: Package binaries and installer
         run: |
@@ -49,13 +57,14 @@ jobs:
           install -m 0644 deploy/thotd.service "${package_dir}/thotd.service"
           install -m 0644 deploy/thotd.env.example "${package_dir}/thotd.env.example"
           install -m 0755 target/release/thot-virtualbox-agent "${package_dir}/thot-virtualbox-agent"
+          install -m 0755 target/x86_64-unknown-linux-musl/release/thot-alpine-agent "${package_dir}/thot-alpine-agent"
           install -m 0644 deploy/thot-virtualbox-agent.service "${package_dir}/thot-virtualbox-agent.service"
           install -m 0644 deploy/thot-virtualbox-agent.config.yaml.example "${package_dir}/thot-virtualbox-agent.config.yaml.example"
           printf '%s\n' "${GITHUB_REF_NAME}" > "${package_dir}/VERSION"
           install -m 0755 deploy/install.sh dist/thot-install.sh
           tar -C "${package_dir}" -czf dist/thot-linux-x86_64-unknown-linux-gnu.tar.gz \
             thot thotd thotd.service thotd.env.example \
-            thot-virtualbox-agent thot-virtualbox-agent.service \
+            thot-virtualbox-agent thot-alpine-agent thot-virtualbox-agent.service \
             thot-virtualbox-agent.config.yaml.example VERSION
           cd dist
           sha256sum thot-linux-x86_64-unknown-linux-gnu.tar.gz thot-install.sh > SHA256SUMS
