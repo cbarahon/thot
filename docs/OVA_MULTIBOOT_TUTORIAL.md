@@ -5,6 +5,11 @@ Linux, Alpine Linux, Windows, and a shared data partition. It covers Thot
 installation, project organization, evaluation design, running a project, and
 exporting marks.
 
+For the requested future implementation on the new KVM Alpine architecture,
+see the [dedicated gap analysis and delivery plan](OVA_MULTIBOOT_KVM_ALPINE_GAP_PLAN.md).
+This tutorial retains the current legacy VirtualBox workflow analysis and a
+partial screening example; it is not the target KVM architecture contract.
+
 ## Read this before preparing a course
 
 The complete requested assessment is **not supported by the current release**.

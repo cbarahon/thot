@@ -17,7 +17,63 @@ list() -> DeliveryInfo[]
 get(name: exact_name, destination: private_staging_path) -> AcquiredDelivery
 ```
 
-`DeliveryInfo` contains `name`, `size_bytes`, and nullable RFC 3339 `created_at` and `modified_at`. `AcquiredDelivery` contains the selected metadata and SHA-256 over file bytes or the deterministic directory-tree manifest. Current policy limits are 128 MiB total and 10,000 files; student VM staging further applies its 10 MiB per-file limit. Local source paths are professor configuration and are never forwarded to a guest. Google Drive credentials never appear in project YAML, API requests, or result files. Missing names, duplicate Google Drive names, unsupported Drive-native documents, permission errors, expired consent, quotas, and download failures are intake/infrastructure errors, never student assessment failures.
+`DeliveryInfo` currently contains `name`, `size_bytes`, and nullable RFC 3339 `created_at` and `modified_at`. The target `AcquiredDelivery` adds provider ID, immutable revision/version when offered, MIME type, source checksum when offered, and SHA-256 over bytes. Current implementation caps acquisition at 128 MiB and stages files in memory before writing; both are insufficient for OVA. The target contract streams to private host staging under project/admin byte and storage quotas. Local source paths and Google credentials are never forwarded to a guest. Missing names, duplicate names not resolved by ID, unsupported Drive-native documents, permission errors, expired consent, quotas, and download failures are intake/infrastructure errors, never student assessment failures.
+
+## Preparation and portable test modules
+
+Preparation installs only instructor-declared packages from the platform's
+configured repositories and runs separately declared, project-relative
+instructor scripts. Package managers are platform-specific (`apk` for Alpine,
+`apt` for Debian, and image build/package rules for Docker). Script payloads
+are copied into the preparation environment, hashed in the project snapshot,
+run in order with individual and aggregate timeouts, restricted network policy,
+bounded stdout/stderr, and no student delivery content. The completed package
+inventory, repository identity, script digests/results, image digest and
+prepared-baseline identity are recorded. Failed preparation blocks student
+execution. Preparation scripts are trusted professor code and are not
+downloaded from a student's Drive delivery.
+
+The engine resolves a configured test module to an immutable package by ID,
+version and SHA-256 digest. It checks the platform agent's advertised
+capabilities before provisioning, submits the package and its declared assets to the provider. The provider stages them in the clone and verifies their digests before use.
+The platform-independent module request/result contract is:
+
+```json
+{
+  "module": {"id": "thot.ova-layout", "version": "1", "sha256": "<digest>"},
+  "task_id": "<opaque-id>",
+  "student_unit_id": "<opaque-id>",
+  "inputs": [{"role": "student-deliverable", "sha256": "<digest>", "path": "/work/input/submission.ova"}],
+  "capabilities": ["artifact.read", "disk.inspect"],
+  "limits": {"timeout_seconds": 600, "memory_mib": 1024, "output_bytes": 1048576},
+  "parameters": {"required_roles": ["efi", "archlinux", "alpine", "windows", "shared"]}
+}
+```
+
+The module returns normalized observations and evidence references. The module
+cannot choose new tests, access the roster/engine API, write expedients, or
+assign grades. Platform adapters provide only typed capabilities advertised
+by the active agent. For example, `disk.inspect` may use libguestfs inside the
+Alpine clone; `nested-vm.create`, `nested-vm.console` and `guest-probe` are
+available only when explicitly configured and admitted. There is no arbitrary
+host shell or host hypervisor socket capability. Missing capabilities cause
+preflight rejection or an explicit `unsupported` status; they do not trigger a
+fallback platform.
+
+The module package format/ABI (for example, a bounded executable protocol or
+WASM component), signing policy, runtime compatibility and dependency bundling
+are unresolved. They must be decided before implementation. The invariant is
+that a single module package carries common assessment logic across compatible
+platforms, while each platform implements or declines the same versioned
+capability contract. Platform adapters may differ; grading semantics do not.
+
+For `kvm-alpine`, the platform section includes professor-selected outer VM
+vCPU, memory, storage and nested-virtualization settings. Host preflight checks
+hardware nesting and administrator resource ceilings. The project preparation
+phase can install Alpine repository packages and run an instructor script to
+install a tool unavailable from those repositories. Each student's OVA and
+the pinned module package are transferred only after a fresh linked clone is
+created from the prepared snapshot.
 
 ## Example declarative configuration
 
@@ -135,17 +191,19 @@ There are no loops or scripts embedded in the initial DSL; Bounded repetitions, 
 
 The project-level `sandbox_platforms` list is the only place that chooses an execution boundary. A platform object has a stable `id`, `kind` (`kvm-debian`, `kvm-alpine`, `docker`, or `host`), kind-specific parameters, `preparation`, ordered `tests`, resource/network policy, and cleanup policy. `kvm-debian` and `kvm-alpine` share KVM provider operations but have separate image and guest-agent profiles; Alpine's proposed lifecycle is documented in [KVM_ALPINE_POC.md](KVM_ALPINE_POC.md). A test definition includes `id`, `action`, `timeout_seconds`, input selectors, same-platform `requires`/`after` edges, and output declarations. Unknown platform kinds, duplicate IDs, test membership in more than one platform, missing references, dependency cycles, and cross-platform edges are validation errors.
 
-Provider interface:
+### Engine-facing provider interface
 
-| Operation | Contract |
+| Operation | Responsibility |
 |---|---|
-| `preflight(platform)` | Check host/runtime capability, image availability/digest, quotas, network policy, storage, and agent compatibility. No student code runs. |
-| `prepare(platform, run_snapshot)` | Create the common baseline, install only declared tools, execute trusted instructor preparation scripts under separate limits, and return a preparation manifest. |
-| `snapshot(baseline)` | KVM-only: stop/flush guest, verify disk identity, and create a named immutable baseline. Snapshot failures block this platform. |
-| `create_student_environment(platform, baseline, student_unit)` | KVM: create a linked clone from the named baseline; Docker: create a new container/writable layer; host: issue an allowlisted read-only task context. |
-| `dispatch(environment, tests)` | Send only this platform's task sequence and inputs to its agent/adapter. The agent executes sequentially and cannot alter the sequence or evaluate checks. |
-| `collect(task)` | Return progress and one normalized result per test, with process fields, platform diagnostics, and content-addressed artifacts. |
-| `destroy(environment)` | Stop all descendants and delete per-student writable state; return verified cleanup status. A cleanup failure is an infrastructure result and blocks unsafe resource reuse. |
+| `configure(platform, project_snapshot)` | The provider validates capabilities and ensures its prepared environment is ready. |
+| `run_deliverable(attempt_id, input, modules, ordered_tests)` | The engine sends the bounded deliverable bytes and digest, module references or blobs, and the test plan. The provider returns an attempt receipt and owns execution through cleanup. Repeated submission with identical ID and payload returns the same attempt. |
+| `events(attempt_id, after_sequence)` | The provider streams progress, bounded results and artifact references. The engine acknowledges evidence after durable storage. |
+| `status(attempt_id)`, `cancel(attempt_id)` | Query or cancel an attempt. The provider performs cleanup after success, error or cancellation and reports both the execution outcome and verified cleanup state. |
+
+The engine requests the next assigned item from the delivery agent after the
+current attempt ends with confirmed cleanup. If contact is lost, it queries
+the existing attempt. The provider reconciles its own resources. Pending or
+failed cleanup pauses dispatch and remains visible in the expedient.
 
 The `host` provider is deliberately not a sandbox. It accepts only registered action types, such as bounded PDF metadata extraction or archive inventory, whose adapters do not execute student-controlled code. Arbitrary `exec`, shell, package installation, student-supplied plugins, or writable access to the instructor's project directory is forbidden on this provider. An installation that declares itself to run inside an outer VM must pass an administrator-owned capability check; project YAML cannot assert that fact.
 
@@ -172,7 +230,7 @@ Platform independence is enforced both in configuration validation and at runtim
 |---|---|
 | ProjectRepository | `validate`, `snapshot`, `lock`, `import`, `export`; without running content |
 | ResultStore | `append_attempt`, `commit_revision`, `read`, `verify_integrity`; sole final results writer |
-| SandboxProvider | `capabilities`, `preflight`, `create`, `status`, `renew`, `stop`, `destroy`; never evaluates |
+| SandboxProvider | `configure`, `run_deliverable`, `events`, `status`, `cancel`; owns environment lifecycle |
 | AgentDispatcher | `submit`, `status`, `cancel`, `events`, `upload_blob`; takes tasks to an authorized laboratory |
 | Evaluator | confirmed results + rules + corrections → checks/rubrics/notes; no student I/O or network |
 

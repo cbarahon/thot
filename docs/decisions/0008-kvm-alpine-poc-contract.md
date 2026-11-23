@@ -24,9 +24,10 @@ The parser validates references, unique IDs, path containment, bounded positive 
 
 ### One provider API and typed handles
 
-There is one async, object-safe provider interface, owned by `thot-runner` and consumed by `thot-engine`. The engine owns task planning, evidence validation, grading, and result persistence. The provider owns host preflight, libvirt resources, guest transport, execution delivery, and cleanup. Provider methods return typed errors; no method returns fabricated success or silently falls back to host execution.
-
-The interface has these operations, in lifecycle order:
+ADR-0010 moves lifecycle orchestration inside the sandbox provider. The
+engine submits an entire deliverable attempt through the [provider contract](../api-spec.md#engine-facing-provider-interface).
+The following operations and opaque handles describe internal KVM provider
+steps. The provider owns their ordering, retries and cleanup.
 
 1. `preflight(platform) -> HostCapabilities`
 2. `ensure_template(platform) -> TemplateHandle`

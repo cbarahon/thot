@@ -1,6 +1,6 @@
 # Architectural decisions
 
-All ADRs are proposed. They will be accepted after the indicated validations; the rejected alternatives are part of the reasoning, not implemented restrictions.
+Each record states its own decision status and implementation limits.
 
 - [ADR-0001: VM KVM as outer boundary](0001-vm-boundary.md)
 - [ADR-0002: Common laboratory per evaluation unit](0002-common-laboratory.md)
@@ -10,3 +10,5 @@ All ADRs are proposed. They will be accepted after the indicated validations; th
 - [ADR-0006: Separate observation from rating](0006-observation-and-assessment.md)
 - [ADR-0007: Multiple independent sandbox platforms](0007-sandbox-platforms.md)
 - [ADR-0008: KVM Alpine POC project and provider contracts](0008-kvm-alpine-poc-contract.md)
+- [ADR-0009: Read-only deliverable intake agents](0009-delivery-agent-contract.md)
+- [ADR-0010: Nested test execution and reusable modules in KVM Alpine](0010-kvm-alpine-nested-test-modules.md)

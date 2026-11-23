@@ -19,6 +19,7 @@ sequenceDiagram
   participant I as Instructor CLI
   participant A as Delivery agent
   participant S as Local folder or Google Drive
+  participant P as Sandbox provider
   participant V as Student VM
   I->>A: list()
   A->>S: enumerate direct children
@@ -28,7 +29,8 @@ sequenceDiagram
   A->>S: read-only fetch
   S-->>A: bytes
   A-->>I: private staged file + SHA-256
-  I->>V: bounded submission copy
+  I->>P: Submit deliverable and test plan
+  P->>V: Stage verified input
 ```
 
 ## Generic model
@@ -56,29 +58,72 @@ flowchart LR
 | `docker` | Build or fetch a pinned base image; for each student create a fresh container and writable layer, mount only declared inputs, execute sequential tests, collect bounded results, then remove the container and its writable layer | Lightweight Linux command-line tools and dependencies when a shared host kernel is acceptable | Container isolation shares the host kernel and is weaker than a VM boundary. No privileged mode, host PID/network, Docker socket, arbitrary host mounts, or unbounded capabilities. A container must not be presented as equivalent to KVM for hostile code. |
 | `host` | Execute a declared read-only or otherwise low-risk adapter on the Thot host and capture its result | Static parsing of PDFs, source archives, or other files using reviewed tools, without executing student programs | No sandbox boundary. Only permitted by administrator policy after the action is classified as safe. If Thot itself runs in an administrator-managed VM, that VM can provide an outer boundary, but the project must not assume this without a verified host capability declaration. |
 
-The KVM family has two planned profiles, selected as distinct platform kinds rather than an ambiguous OS field: `kvm-debian` for the general-purpose Debian 13 environment and `kvm-alpine` for the low-resource Alpine environment. Both share the KVM lifecycle and task/result contract, but have separate image, guest-agent, package/preparation assumptions, and resource profiles. `kvm-alpine` is a viability experiment, not yet a supported production platform. Its lifecycle and acceptance criteria are in the [KVM Alpine POC](KVM_ALPINE_POC.md).
+The KVM family has distinct platform kinds: `kvm-debian` for a general-purpose Debian 13 environment and `kvm-alpine` for Alpine Linux. They share the KVM lifecycle, reusable test-module contract, and task/result protocol, but have separate images, agents, package managers and platform capability adapters. The Alpine platform may be configured as a low-resource environment for simple tasks or with larger resources and nested virtualization for workloads such as OVA multiboot. The professor selects memory, storage, vCPU and nested-virtualization settings; Thot validates host capability and resource availability but cannot infer a suitable workload size. `kvm-alpine` remains a POC, not a supported production platform. Its current state is in the [KVM Alpine POC](KVM_ALPINE_POC.md).
 
-Each platform has two distinct phases. **Preparation** runs once per platform invocation to install/configure common resources from a pinned base and instructor-controlled preparation files. For KVM, Thot then shuts down the prepared VM and creates a snapshot. **Student execution** starts from that clean baseline for each student (or declared group), transfers only the selected submission and required instructor test assets, and runs tests in order. Preparation output is not a student's evidence and must not affect another platform. Preparation failure blocks that platform before student work begins. A student test failure does not stop later tests unless its declared dependency policy says so.
+### Reusable test modules
+
+Evaluation logic is packaged independently from the platform that executes it.
+The engine resolves each configured test to a versioned module package, pins
+its digest and declared capability requirements, and transfers the package
+with the task to the platform agent. A test module follows one stable
+request/result contract and returns observations; it does not calculate
+grades. The agent supplies a platform adapter implementing the capabilities
+the module declares, such as bounded process execution, read-only file access,
+disk inspection, VM lifecycle, console interaction, guest probing, artifact
+writing and cancellation.
+
+The same test package is used on `kvm-alpine`, `kvm-debian`, Docker and
+permitted host execution. Platform adapters may implement a capability using
+different tools, but must satisfy the same typed semantics and evidence
+contract. The engine checks capability compatibility before creating a
+sandbox. If no compatible adapter exists, the test is rejected or reported as
+unsupported; it is never silently rewritten to a different test or run on the
+host. Platform-specific code belongs in adapters, not duplicate assessment
+logic. Test packages are immutable, hashed, resource-bounded and transferred
+without student data or OAuth credentials.
+
+The exact module packaging format, ABI, capability versioning and trust/signing
+policy remain to be decided before implementation. The target must support
+modules that call typed adapters, not arbitrary host shell commands. A module
+may use an explicitly declared guest process capability for commands inside
+the isolated environment; that does not grant host or hypervisor access.
+
+Each platform has two distinct phases. **Preparation** runs once per project baseline to install/configure common resources from a pinned base, package-manager repositories and professor-controlled preparation scripts. For KVM, Thot then shuts down the prepared VM and creates a verified snapshot. `kvm-alpine` package preparation uses the configured Alpine repositories (`apk`); a professor script may install a tool unavailable from those repositories, such as a selected VirtualBox build, subject to the declared network, hash and timeout policy. **Student execution** creates a fresh linked clone for each student (or declared group), transfers the selected deliverable and the pinned test-module packages it needs, then runs tests in order. The clone is destroyed and cleanup verified before the next deliverable is processed. Preparation output is not student evidence and must not affect another student or platform. Preparation failure blocks that platform before student work begins. A student test failure does not stop later tests unless its declared dependency policy says so.
+
+For OVA multiboot on `kvm-alpine`, the Alpine sandbox VM itself is configured
+with enough memory, disk and vCPU for the professor's workload, and nested
+virtualization is enabled when required. The test packages and platform
+adapter run inside this disposable Alpine clone. They use the nested
+virtualization capability available inside that boundary to inspect/boot the
+student OVA. The professor owns choosing resource values, while host preflight
+must check KVM nesting support, configured device exposure and aggregate
+resource limits before any clone is created. The low-resource smoke profile
+is not suitable for Windows OVA execution.
 
 The in-guest agent is an execution and collection component. It receives an authorized, bounded task sequence, executes one test at a time, enforces timeouts, captures stdout/stderr/exit status and platform diagnostics, and returns progress and artifacts to the engine. It does not create expedients, apply checks, calculate grades, choose new tests, or interpret academic success. The engine validates each result, stores it under `(run, student-or-group, platform, test, attempt)`, then computes checks/rubrics and expedients centrally. A nonzero process exit can be a valid observation; infrastructure failure is separate from academic failure.
 
 ```mermaid
 sequenceDiagram
-  participant T as Thot engine
-  participant P as Platform provider
-  participant A as Platform agent
-  T->>P: preflight(platform configuration)
-  T->>P: create baseline and run preparation
-  P->>A: start pinned agent
-  A-->>T: preparation result and diagnostics
-  T->>P: snapshot prepared KVM baseline (KVM only)
-  loop each student or group
-    T->>P: create clean student environment
-    T->>A: submission and ordered tests
-    A-->>T: progress, streams, exit status, artifacts
-    T->>T: validate and persist; destroy student environment
+  participant E as Thot engine
+  participant D as Delivery agent (local or Drive)
+  participant P as Sandbox provider
+  participant A as Agent in Alpine clone
+  E->>P: Configure platform with project settings and test requirements
+  P->>P: Verify or prepare owned Alpine baseline
+  P-->>E: Platform ready
+  loop One assigned deliverable at a time
+    E->>D: Get assigned deliverable
+    D-->>E: Bytes and source metadata
+    E->>P: Run deliverable with verified bytes, modules and ordered tests
+    P->>P: Create linked clone from prepared snapshot
+    P->>A: Stage inputs and execute tests
+    A-->>P: Progress, observations and evidence
+    P-->>E: Forward test events and results
+    E->>E: Persist evidence in student expedient
+    E-->>P: Acknowledge persisted evidence
+    P->>P: Destroy clone and verify cleanup
+    P-->>E: Terminal outcome and cleanup status
   end
-  T->>T: evaluate combined platform results
 ```
 
 ### Declarative platform configuration
@@ -116,7 +161,50 @@ sandbox_platforms:
 
 This is a conceptual schema, not the current parser contract. Before implementation, decide if Docker runs directly under an administrator-controlled host daemon or inside the KVM platform. Direct host Docker offers lower resource cost but does not have KVM's outer isolation. When Docker runs inside the per-student KVM clone, it is an execution mode within the KVM boundary rather than a third independent boundary. Both modes should not share a `kind: docker` label without a required `isolation_scope` field. For now, independent host-Docker is permitted only for trusted/low-risk tasks or an explicitly isolated Thot host, and must be visibly reported as lower assurance.
 
-Preparation is privileged project content. It is trusted instructor code, pinned and hashed in the run snapshot, constrained by a separate timeout and network policy, and never copied from a student submission. Installing arbitrary `apt` packages requires network access and may introduce non-reproducible versions or compromised repositories. Prefer prebuilt, digest-pinned images or package version pins from a controlled mirror. If preparation uses `apt`, record package versions, repository identity, image digest, and complete output; a later rerun must state whether it reuses the recorded snapshot or rebuilds it.
+An Alpine nested-VM workload will use an explicit platform profile and
+preparation contract. This is illustrative; property names must be finalized
+in the shared Rust model and API specification:
+
+```yaml
+sandbox_platforms:
+  - id: ova-multiboot
+    kind: kvm-alpine
+    vm:
+      vcpu: 6
+      memory_mib: 12288
+      disk_gib: 80
+      nested_virtualization: required
+    network:
+      template_install: allowlisted-alpine-repositories
+      preparation: allowlisted-alpine-repositories-and-professor-sources
+      student_tests: deny
+    preparation:
+      timeout_seconds: 1800
+      packages: [qemu-system-x86_64, libvirt, libguestfs]
+      scripts:
+        - path: extern/platform/install-virtualbox.sh
+          sha256: <pinned-script-digest>
+          timeout_seconds: 900
+    tests:
+      - id: ova-layout
+        module: thot.ova-layout@1
+        digest: sha256:<pinned-module-digest>
+        requires_capabilities: [artifact.read, disk.inspect]
+      - id: multiboot-shared-data
+        module: thot.multiboot-shared-data@1
+        digest: sha256:<pinned-module-digest>
+        requires_capabilities: [nested-vm.create, nested-vm.console, guest-probe]
+```
+
+Package names and memory values above are examples, not verified Alpine
+packages or a recommended minimum. The professor chooses suitable resources;
+the engine must verify configured bounds and host nested-KVM capability. The
+preparation script is instructor-owned trusted code, staged from the project,
+hashed, network-limited and run only while preparing the reusable baseline.
+Student OVA contents must not be allowed to change package preparation or
+module versions.
+
+Preparation is privileged project content. It is trusted instructor code, pinned and hashed in the run snapshot, constrained by a separate timeout and network policy, and never copied from a student submission. Package installation follows the platform package manager: `apk` for Alpine and `apt` for Debian. Repository packages may introduce non-reproducible versions or compromised dependencies. Prefer version pins from a controlled mirror. If the needed tool is not provided by standard repositories, the professor may provide a project-relative preparation script with a digest, timeout and allowed network policy. Record package versions, repository identity, image digest, script hashes and complete output; a later run must state whether it reuses the recorded baseline or rebuilds it.
 
 The platform boundary is not a result dependency. Common assessment logic may refer to result IDs from any platform after all applicable platform executions reach terminal state. A test may not read another platform's files, environment variables, resource registry, live network service, stdout, or exit code. If an activity truly requires interaction, put those steps in one platform (usually a KVM guest, where Docker and nested services can coexist) or define a future explicit bridge contract with a separate threat review. No implicit file copy or host path bridge is allowed.
 
@@ -189,26 +277,7 @@ The labs have separate isolated networks and no port publications to the host. S
 
 ## Flow, status and faults
 
-```mermaid
-sequenceDiagram
-    participant P as Profesor
-    participant E as Motor
-    participant S as Supervisor
-    participant A as Coordinator L1
-    P->>E: Validate and run project
-    E->>E: Bloqueo, snapshot, plan y cuotas
-    E->>S: Crear laboratorio con lease
-    S->>A: Arranque, identidad y capacidades
-    E->>A: Adquirir repositorio y fijar commit
-    A-->>E: Entrada materializada y hash
-    E->>A: Files, make, VM inspection, SSH
-    A-->>E: Eventos, recursos, resultados y blobs
-    E->>E: Validar y confirmar resultados
-    E->>S: Destruir laboratorio siempre
-    S-->>E: Limpieza verificada o pendiente
-    E->>E: Checks, rubrics, review and reports
-    E-->>P: Summary and issues requiring review
-```
+The provider forwards progress and normalized test results to the engine. It reconciles its own environments after interruption. The engine resumes delivery intake after confirmed cleanup.
 
 In a unit the steps are sequential by default. A DAG allows explicit parallelism if there are no concurrent writes to a resource; exclusive/shared locks are declared. `after` only commands; `requires` demands success. In the event of an infrastructure error, the branch is blocked, other units can continue. Exterior cleaning is independent of the teacher's `always` steps: these are not a safety barrier.
 

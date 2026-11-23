@@ -26,3 +26,9 @@ The [OVA multiboot tutorial](OVA_MULTIBOOT_TUTORIAL.md) walks through the
 Arch/Alpine/Windows plus shared-data assessment scenario. It identifies which
 parts the current VirtualBox OVA workflow can check and which internal tests
 are still needed before the full grading workflow is supported.
+
+The [KVM Alpine OVA gap plan](OVA_MULTIBOOT_KVM_ALPINE_GAP_PLAN.md) maps this
+same use case onto the new `kvm-alpine` architecture. It records the current
+gaps, proposed decisions, phase gates, and acceptance tests for Drive intake,
+safe OVA inspection, nested VM execution, GRUB verification, shared-data
+checks, durable grading, and professor qualification.
