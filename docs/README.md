@@ -21,3 +21,8 @@ All of the following documents are design, not published functionality:
 `ROADMAP.md` and `TODO.md` have been replaced by the deployment plan, which retains the Unicode reporting work and evolution options. The POC guidelines are maintained because they are still necessary to operate/migrate the existing implementation.
 
 The [KVM Alpine POC](KVM_ALPINE_POC.md) describes the proposed low-resource `kvm-alpine` platform and a synthetic project fixture.
+
+The [OVA multiboot tutorial](OVA_MULTIBOOT_TUTORIAL.md) walks through the
+Arch/Alpine/Windows plus shared-data assessment scenario. It identifies which
+parts the current VirtualBox OVA workflow can check and which internal tests
+are still needed before the full grading workflow is supported.
