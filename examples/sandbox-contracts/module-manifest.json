@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "module_id": "thot.ova.partition-table",
+  "version": "1.0.0",
+  "package_sha256": "8aee61a48a1e7974f9b586e1896802b57d388c0670cb8381d9d602259b4c375f",
+  "capabilities": [
+    {"id": "artifact.read", "version": 1},
+    {"id": "disk.inspect", "version": 1}
+  ],
+  "assets": [
+    {
+      "path": "tests/required-os.json",
+      "sha256": "681f48075f119e4313bd56e3cc83508348aaab169f7cdd9f3349344f59c52823",
+      "size_bytes": 25
+    }
+  ]
+}

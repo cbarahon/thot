@@ -69,18 +69,21 @@ pub fn handle(args: &[String]) -> Result<(), Box<dyn Error>> {
         &project_dir,
         config.delivery_folder.as_deref(),
         input_root.as_deref(),
+        &config.delivery_limits,
     )?;
     match name {
         None => {
-            println!("NAME\tSIZE\tCREATED\tMODIFIED");
+            println!("NAME\tID\tREVISION\tSIZE\tCREATED\tMODIFIED");
             for delivery in agent.list()? {
                 println!(
-                    "{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}",
                     delivery
                         .name
                         .replace('\t', "\\t")
                         .replace('\r', "\\r")
                         .replace('\n', "\\n"),
+                    delivery.provider_id.as_deref().unwrap_or("—"),
+                    delivery.revision.as_deref().unwrap_or("—"),
                     delivery.size_bytes,
                     delivery.created_at.as_deref().unwrap_or("—"),
                     delivery.modified_at.as_deref().unwrap_or("—")

@@ -1,11 +1,12 @@
 use sha2::{Digest, Sha256, Sha512};
 use std::{
     fs,
+    io::Read,
     path::PathBuf,
     process::Command,
     time::{Duration, Instant},
 };
-use thot_core::{sandbox_project::*, sandbox_protocol::*};
+use thot_core::{sandbox_contracts::*, sandbox_project::*, sandbox_protocol::*};
 use thot_delivery::{DeliveryInfo, build_agent, default_student_input_root};
 type Config = SandboxProject;
 
@@ -22,12 +23,15 @@ pub fn run_project(
     let config: Config = serde_yaml::from_slice(&config_bytes).map_err(|e| e.to_string())?;
     config.validate()?;
     let p = &config.sandbox_platforms[0];
+    let preparation_scripts = resolve_preparation_scripts(&project, p)?;
+    let test_modules = resolve_test_modules(&project, p)?;
     let input_root = default_student_input_root(&config);
     let mut delivery_agent = build_agent(
         config.delivery_agent.as_ref(),
         &project,
         config.delivery_folder.as_deref(),
         input_root.as_deref(),
+        &config.delivery_limits,
     )
     .map_err(|error| error.to_string())?;
     let delivery_inventory = delivery_agent.list().map_err(|error| error.to_string())?;
@@ -58,6 +62,43 @@ pub fn run_project(
             "guest agent version mismatch; project requires {} protocol=2",
             p.lifecycle.agent.version
         ));
+    }
+    let evaluation_id = uuid::Uuid::new_v4().to_string();
+    let snapshot_files = vec![
+        ("configuration.thot.yaml".to_owned(), config_bytes.clone()),
+        (
+            config.students_file.clone(),
+            read_project_file(&project, &config.students_file)?,
+        ),
+        (
+            config.assignments_file.clone(),
+            read_project_file(&project, &config.assignments_file)?,
+        ),
+    ];
+    let mut run_repository = thot_engine::sandbox_repository::ProjectRunRepository::begin(
+        &project,
+        &evaluation_id,
+        &config.project_id,
+        &snapshot_files,
+    )?;
+    let result_dir = run_repository.run_dir().to_path_buf();
+    run_repository.start()?;
+    for module in test_modules.values() {
+        let manifest_artifact =
+            run_repository.put_artifact(&module.manifest_bytes, "application/json", true)?;
+        let package_artifact =
+            run_repository.put_artifact(&module.package_bytes, "text/x-shellscript", true)?;
+        run_repository.append_event(
+            "test_module.pinned",
+            serde_json::json!({
+                "module_id": module.reference.module_id,
+                "version": module.reference.version,
+                "package_sha256": module.reference.package_sha256,
+                "capabilities": module.reference.capabilities,
+                "manifest_artifact": manifest_artifact,
+                "package_artifact": package_artifact
+            }),
+        )?;
     }
     let root = std::env::var_os("THOT_KVM_ALPINE_ROOT")
         .map(PathBuf::from)
@@ -128,18 +169,18 @@ pub fn run_project(
         ])?;
     }
     let baseline_manifest = root.join(format!("{}.manifest", p.lifecycle.project_clone.name));
-    let prep_key = format!(
-        "{}:{}:{}:{}:{}:{}:{:?}:{:?}:{}",
-        config.project_id,
-        p.id,
-        base_manifest,
-        p.lifecycle.template_vm.vcpu,
-        p.lifecycle.template_vm.memory_mib,
-        p.lifecycle.project_clone.name,
-        p.lifecycle.preparation.packages,
-        p.lifecycle.preparation.scripts,
-        p.network.preparation
-    );
+    let preparation_identity = serde_json::to_vec(&serde_json::json!({
+        "project_id": config.project_id,
+        "platform_id": p.id,
+        "template": base_manifest,
+        "vcpu": p.lifecycle.template_vm.vcpu,
+        "memory_mib": p.lifecycle.template_vm.memory_mib,
+        "packages": p.lifecycle.preparation.packages,
+        "scripts": preparation_scripts.iter().map(|script| (&script.path, &script.sha256, script.timeout_seconds)).collect::<Vec<_>>(),
+        "network": p.network.preparation
+    }))
+    .map_err(|error| error.to_string())?;
+    let prep_key = format!("{:x}", Sha256::digest(preparation_identity));
     let desired_manifest = format!("thot-alpine-baseline:v1:{prep_key}");
     let mut baseline_ready = false;
     if baseline_disk.exists() {
@@ -206,26 +247,39 @@ pub fn run_project(
         ])?;
         let cloud = root.join("baseline-cloud-init");
         fs::create_dir_all(&cloud).map_err(|e| e.to_string())?;
-        let mut preparation_script = String::from("#!/bin/sh\nset -eu\n");
+        let mut preparation_script = String::from(
+            "#!/bin/sh\nset -u\nmkdir -p /var/lib/thot-preparation\n: > /var/lib/thot-preparation/apk.stdout\n: > /var/lib/thot-preparation/apk.stderr\n",
+        );
         if !p.lifecycle.preparation.packages.is_empty() {
-            preparation_script.push_str("apk add --no-progress");
+            preparation_script.push_str("if ! apk add --no-progress");
             for package in &p.lifecycle.preparation.packages {
                 preparation_script.push(' ');
                 preparation_script.push_str(package);
             }
-            preparation_script.push('\n');
+            preparation_script.push_str(" > /var/lib/thot-preparation/apk.stdout 2> /var/lib/thot-preparation/apk.stderr; then\n  head -c 1048576 /var/lib/thot-preparation/apk.stdout > /var/lib/thot-preparation/apk.stdout.cap && mv /var/lib/thot-preparation/apk.stdout.cap /var/lib/thot-preparation/apk.stdout\n  head -c 1048576 /var/lib/thot-preparation/apk.stderr > /var/lib/thot-preparation/apk.stderr.cap && mv /var/lib/thot-preparation/apk.stderr.cap /var/lib/thot-preparation/apk.stderr\n  echo package-install-failed > /var/lib/thot-preparation-failed\n  sync\n  poweroff\n  exit 1\nfi\n");
         }
-        for script in &p.lifecycle.preparation.scripts {
-            preparation_script.push_str(script);
-            preparation_script.push('\n');
+        let mut script_files = String::new();
+        for (index, script) in preparation_scripts.iter().enumerate() {
+            let guest_script = format!("/var/lib/thot-preparation/script-{index:03}.sh");
+            let stdout_path = format!("/var/lib/thot-preparation/script-{index:03}.stdout");
+            let stderr_path = format!("/var/lib/thot-preparation/script-{index:03}.stderr");
+            let status_path = format!("/var/lib/thot-preparation/script-{index:03}.exit");
+            script_files.push_str(&format!(
+                "\n  - path: {guest_script}\n    permissions: '0700'\n    encoding: b64\n    content: {}",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &script.bytes)
+            ));
+            preparation_script.push_str(&format!(
+                "if /bin/busybox timeout -s KILL {} /bin/sh {guest_script} > {stdout_path} 2> {stderr_path}; then\n  rc=0\nelse\n  rc=$?\nfi\nhead -c 1048576 {stdout_path} > {stdout_path}.cap && mv {stdout_path}.cap {stdout_path}\nhead -c 1048576 {stderr_path} > {stderr_path}.cap && mv {stderr_path}.cap {stderr_path}\nprintf '%s\\n' \"$rc\" > {status_path}\nif [ \"$rc\" -ne 0 ]; then\n  touch /var/lib/thot-preparation-failed\n  sync\n  poweroff\n  exit \"$rc\"\nfi\n",
+                script.timeout_seconds
+            ));
         }
-        preparation_script.push_str("touch /var/lib/thot-preparation-complete\nsync\npoweroff\n");
+        preparation_script.push_str("head -c 1048576 /var/lib/thot-preparation/apk.stdout > /var/lib/thot-preparation/apk.stdout.cap && mv /var/lib/thot-preparation/apk.stdout.cap /var/lib/thot-preparation/apk.stdout\nhead -c 1048576 /var/lib/thot-preparation/apk.stderr > /var/lib/thot-preparation/apk.stderr.cap && mv /var/lib/thot-preparation/apk.stderr.cap /var/lib/thot-preparation/apk.stderr\napk info -v > /var/lib/thot-preparation/packages.txt\ntouch /var/lib/thot-preparation-complete\nsync\npoweroff\n");
         let encoded_script = base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
             preparation_script,
         );
         let userdata = format!(
-            "#cloud-config\nwrite_files:\n  - path: /var/lib/thot-prepare.sh\n    permissions: '0700'\n    encoding: b64\n    content: {encoded_script}\nruncmd:\n  - [/bin/sh, /var/lib/thot-prepare.sh]\n"
+            "#cloud-config\nwrite_files:\n  - path: /var/lib/thot-prepare.sh\n    permissions: '0700'\n    encoding: b64\n    content: {encoded_script}{script_files}\nruncmd:\n  - [/bin/sh, /var/lib/thot-prepare.sh]\n"
         );
         fs::write(cloud.join("user-data"), userdata).map_err(|e| e.to_string())?;
         fs::write(
@@ -284,22 +338,60 @@ pub fn run_project(
         }
         atomic_write(&baseline_manifest, desired_manifest.as_bytes())?;
     }
-    let evaluation_id = uuid::Uuid::new_v4().to_string();
-    let results_root = project.join("results");
-    let result_dir = results_root.join(&evaluation_id);
-    fs::create_dir_all(&result_dir).map_err(|e| e.to_string())?;
-    if let (Ok(uid), Ok(gid)) = (std::env::var("SUDO_UID"), std::env::var("SUDO_GID"))
-        && let (Ok(uid), Ok(gid)) = (uid.parse::<u32>(), gid.parse::<u32>())
-    {
-        change_owner(&results_root, uid, gid)?;
-        change_owner(&result_dir, uid, gid)?;
-    }
+    persist_preparation_record(
+        &mut run_repository,
+        &baseline_disk,
+        &p.lifecycle.preparation.packages,
+        &preparation_scripts,
+    )?;
+    run_repository.append_event(
+        "platform.baseline_ready",
+        serde_json::json!({
+            "platform_id": p.id,
+            "provider": p.kind,
+            "template_name": p.lifecycle.template_name,
+            "template_manifest_sha256": format!("{:x}", Sha256::digest(base_manifest.as_bytes())),
+            "baseline_name": p.lifecycle.project_clone.name,
+            "baseline_manifest_sha256": format!("{:x}", Sha256::digest(desired_manifest.as_bytes())),
+            "image_release": p.lifecycle.template_image.release,
+            "guest_agent_version": p.lifecycle.agent.version
+        }),
+    )?;
     let mut domain_names = std::collections::HashSet::new();
-    for (id, deliverable) in roster {
+    for (id, selector) in roster {
         let intake = TemporaryDirectory::create()?;
-        let acquired = delivery_agent
-            .get(&deliverable, &intake.0.join("submission"))
-            .map_err(|error| error.to_string())?;
+        let acquired = match &selector {
+            DeliverySelector::Name(name) => delivery_agent.get(name, &intake.0.join("submission")),
+            DeliverySelector::ProviderId(provider_id) => {
+                delivery_agent.get_by_id(provider_id, &intake.0.join("submission"))
+            }
+        }
+        .map_err(|error| error.to_string())?;
+        let source_kind = match config.delivery_agent.as_ref() {
+            Some(DeliveryAgentConfig::Gdrive { .. }) => "gdrive",
+            _ => "local",
+        };
+        let selector_value = match &selector {
+            DeliverySelector::Name(name) => name.clone(),
+            DeliverySelector::ProviderId(provider_id) => provider_id.clone(),
+        };
+        let acquired_at = chrono::Utc::now().to_rfc3339();
+        let provenance = thot_core::sandbox_contracts::DeliveryProvenance {
+            source_kind: source_kind.into(),
+            selector: selector_value,
+            provider_id: acquired.info.provider_id.clone(),
+            revision: acquired.info.revision.clone(),
+            name: acquired.info.name.clone(),
+            mime_type: acquired.info.mime_type.clone(),
+            source_checksum: acquired.info.source_checksum.clone(),
+            source_checksum_algorithm: acquired.info.source_checksum_algorithm.clone(),
+            size_bytes: acquired.info.size_bytes,
+            created_at: acquired.info.created_at.clone(),
+            modified_at: acquired.info.modified_at.clone(),
+            acquired_at: acquired_at.clone(),
+            sha256: acquired.sha256.clone(),
+        };
+        let persisted_input = run_repository.persist_input(&id, &acquired.path, provenance)?;
         let domain = format!(
             "{}-{}",
             p.lifecycle.student_clone.name_prefix,
@@ -339,7 +431,7 @@ pub fn run_project(
             seed: None,
             work: None,
         };
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let run_id = evaluation_id.clone();
         let unit_id = format!("{run_id}-{id}");
         let token = new_session_token()?;
         let port = 49152
@@ -423,13 +515,34 @@ pub fn run_project(
         write_frame(&mut stream, &AgentRequest::Handshake(handshake.clone()))
             .map_err(|e| e.to_string())?;
         let response: AgentResponse = read_frame(&mut stream).map_err(|e| e.to_string())?;
-        match response {
+        let guest_capabilities = match response {
             AgentResponse::Handshake(answer)
                 if answer.protocol_version == ALPINE_PROTOCOL_VERSION
-                    && answer.nonce == handshake.nonce => {}
+                    && answer.nonce == handshake.nonce =>
+            {
+                answer.capabilities
+            }
             _ => return Err("agent handshake rejected".into()),
+        };
+        for module in test_modules.values() {
+            for required in &module.reference.capabilities {
+                if !guest_capabilities.iter().any(|available| {
+                    available.id == required.id && available.version == required.version
+                }) {
+                    return Err(format!(
+                        "guest agent lacks required module capability {}@{}; refusing execution",
+                        required.id, required.version
+                    ));
+                }
+            }
         }
-        let mut staging_budget = StagingBudget::default();
+        let mut staging_budget = StagingBudget::new(
+            config
+                .delivery_limits
+                .max_bytes
+                .saturating_add(32 * 1024 * 1024),
+            config.delivery_limits.max_files.saturating_add(100),
+        );
         for input in &p.inputs {
             let source_path = if input.role == "student-deliverable" {
                 acquired.path.clone()
@@ -458,8 +571,24 @@ pub fn run_project(
                 )?;
             }
         }
+        let mut staged_modules = std::collections::HashSet::new();
+        for module in test_modules.values() {
+            if staged_modules.insert(module.reference.package_sha256.clone()) {
+                staging_budget.bytes = staging_budget
+                    .bytes
+                    .saturating_add(module.package_bytes.len() as u64);
+                staging_budget.files = staging_budget.files.saturating_add(1);
+                if staging_budget.bytes > staging_budget.max_bytes
+                    || staging_budget.files > staging_budget.max_files
+                {
+                    return Err("submission, instructor inputs and module packages exceed the configured staging budget".into());
+                }
+                stage_path(&mut stream, &module.source_path, &module.guest_path)?;
+            }
+        }
         let mut test_results: Vec<(String, bool, serde_json::Value)> = Vec::new();
         let mut test_json = Vec::new();
+        let mut infrastructure_pending = false;
         for test in &p.tests {
             let blocked = test.requires.iter().any(|dependency| {
                 !test_results
@@ -467,11 +596,29 @@ pub fn run_project(
                     .any(|(id, ok, _)| id == dependency && *ok)
             });
             if blocked {
-                let skipped = serde_json::json!({"status":"skipped","assessment":"skipped","reason":"required test did not pass"});
+                let pending_dependency =
+                    dependency_has_pending_result(&test.requires, &test_results);
+                let (execution_status, assessment, reason) = if pending_dependency {
+                    (
+                        "skipped",
+                        "pending",
+                        "required test has infrastructure-pending evidence",
+                    )
+                } else {
+                    ("skipped", "skipped", "required test did not pass")
+                };
+                let skipped = serde_json::json!({"status":execution_status,"assessment":assessment,"reason":reason});
                 test_json.push(serde_json::json!({"test_id":test.id,"result":skipped}));
                 test_results.push((test.id.clone(), false, skipped));
                 continue;
             }
+            let module_launch = test_modules.get(&test.id).map(|module| ModuleLaunch {
+                module_id: module.reference.module_id.clone(),
+                version: module.reference.version.clone(),
+                package_sha256: module.reference.package_sha256.clone(),
+                package_path: module.guest_path.clone().into(),
+                capabilities: module.reference.capabilities.clone(),
+            });
             let request = ExecuteTaskRequest {
                 task_id: uuid::Uuid::new_v4().to_string(),
                 run_id: run_id.clone(),
@@ -490,6 +637,7 @@ pub fn run_project(
                 stdout_limit: p.limits.stdout_bytes,
                 stderr_limit: p.limits.stderr_bytes,
                 is_preparation: false,
+                module: module_launch,
             };
             write_frame(&mut stream, &AgentRequest::ExecuteTask(request.clone()))
                 .map_err(|e| e.to_string())?;
@@ -498,6 +646,12 @@ pub fn run_project(
                 AgentResponse::ExecuteTaskResult(r) => r,
                 _ => return Err("unexpected agent response".into()),
             };
+            if result.task_id != request.task_id
+                || result.run_id != request.run_id
+                || result.student_unit_id != request.student_unit_id
+            {
+                return Err("agent returned a result for a different task or student unit".into());
+            }
             let passed = thot_engine::sandbox::evaluate_sandbox_test(
                 result.exit_code,
                 result.timed_out,
@@ -505,7 +659,35 @@ pub fn run_project(
                 test.expected_stdout.as_deref(),
                 &result.stdout,
             );
-            let v = serde_json::json!({"status":if result.timed_out{"timed_out"}else{"completed"},"assessment":if passed{"passed"}else{"failed"},"exit_code":result.exit_code,"stdout":result.stdout,"stderr":result.stderr,"duration_ms":result.elapsed_ms,"truncated":result.truncated,"diagnostics":result.diagnostics});
+            infrastructure_pending |= matches!(
+                result.status,
+                ExecutionStatus::ResourceExceeded
+                    | ExecutionStatus::PlatformError
+                    | ExecutionStatus::Cancelled
+                    | ExecutionStatus::Interrupted
+                    | ExecutionStatus::Unsupported
+            );
+            let assessment = if infrastructure_pending
+                && result.status != ExecutionStatus::Completed
+                && result.status != ExecutionStatus::TimedOut
+            {
+                "pending"
+            } else if passed {
+                "passed"
+            } else {
+                "failed"
+            };
+            let stdout_artifact = run_repository.put_artifact(
+                result.stdout.as_bytes(),
+                "text/plain; charset=utf-8",
+                !result.truncated,
+            )?;
+            let stderr_artifact = run_repository.put_artifact(
+                result.stderr.as_bytes(),
+                "text/plain; charset=utf-8",
+                !result.truncated,
+            )?;
+            let v = serde_json::json!({"status":execution_status_name(result.status),"assessment":assessment,"exit_code":result.exit_code,"stdout":result.stdout,"stderr":result.stderr,"stdout_artifact":stdout_artifact,"stderr_artifact":stderr_artifact,"duration_ms":result.elapsed_ms,"truncated":result.truncated,"diagnostics":result.diagnostics,"module":test_modules.get(&test.id).map(|module|serde_json::json!({"module_id":module.reference.module_id,"version":module.reference.version,"package_sha256":module.reference.package_sha256}))});
             test_json.push(serde_json::json!({"test_id":test.id,"result":v}));
             test_results.push((test.id.clone(), passed, v));
         }
@@ -519,24 +701,73 @@ pub fn run_project(
             .iter()
             .map(|(test_id, passed, _)| (test_id.clone(), *passed))
             .collect::<std::collections::HashMap<_, _>>();
-        let criteria = p
-            .evaluation
-            .rubric
-            .criteria
-            .iter()
-            .map(|criterion| (criterion.check.clone(), criterion.points))
-            .collect::<Vec<_>>();
-        let evaluated =
-            thot_engine::sandbox::evaluate_sandbox_rubric(&checks, &test_passed, &criteria)?;
-        let grade = evaluated
-            .iter()
-            .map(|criterion| criterion.earned_points)
-            .sum::<u32>();
-        let earned = evaluated.iter().map(|criterion| serde_json::json!({"check":criterion.check,"points":criterion.earned_points,"maximum":criterion.maximum_points})).collect::<Vec<_>>();
-        let report = serde_json::json!({"schema_version":"thot.result/v2","student_id":id,"run_id":run_id,"platform":"kvm-alpine","deliverable":{"name":acquired.info.name,"size_bytes":acquired.info.size_bytes,"created_at":acquired.info.created_at,"modified_at":acquired.info.modified_at,"sha256":acquired.sha256},"tests":test_json,"criteria":earned,"grade":grade,"scale":p.evaluation.rubric.scale});
+        let (grade, grade_scale, earned, item_results, grade_pending) = if let Some(rubric) =
+            &p.evaluation.rubric
+        {
+            let criteria = rubric
+                .criteria
+                .iter()
+                .map(|criterion| (criterion.check.clone(), criterion.points))
+                .collect::<Vec<_>>();
+            let evaluated =
+                thot_engine::sandbox::evaluate_sandbox_rubric(&checks, &test_passed, &criteria)?;
+            let calculated_grade = evaluated
+                .iter()
+                .map(|criterion| criterion.earned_points)
+                .sum::<u32>();
+            let grade = (!infrastructure_pending).then_some(calculated_grade);
+            let earned = evaluated.iter().map(|criterion| serde_json::json!({"check":criterion.check,"points":criterion.earned_points,"maximum":criterion.maximum_points})).collect::<Vec<_>>();
+            (grade, rubric.scale, earned, Vec::new(), grade.is_none())
+        } else {
+            use thot_engine::sandbox::{SandboxItemStatus, SandboxTestAssessment};
+            let assessments = test_results
+                .iter()
+                .map(|(test_id, _, result)| {
+                    let assessment = match result["assessment"].as_str().unwrap_or("pending") {
+                        "passed" => SandboxTestAssessment::Passed,
+                        "failed" => SandboxTestAssessment::Failed,
+                        "skipped" => SandboxTestAssessment::Skipped,
+                        _ => SandboxTestAssessment::Pending,
+                    };
+                    (test_id.clone(), assessment)
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            let evaluated = thot_engine::sandbox::evaluate_sandbox_items(
+                &checks,
+                &assessments,
+                &p.evaluation.items,
+            )?;
+            let grade_pending = evaluated
+                .iter()
+                .any(|item| item.status == SandboxItemStatus::Pending);
+            let calculated_grade = evaluated.iter().filter_map(|item| item.grade).sum::<u32>();
+            let grade_scale = evaluated.iter().map(|item| item.scale).sum::<u32>();
+            let grade = (!grade_pending).then_some(calculated_grade);
+            let earned = evaluated.iter().flat_map(|item| item.criteria.iter().map(|criterion| serde_json::json!({"item_id":item.id,"check":criterion.check,"status":if criterion.pending{"pending"}else{"complete"},"points":if criterion.pending{None}else{Some(criterion.earned_points)},"maximum":criterion.maximum_points}))).collect::<Vec<_>>();
+            let item_results = evaluated.iter().map(|item| serde_json::json!({"id":item.id,"title":item.title,"status":match item.status {SandboxItemStatus::Complete => "complete", SandboxItemStatus::Pending => "pending"},"grade":item.grade,"scale":item.scale,"criteria":item.criteria.iter().map(|criterion| serde_json::json!({"check":criterion.check,"status":if criterion.pending{"pending"}else{"complete"},"points":if criterion.pending{None}else{Some(criterion.earned_points)},"maximum":criterion.maximum_points})).collect::<Vec<_>>()})).collect::<Vec<_>>();
+            (grade, grade_scale, earned, item_results, grade_pending)
+        };
+        let provenance = serde_json::json!({"source_kind":source_kind,"selector":match selector { DeliverySelector::Name(name) => name, DeliverySelector::ProviderId(provider_id) => provider_id },"provider_id":acquired.info.provider_id,"revision":acquired.info.revision,"name":acquired.info.name,"mime_type":acquired.info.mime_type,"source_checksum":acquired.info.source_checksum,"source_checksum_algorithm":acquired.info.source_checksum_algorithm,"size_bytes":acquired.info.size_bytes,"created_at":acquired.info.created_at,"modified_at":acquired.info.modified_at,"acquired_at":acquired_at,"sha256":acquired.sha256,"archived_input":persisted_input});
         let result_path = result_dir.join(format!("{id}.json"));
-        fs::write(&result_path, serde_json::to_vec_pretty(&report).unwrap())
-            .map_err(|e| e.to_string())?;
+        let seed_path = root.join(format!("seed-{id}.iso"));
+        let work_path = root.join(format!("seed-{id}"));
+        drop(cleanup);
+        let cleanup_clean = matches!(disk_in_use(&disk), Ok(false))
+            && !disk.exists()
+            && !seed_path.exists()
+            && !work_path.exists();
+        let cleanup_status = if cleanup_clean { "clean" } else { "failed" };
+        run_repository.append_event(
+            "student.cleanup_verified",
+            serde_json::json!({"student_unit_id": id, "cleanup_status": cleanup_status}),
+        )?;
+        let report = serde_json::json!({"schema_version":if p.evaluation.rubric.is_some(){"thot.result/v2"}else{"thot.result/v3"},"student_id":id,"run_id":run_id,"platform":"kvm-alpine","deliverable":provenance,"tests":test_json,"criteria":earned,"evaluation_items":item_results,"grade":grade,"scale":grade_scale,"assessment_status":if cleanup_clean && !grade_pending{"complete"}else{"pending"},"cleanup_status":cleanup_status,"infrastructure_pending":infrastructure_pending});
+        thot_engine::test_result_store::persist_report(&result_path, &report)
+            .map_err(|error| error.to_string())?;
+        run_repository.append_event(
+            "student.result_persisted",
+            serde_json::json!({"student_unit_id": id, "result_path": format!("{id}.json"), "grade": grade}),
+        )?;
         if let (Some(uid), Some(gid)) = (
             std::env::var("SUDO_UID")
                 .ok()
@@ -547,9 +778,21 @@ pub fn run_project(
         ) {
             change_owner(&result_path, uid, gid)?;
         }
-        drop(cleanup);
-        println!("{id}: {grade}/10");
+        if !cleanup_clean {
+            run_repository.mark_failed("student_cleanup_failed")?;
+            return Err(format!(
+                "cleanup failed for `{id}`; run was left incomplete and no later delivery was started"
+            ));
+        }
+        if let Some(grade) = grade {
+            println!("{id}: {grade}/{grade_scale}");
+        } else {
+            println!("{id}: pending infrastructure review");
+        }
     }
+    let result_paths = roster_result_paths(&result_dir)?;
+    run_repository.commit_revision("initial-evaluation", result_paths)?;
+    run_repository.verify_journal()?;
     println!("Results: {}", result_dir.display());
     Ok(())
 }
@@ -835,12 +1078,235 @@ fn project_input(project: &std::path::Path, source: &str) -> Result<PathBuf, Str
     Ok(canonical)
 }
 
+struct ResolvedPreparationScript {
+    path: String,
+    bytes: Vec<u8>,
+    sha256: String,
+    timeout_seconds: u32,
+}
+
+fn resolve_preparation_scripts(
+    project: &std::path::Path,
+    platform: &SandboxPlatform,
+) -> Result<Vec<ResolvedPreparationScript>, String> {
+    let mut total_bytes = 0usize;
+    let mut resolved = Vec::new();
+    for script in &platform.lifecycle.preparation.scripts {
+        let bytes = read_project_file_bounded(project, &script.path, 1024 * 1024)?;
+        total_bytes = total_bytes.saturating_add(bytes.len());
+        if bytes.len() > 1024 * 1024 || total_bytes > 8 * 1024 * 1024 {
+            return Err("preparation scripts exceed the 1 MiB each / 8 MiB total limit".into());
+        }
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        if script
+            .sha256
+            .as_ref()
+            .is_some_and(|expected| expected != &sha256)
+        {
+            return Err(format!(
+                "preparation script `{}` SHA-256 does not match its configured value",
+                script.path
+            ));
+        }
+        std::str::from_utf8(&bytes).map_err(|_| {
+            format!(
+                "preparation script `{}` must be UTF-8 shell text",
+                script.path
+            )
+        })?;
+        resolved.push(ResolvedPreparationScript {
+            path: script.path.clone(),
+            bytes,
+            sha256,
+            timeout_seconds: script
+                .timeout_seconds
+                .unwrap_or(platform.lifecycle.preparation.timeout_seconds),
+        });
+    }
+    Ok(resolved)
+}
+
+struct ResolvedTestModule {
+    reference: TestModuleReference,
+    manifest_bytes: Vec<u8>,
+    package_bytes: Vec<u8>,
+    source_path: PathBuf,
+    guest_path: String,
+}
+
+fn persist_preparation_record(
+    repository: &mut thot_engine::sandbox_repository::ProjectRunRepository,
+    baseline_disk: &std::path::Path,
+    requested_packages: &[String],
+    scripts: &[ResolvedPreparationScript],
+) -> Result<(), String> {
+    let package_inventory =
+        read_prepared_guest_file(baseline_disk, "/var/lib/thot-preparation/packages.txt")?;
+    let inventory_artifact =
+        repository.put_artifact(&package_inventory, "text/plain; charset=utf-8", true)?;
+    let apk_stdout = repository.put_artifact(
+        &read_prepared_guest_file(baseline_disk, "/var/lib/thot-preparation/apk.stdout")?,
+        "text/plain; charset=utf-8",
+        true,
+    )?;
+    let apk_stderr = repository.put_artifact(
+        &read_prepared_guest_file(baseline_disk, "/var/lib/thot-preparation/apk.stderr")?,
+        "text/plain; charset=utf-8",
+        true,
+    )?;
+    let mut script_results = Vec::new();
+    for (index, script) in scripts.iter().enumerate() {
+        let prefix = format!("/var/lib/thot-preparation/script-{index:03}");
+        let exit_code = String::from_utf8(read_prepared_guest_file(
+            baseline_disk,
+            &format!("{prefix}.exit"),
+        )?)
+        .map_err(|error| error.to_string())?
+        .trim()
+        .parse::<i32>()
+        .map_err(|error| {
+            format!(
+                "invalid preparation exit status for `{}`: {error}",
+                script.path
+            )
+        })?;
+        if exit_code != 0 {
+            return Err(format!(
+                "preparation script `{}` failed with exit code {exit_code}",
+                script.path
+            ));
+        }
+        let stdout = repository.put_artifact(
+            &read_prepared_guest_file(baseline_disk, &format!("{prefix}.stdout"))?,
+            "text/plain; charset=utf-8",
+            true,
+        )?;
+        let stderr = repository.put_artifact(
+            &read_prepared_guest_file(baseline_disk, &format!("{prefix}.stderr"))?,
+            "text/plain; charset=utf-8",
+            true,
+        )?;
+        script_results.push(serde_json::json!({
+            "path": script.path,
+            "sha256": script.sha256,
+            "timeout_seconds": script.timeout_seconds,
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr
+        }));
+    }
+    repository.append_event(
+        "platform.preparation_completed",
+        serde_json::json!({
+            "package_manager": "apk",
+            "requested_packages": requested_packages,
+            "installed_package_inventory": inventory_artifact,
+            "package_stdout": apk_stdout,
+            "package_stderr": apk_stderr,
+            "scripts": script_results
+        }),
+    )
+}
+
+fn read_prepared_guest_file(
+    baseline_disk: &std::path::Path,
+    guest_path: &str,
+) -> Result<Vec<u8>, String> {
+    let output = Command::new("guestfish")
+        .args(["--ro", "-a"])
+        .arg(baseline_disk)
+        .args(["-i", "cat", guest_path])
+        .output()
+        .map_err(|error| format!("cannot read preparation evidence `{guest_path}`: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "preparation evidence `{guest_path}` is unavailable: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    if output.stdout.len() > 1024 * 1024 {
+        return Err(format!(
+            "preparation evidence `{guest_path}` exceeds the 1 MiB capture limit"
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn resolve_test_modules(
+    project: &std::path::Path,
+    platform: &SandboxPlatform,
+) -> Result<std::collections::BTreeMap<String, ResolvedTestModule>, String> {
+    let mut modules = std::collections::BTreeMap::new();
+    for test in &platform.tests {
+        let Some(configured) = &test.module else {
+            continue;
+        };
+        let manifest_bytes = read_project_file_bounded(project, &configured.manifest, 1024 * 1024)?;
+        let manifest = parse_test_module_manifest(&manifest_bytes)
+            .map_err(|error| format!("test `{}` module manifest is invalid: {error}", test.id))?;
+        if !manifest.assets.is_empty() {
+            return Err(format!(
+                "test `{}` module manifest declares assets; current posix-shell-script-v1 package supports one script file only",
+                test.id
+            ));
+        }
+        let source_path = project_input(project, &configured.package)?;
+        let package_bytes =
+            read_project_file_bounded(project, &configured.package, 32 * 1024 * 1024)?;
+        if !package_bytes.starts_with(b"#!/bin/sh\n") {
+            return Err(format!(
+                "test `{}` module must use the portable `#!/bin/sh` entrypoint for posix-shell-script-v1",
+                test.id
+            ));
+        }
+        manifest
+            .verify_package_bytes(&package_bytes)
+            .map_err(|error| {
+                format!(
+                    "test `{}` module package verification failed: {error}",
+                    test.id
+                )
+            })?;
+        let reference = manifest.reference().map_err(|error| error.to_string())?;
+        let guest_path = format!(
+            "/work/.thot/modules/{}/entrypoint.sh",
+            reference.package_sha256
+        );
+        let module = ResolvedTestModule {
+            reference,
+            manifest_bytes,
+            package_bytes,
+            source_path,
+            guest_path,
+        };
+        if modules.insert(test.id.clone(), module).is_some() {
+            return Err(format!(
+                "test `{}` has duplicate module configuration",
+                test.id
+            ));
+        }
+    }
+    Ok(modules)
+}
+
+fn execution_status_name(status: ExecutionStatus) -> &'static str {
+    match status {
+        ExecutionStatus::Completed => "completed",
+        ExecutionStatus::TimedOut => "timed_out",
+        ExecutionStatus::ResourceExceeded => "resource_exceeded",
+        ExecutionStatus::PlatformError => "platform_error",
+        ExecutionStatus::Cancelled => "cancelled",
+        ExecutionStatus::Interrupted => "interrupted",
+        ExecutionStatus::Unsupported => "unsupported",
+    }
+}
+
 fn load_roster(
     project: &std::path::Path,
     config: &SandboxProject,
     student_domain_prefix: &str,
     deliveries: &[DeliveryInfo],
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<Vec<(String, DeliverySelector)>, String> {
     let read_yaml = |relative: &str| -> Result<serde_yaml::Value, String> {
         let path = project_input(project, relative)?;
         let bytes = fs::read(&path).map_err(|error| error.to_string())?;
@@ -889,36 +1355,53 @@ fn load_roster(
         }
     }
     let mut assignment_map = std::collections::HashMap::new();
-    let available = deliveries
-        .iter()
-        .map(|delivery| delivery.name.as_str())
-        .collect::<Vec<_>>();
-    let mut unique_names = std::collections::HashSet::new();
-    if available.iter().any(|name| !unique_names.insert(*name)) {
-        return Err(
-            "delivery agent returned duplicate names; assignments require unique deliverable names"
-                .into(),
-        );
-    }
     for assignment in assignment_list {
         let id = assignment
             .get("student_id")
             .and_then(serde_yaml::Value::as_str)
             .ok_or("each assignment must have a student_id")?;
-        let path = assignment
+        let name = assignment
             .get("deliverable")
-            .and_then(serde_yaml::Value::as_str)
-            .ok_or_else(|| format!("assignment for `{id}` must have a deliverable name"))?;
-        if !available.contains(&path) {
-            return Err(format!(
-                "deliverable `{path}` assigned to `{id}` was not found in the configured delivery source"
-            ));
-        }
-        if !ids.contains(id)
-            || assignment_map
-                .insert(id.to_owned(), path.to_owned())
-                .is_some()
-        {
+            .and_then(serde_yaml::Value::as_str);
+        let provider_id = assignment
+            .get("deliverable_id")
+            .and_then(serde_yaml::Value::as_str);
+        let selector = match (name, provider_id) {
+            (Some(_), Some(_)) | (None, None) => {
+                return Err(format!(
+                    "assignment for `{id}` must specify exactly one of deliverable or deliverable_id"
+                ));
+            }
+            (Some(name), None) => {
+                let matches = deliveries
+                    .iter()
+                    .filter(|delivery| delivery.name == name)
+                    .count();
+                if matches == 0 {
+                    return Err(format!(
+                        "deliverable `{name}` assigned to `{id}` was not found in the configured delivery source"
+                    ));
+                }
+                if matches > 1 {
+                    return Err(format!(
+                        "deliverable name `{name}` is ambiguous; specify deliverable_id from the inventory"
+                    ));
+                }
+                DeliverySelector::Name(name.to_owned())
+            }
+            (None, Some(provider_id)) => {
+                if !deliveries
+                    .iter()
+                    .any(|delivery| delivery.provider_id.as_deref() == Some(provider_id))
+                {
+                    return Err(format!(
+                        "deliverable_id `{provider_id}` assigned to `{id}` was not found in the configured delivery source"
+                    ));
+                }
+                DeliverySelector::ProviderId(provider_id.to_owned())
+            }
+        };
+        if !ids.contains(id) || assignment_map.insert(id.to_owned(), selector).is_some() {
             return Err(format!("assignment for `{id}` is unknown or duplicated"));
         }
     }
@@ -934,12 +1417,90 @@ fn load_roster(
                 .get("student_id")
                 .and_then(serde_yaml::Value::as_str)
                 .ok_or("student missing student_id")?;
-            let path = assignment_map
+            let selector = assignment_map
                 .remove(id)
                 .ok_or_else(|| format!("student `{id}` has no deliverable"))?;
-            Ok((id.to_owned(), path))
+            Ok((id.to_owned(), selector))
         })
         .collect()
+}
+
+#[derive(Debug, Clone)]
+enum DeliverySelector {
+    Name(String),
+    ProviderId(String),
+}
+
+fn read_project_file(project: &std::path::Path, relative: &str) -> Result<Vec<u8>, String> {
+    let path = project_input(project, relative)?;
+    let metadata =
+        fs::symlink_metadata(project.join(relative)).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "project metadata `{relative}` must be a regular file"
+        ));
+    }
+    fs::read(path).map_err(|error| format!("cannot read project metadata `{relative}`: {error}"))
+}
+
+fn read_project_file_bounded(
+    project: &std::path::Path,
+    relative: &str,
+    maximum: u64,
+) -> Result<Vec<u8>, String> {
+    let path = project_input(project, relative)?;
+    let metadata = fs::symlink_metadata(project.join(relative))
+        .map_err(|error| format!("cannot inspect project input `{relative}`: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "project input `{relative}` must be a regular non-symlink file"
+        ));
+    }
+    if metadata.len() > maximum {
+        return Err(format!(
+            "project input `{relative}` exceeds its {maximum} byte limit"
+        ));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| format!("cannot safely open project input `{relative}`: {error}"))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > maximum {
+        return Err(format!(
+            "project input `{relative}` grew beyond its {maximum} byte limit"
+        ));
+    }
+    Ok(bytes)
+}
+
+fn roster_result_paths(result_dir: &std::path::Path) -> Result<Vec<String>, String> {
+    let mut paths = fs::read_dir(result_dir)
+        .map_err(|error| error.to_string())?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            (entry.file_name() != "run.json"
+                && entry.file_type().ok().is_some_and(|kind| kind.is_file())
+                && path.extension().and_then(|extension| extension.to_str()) == Some("json"))
+            .then(|| path.file_name()?.to_str().map(str::to_owned))
+            .flatten()
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    if paths.is_empty() {
+        return Err("evaluation completed without any student result records".into());
+    }
+    Ok(paths)
 }
 
 fn yaml_quote(value: &str) -> String {
@@ -1100,10 +1661,22 @@ fn accept_vsock(listener: &std::fs::File) -> Result<(std::fs::File, u32), String
     Ok((unsafe { std::fs::File::from_raw_fd(fd) }, addr.svm_cid))
 }
 
-#[derive(Default)]
 struct StagingBudget {
     bytes: u64,
     files: usize,
+    max_bytes: u64,
+    max_files: usize,
+}
+
+impl StagingBudget {
+    fn new(max_bytes: u64, max_files: usize) -> Self {
+        Self {
+            bytes: 0,
+            files: 0,
+            max_bytes,
+            max_files,
+        }
+    }
 }
 
 fn stage_input(
@@ -1112,8 +1685,6 @@ fn stage_input(
     destination: &str,
     budget: &mut StagingBudget,
 ) -> Result<(), String> {
-    const MAX_TOTAL: u64 = 128 * 1024 * 1024;
-    const MAX_FILES: usize = 10_000;
     let metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
     if metadata.file_type().is_symlink() {
         return Err(format!("refusing to stage symlink `{}`", source.display()));
@@ -1121,8 +1692,11 @@ fn stage_input(
     if metadata.is_file() {
         budget.bytes = budget.bytes.saturating_add(metadata.len());
         budget.files += 1;
-        if budget.bytes > MAX_TOTAL || budget.files > MAX_FILES {
-            return Err("staged project inputs exceed the 128 MiB or 10,000 file limit".into());
+        if budget.bytes > budget.max_bytes || budget.files > budget.max_files {
+            return Err(format!(
+                "staged project inputs exceed the configured {} byte or {} file limit",
+                budget.max_bytes, budget.max_files
+            ));
         }
         return stage_path(stream, source, destination);
     }
@@ -1150,42 +1724,96 @@ fn stage_path(
     source: &std::path::Path,
     destination: &str,
 ) -> Result<(), String> {
-    const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
-    let file_size = fs::metadata(source).map_err(|e| e.to_string())?.len();
-    if file_size > MAX_FILE_BYTES {
+    use std::io::Read;
+    const CHUNK_BYTES: usize = 64 * 1024;
+    let metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(format!(
-            "input `{}` exceeds the 10 MiB per-file limit",
+            "input `{}` is not a regular non-symlink file",
             source.display()
         ));
     }
-    let bytes = fs::read(source).map_err(|e| e.to_string())?;
-    let digest = format!("{:x}", Sha256::digest(&bytes));
-    let chunks: Vec<&[u8]> = bytes.chunks(64 * 1024).collect();
-    let chunks = if chunks.is_empty() {
-        vec![&[][..]]
-    } else {
-        chunks
-    };
+    let file_size = metadata.len();
+    let mut input = open_staging_source(source)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; CHUNK_BYTES];
+    loop {
+        let count = input.read(&mut buffer).map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let digest = format!("{:x}", hasher.finalize());
+    let mut input = open_staging_source(source)?;
     let transfer_id = uuid::Uuid::new_v4().to_string();
-    for (index, chunk) in chunks.iter().enumerate() {
+    let mut chunk_index = 0u64;
+    let mut sent = 0u64;
+    loop {
+        let count = input.read(&mut buffer).map_err(|error| error.to_string())?;
+        if count == 0 && (file_size != 0 || chunk_index > 0) {
+            break;
+        }
+        sent = sent.saturating_add(count as u64);
+        let final_chunk = sent == file_size;
         let request = StageFileChunkRequest {
             task_id: transfer_id.clone(),
             file_path: destination.to_string(),
-            total_size: bytes.len() as u64,
+            total_size: file_size,
             expected_sha256: digest.clone(),
-            chunk_index: index as u64,
-            final_chunk: index + 1 == chunks.len(),
-            bytes: chunk.to_vec(),
+            chunk_index,
+            final_chunk,
+            bytes: buffer[..count].to_vec(),
         };
         let task_id = request.task_id.clone();
         write_frame(stream, &AgentRequest::StageFileChunk(request)).map_err(|e| e.to_string())?;
         let response: AgentResponse = read_frame(stream).map_err(|e| e.to_string())?;
         match response {
-            AgentResponse::StageFileChunkResult(r) if r.task_id == task_id => {}
+            AgentResponse::StageFileChunkResult(r)
+                if r.task_id == task_id
+                    && r.complete == final_chunk
+                    && (!final_chunk || r.sha256.as_deref() == Some(digest.as_str())) => {}
             _ => return Err("unexpected staging response".into()),
         }
+        chunk_index += 1;
+        if final_chunk {
+            break;
+        }
+    }
+    if sent != file_size {
+        return Err(format!(
+            "input `{}` changed size during transfer",
+            source.display()
+        ));
     }
     Ok(())
+}
+
+fn open_staging_source(source: &std::path::Path) -> Result<fs::File, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    options.open(source).map_err(|error| {
+        format!(
+            "cannot safely open staged input {}: {error}",
+            source.display()
+        )
+    })
+}
+
+fn dependency_has_pending_result(
+    dependencies: &[String],
+    results: &[(String, bool, serde_json::Value)],
+) -> bool {
+    dependencies.iter().any(|dependency| {
+        results
+            .iter()
+            .any(|(id, _, result)| id == dependency && result["assessment"] == "pending")
+    })
 }
 
 #[cfg(test)]
@@ -1194,11 +1822,21 @@ mod tests {
 
     #[test]
     fn bundled_project_uses_the_shared_v2_schema_and_passes_validation() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/kvm-alpine-poc/configuration.thot.yaml");
-        let bytes = fs::read(path).unwrap();
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/kvm-alpine-poc")
+            .canonicalize()
+            .unwrap();
+        let bytes = fs::read(project_root.join("configuration.thot.yaml")).unwrap();
         let project: SandboxProject = serde_yaml::from_slice(&bytes).unwrap();
         project.validate().unwrap();
+        let platform = &project.sandbox_platforms[0];
+        let preparation = resolve_preparation_scripts(&project_root, platform).unwrap();
+        assert_eq!(preparation.len(), 1);
+        assert_eq!(preparation[0].path, "extern/preparation/verify-bash.sh");
+        let modules = resolve_test_modules(&project_root, platform).unwrap();
+        let module = modules.get("portable-module-sum").unwrap();
+        assert_eq!(module.reference.module_id, "thot.smoke.sum-check");
+        assert_eq!(module.reference.package_sha256.len(), 64);
     }
 
     #[test]
@@ -1216,5 +1854,19 @@ mod tests {
         }
         let _ = fs::remove_file(outside);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dependency_skip_stays_pending_when_the_dependency_failed_infrastructure() {
+        let results = vec![(
+            "disk-inventory".into(),
+            false,
+            serde_json::json!({"assessment":"pending","status":"platform_error"}),
+        )];
+        assert!(dependency_has_pending_result(
+            &["disk-inventory".into()],
+            &results
+        ));
+        assert!(!dependency_has_pending_result(&["other".into()], &results));
     }
 }

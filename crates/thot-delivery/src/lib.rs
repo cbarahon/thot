@@ -12,12 +12,24 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
-use thot_core::sandbox_project::DeliveryAgentConfig;
+use thot_core::sandbox_project::{DeliveryAgentConfig, DeliveryLimits};
 use url::Url;
 
-const MAX_DELIVERY_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_DELIVERY_FILES: usize = 10_000;
+const MAX_SUPPORTED_DELIVERY_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const DRIVE_READONLY_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
+
+fn validate_limits(limits: &DeliveryLimits) -> Result<(), DeliveryError> {
+    if limits.max_bytes == 0
+        || limits.max_bytes > MAX_SUPPORTED_DELIVERY_BYTES
+        || limits.max_files == 0
+        || limits.max_files > 100_000
+    {
+        return Err(DeliveryError::Configuration(
+            "delivery limits must be within the supported 64 GiB / 100,000 file ceilings".into(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Error)]
 pub enum DeliveryError {
@@ -39,6 +51,16 @@ pub struct DeliveryInfo {
     pub size_bytes: u64,
     pub created_at: Option<String>,
     pub modified_at: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub revision: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub source_checksum: Option<String>,
+    #[serde(default)]
+    pub source_checksum_algorithm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +74,17 @@ pub struct RetrievedDelivery {
 pub trait DeliveryAgent {
     fn list(&mut self) -> Result<Vec<DeliveryInfo>, DeliveryError>;
     fn get(&mut self, name: &str, destination: &Path) -> Result<RetrievedDelivery, DeliveryError>;
+
+    fn get_by_id(
+        &mut self,
+        provider_id: &str,
+        destination: &Path,
+    ) -> Result<RetrievedDelivery, DeliveryError> {
+        let _ = (provider_id, destination);
+        Err(DeliveryError::Source(
+            "this delivery source does not support provider-ID selection".into(),
+        ))
+    }
 }
 
 pub fn build_agent(
@@ -59,10 +92,11 @@ pub fn build_agent(
     project_root: &Path,
     legacy_delivery_folder: Option<&str>,
     student_input_root: Option<&str>,
+    limits: &DeliveryLimits,
 ) -> Result<Box<dyn DeliveryAgent>, DeliveryError> {
     match config {
         Some(DeliveryAgentConfig::Gdrive { folder_url }) => {
-            Ok(Box::new(GoogleDriveAgent::new(folder_url)?))
+            Ok(Box::new(GoogleDriveAgent::with_limits(folder_url, limits)?))
         }
         Some(DeliveryAgentConfig::Local { path }) => {
             let path = path
@@ -70,13 +104,21 @@ pub fn build_agent(
                 .or(legacy_delivery_folder)
                 .or(student_input_root)
                 .unwrap_or("delivery");
-            Ok(Box::new(LocalFilesystemAgent::new(project_root, path)?))
+            Ok(Box::new(LocalFilesystemAgent::with_limits(
+                project_root,
+                path,
+                limits,
+            )?))
         }
         None => {
             let path = legacy_delivery_folder
                 .or(student_input_root)
                 .unwrap_or("delivery");
-            Ok(Box::new(LocalFilesystemAgent::new(project_root, path)?))
+            Ok(Box::new(LocalFilesystemAgent::with_limits(
+                project_root,
+                path,
+                limits,
+            )?))
         }
     }
 }
@@ -98,6 +140,7 @@ pub fn default_student_input_root(
 
 pub struct LocalFilesystemAgent {
     root: PathBuf,
+    limits: DeliveryLimits,
 }
 
 impl LocalFilesystemAgent {
@@ -116,7 +159,36 @@ impl LocalFilesystemAgent {
             )));
         }
         let root = source.canonicalize()?;
-        Ok(Self { root })
+        Self::with_root(root, &DeliveryLimits::default())
+    }
+
+    pub fn with_limits(
+        project_root: &Path,
+        configured_path: &str,
+        limits: &DeliveryLimits,
+    ) -> Result<Self, DeliveryError> {
+        let configured = Path::new(configured_path);
+        let source = if configured.is_absolute() {
+            configured.to_path_buf()
+        } else {
+            project_root.join(configured)
+        };
+        let metadata = fs::symlink_metadata(&source)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(DeliveryError::Source(format!(
+                "local delivery folder must be a real directory: {}",
+                source.display()
+            )));
+        }
+        Self::with_root(source.canonicalize()?, limits)
+    }
+
+    fn with_root(root: PathBuf, limits: &DeliveryLimits) -> Result<Self, DeliveryError> {
+        validate_limits(limits)?;
+        Ok(Self {
+            root,
+            limits: limits.clone(),
+        })
     }
 
     fn resolve(&self, name: &str) -> Result<PathBuf, DeliveryError> {
@@ -163,6 +235,11 @@ impl DeliveryAgent for LocalFilesystemAgent {
                 created_at: metadata.created().ok().and_then(system_time_string),
                 modified_at: latest_modified
                     .or_else(|| metadata.modified().ok().and_then(system_time_string)),
+                provider_id: None,
+                revision: None,
+                mime_type: None,
+                source_checksum: None,
+                source_checksum_algorithm: None,
             });
         }
         deliveries.sort_by(|left, right| left.name.cmp(&right.name));
@@ -176,14 +253,16 @@ impl DeliveryAgent for LocalFilesystemAgent {
             .into_iter()
             .find(|item| item.name == name)
             .ok_or_else(|| DeliveryError::Source(format!("deliverable {name:?} disappeared")))?;
-        if info.size_bytes > MAX_DELIVERY_BYTES {
+        if info.size_bytes > self.limits.max_bytes {
             return Err(DeliveryError::Source(format!(
-                "deliverable {name:?} exceeds the 128 MiB intake limit"
+                "deliverable {:?} exceeds the configured {} byte intake limit",
+                info.name, self.limits.max_bytes
             )));
         }
-        if tree_file_count(&source)? > MAX_DELIVERY_FILES {
+        if tree_file_count(&source, self.limits.max_files)? > self.limits.max_files {
             return Err(DeliveryError::Source(format!(
-                "deliverable {name:?} exceeds the 10,000 file intake limit"
+                "deliverable {name:?} exceeds the configured {} file intake limit",
+                self.limits.max_files
             )));
         }
         if let Some(parent) = destination
@@ -192,7 +271,7 @@ impl DeliveryAgent for LocalFilesystemAgent {
         {
             fs::create_dir_all(parent)?;
         }
-        let mut budget = CopyBudget::default();
+        let mut budget = CopyBudget::new(&self.limits);
         copy_tree(&source, destination, &mut budget)?;
         let sha256 = digest_tree(destination)?;
         Ok(RetrievedDelivery {
@@ -231,7 +310,7 @@ fn tree_size_and_modified(path: &Path) -> Result<(u64, Option<String>), Delivery
     Ok((size, modified))
 }
 
-fn tree_file_count(path: &Path) -> Result<usize, DeliveryError> {
+fn tree_file_count(path: &Path, max_files: usize) -> Result<usize, DeliveryError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
         return Err(DeliveryError::Source(format!(
@@ -244,18 +323,30 @@ fn tree_file_count(path: &Path) -> Result<usize, DeliveryError> {
     }
     let mut count = 0usize;
     for entry in fs::read_dir(path)? {
-        count = count.saturating_add(tree_file_count(&entry?.path())?);
-        if count > MAX_DELIVERY_FILES {
+        count = count.saturating_add(tree_file_count(&entry?.path(), max_files)?);
+        if count > max_files {
             return Ok(count);
         }
     }
     Ok(count)
 }
 
-#[derive(Default)]
 struct CopyBudget {
     bytes: u64,
     files: usize,
+    max_bytes: u64,
+    max_files: usize,
+}
+
+impl CopyBudget {
+    fn new(limits: &DeliveryLimits) -> Self {
+        Self {
+            bytes: 0,
+            files: 0,
+            max_bytes: limits.max_bytes,
+            max_files: limits.max_files,
+        }
+    }
 }
 
 fn copy_tree(
@@ -272,8 +363,8 @@ fn copy_tree(
     }
     if metadata.is_file() {
         budget.files = budget.files.saturating_add(1);
-        if budget.files > MAX_DELIVERY_FILES
-            || metadata.len() > MAX_DELIVERY_BYTES.saturating_sub(budget.bytes)
+        if budget.files > budget.max_files
+            || metadata.len() > budget.max_bytes.saturating_sub(budget.bytes)
         {
             return Err(DeliveryError::Source(
                 "deliverable exceeded intake file or byte limits while copying".into(),
@@ -289,15 +380,16 @@ fn copy_tree(
             .create_new(true)
             .write(true)
             .open(destination)?;
-        let remaining = MAX_DELIVERY_BYTES.saturating_sub(budget.bytes);
+        let remaining = budget.max_bytes.saturating_sub(budget.bytes);
         let copied = match std::io::copy(&mut input.take(remaining.saturating_add(1)), &mut output)
         {
             Ok(bytes) if bytes <= remaining => bytes,
             Ok(_) => {
                 let _ = fs::remove_file(destination);
-                return Err(DeliveryError::Source(
-                    "deliverable exceeded the 128 MiB intake limit while copying".into(),
-                ));
+                return Err(DeliveryError::Source(format!(
+                    "deliverable exceeded the {} byte intake limit while copying",
+                    budget.max_bytes
+                )));
             }
             Err(error) => {
                 let _ = fs::remove_file(destination);
@@ -378,14 +470,20 @@ pub struct GoogleDriveAgent {
     folder_id: String,
     credentials: DriveCredentials,
     client: Client,
+    limits: DeliveryLimits,
 }
 
 impl GoogleDriveAgent {
     pub fn new(folder_url: &str) -> Result<Self, DeliveryError> {
+        Self::with_limits(folder_url, &DeliveryLimits::default())
+    }
+
+    pub fn with_limits(folder_url: &str, limits: &DeliveryLimits) -> Result<Self, DeliveryError> {
+        validate_limits(limits)?;
         let folder_id = parse_folder_id(folder_url)?;
         let credentials = DriveCredentials::load()?;
         let client = Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(60 * 60))
             .user_agent(concat!("thot/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| DeliveryError::Remote(error.to_string()))?;
@@ -393,6 +491,7 @@ impl GoogleDriveAgent {
             folder_id,
             credentials,
             client,
+            limits: limits.clone(),
         })
     }
 
@@ -451,7 +550,7 @@ impl GoogleDriveAgent {
                 query.append_pair("orderBy", "name");
                 query.append_pair(
                     "fields",
-                    "nextPageToken,files(id,name,size,createdTime,modifiedTime,mimeType)",
+                    "nextPageToken,files(id,name,size,createdTime,modifiedTime,mimeType,version,headRevisionId,md5Checksum)",
                 );
                 query.append_pair("includeItemsFromAllDrives", "true");
                 query.append_pair("supportsAllDrives", "true");
@@ -488,15 +587,7 @@ impl GoogleDriveAgent {
 impl DeliveryAgent for GoogleDriveAgent {
     fn list(&mut self) -> Result<Vec<DeliveryInfo>, DeliveryError> {
         let files = self.list_remote()?;
-        let mut result = files
-            .into_iter()
-            .map(|file| DeliveryInfo {
-                name: file.name,
-                size_bytes: file.size.and_then(|size| size.parse().ok()).unwrap_or(0),
-                created_at: file.created_time,
-                modified_at: file.modified_time,
-            })
-            .collect::<Vec<_>>();
+        let mut result = files.iter().map(DriveFile::info).collect::<Vec<_>>();
         result.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(result)
     }
@@ -516,49 +607,97 @@ impl DeliveryAgent for GoogleDriveAgent {
                 )
             }));
         }
-        let file = matches.into_iter().next().unwrap();
-        let info = DriveFile::info(&file);
-        if info.size_bytes > MAX_DELIVERY_BYTES {
-            return Err(DeliveryError::Source(format!(
-                "deliverable {name:?} exceeds the 128 MiB intake limit"
-            )));
-        }
-        let token = self.access_token()?;
-        let url = format!(
+        download_drive_file(self, matches.into_iter().next().unwrap(), destination)
+    }
+
+    fn get_by_id(
+        &mut self,
+        provider_id: &str,
+        destination: &Path,
+    ) -> Result<RetrievedDelivery, DeliveryError> {
+        let file = self
+            .list_remote()?
+            .into_iter()
+            .find(|file| file.id == provider_id)
+            .ok_or_else(|| {
+                DeliveryError::Source(format!(
+                    "Google Drive has no deliverable with file ID {provider_id:?}"
+                ))
+            })?;
+        download_drive_file(self, file, destination)
+    }
+}
+
+fn download_drive_file(
+    agent: &mut GoogleDriveAgent,
+    file: DriveFile,
+    destination: &Path,
+) -> Result<RetrievedDelivery, DeliveryError> {
+    let info = file.info();
+    if info.size_bytes > agent.limits.max_bytes {
+        return Err(DeliveryError::Source(format!(
+            "deliverable {:?} exceeds the configured {} byte intake limit",
+            info.name, agent.limits.max_bytes
+        )));
+    }
+    let token = agent.access_token()?;
+    let url = match file.head_revision_id.as_deref() {
+        Some(revision_id) => format!(
+            "https://www.googleapis.com/drive/v3/files/{}/revisions/{}?alt=media&supportsAllDrives=true",
+            file.id, revision_id
+        ),
+        None => format!(
             "https://www.googleapis.com/drive/v3/files/{}?alt=media&supportsAllDrives=true",
             file.id
-        );
-        let response = self
-            .client
-            .get(url)
-            .bearer_auth(token)
-            .send()
-            .map_err(|error| DeliveryError::Remote(error.to_string()))?;
-        let response = checked_response(response)?;
-        let mut output = create_new_destination(destination)?;
-        let mut limited = response.take(MAX_DELIVERY_BYTES + 1);
-        let mut bytes = Vec::new();
-        if let Err(error) = limited.read_to_end(&mut bytes) {
+        ),
+    };
+    let response = agent
+        .client
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .map_err(|error| DeliveryError::Remote(error.to_string()))?;
+    let response = checked_response(response)?;
+    let mut output = create_new_destination(destination)?;
+    let mut limited = response.take(agent.limits.max_bytes.saturating_add(1));
+    let mut total = 0u64;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = match limited.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) => {
+                let _ = fs::remove_file(destination);
+                return Err(error.into());
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        if total > agent.limits.max_bytes {
+            let _ = fs::remove_file(destination);
+            return Err(DeliveryError::Source(format!(
+                "download exceeded the configured {} byte intake limit",
+                agent.limits.max_bytes
+            )));
+        }
+        if let Err(error) = output.write_all(&buffer[..read]) {
             let _ = fs::remove_file(destination);
             return Err(error.into());
         }
-        if bytes.len() as u64 > MAX_DELIVERY_BYTES {
-            let _ = fs::remove_file(destination);
-            return Err(DeliveryError::Source(
-                "download exceeded the 128 MiB intake limit".into(),
-            ));
-        }
-        if let Err(error) = output.write_all(&bytes).and_then(|()| output.sync_all()) {
-            let _ = fs::remove_file(destination);
-            return Err(error.into());
-        }
-        let sha256 = format!("{:x}", Sha256::digest(&bytes));
-        Ok(RetrievedDelivery {
-            info,
-            sha256,
-            path: destination.to_path_buf(),
-        })
+        hash.update(&buffer[..read]);
     }
+    if let Err(error) = output.sync_all() {
+        let _ = fs::remove_file(destination);
+        return Err(error.into());
+    }
+    let sha256 = format!("{:x}", hash.finalize());
+    Ok(RetrievedDelivery {
+        info,
+        sha256,
+        path: destination.to_path_buf(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -728,6 +867,12 @@ struct DriveFile {
     modified_time: Option<String>,
     #[serde(rename = "mimeType")]
     mime_type: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(rename = "headRevisionId", default)]
+    head_revision_id: Option<String>,
+    #[serde(rename = "md5Checksum", default)]
+    md5_checksum: Option<String>,
 }
 
 impl DriveFile {
@@ -741,6 +886,14 @@ impl DriveFile {
                 .unwrap_or(0),
             created_at: self.created_time.clone(),
             modified_at: self.modified_time.clone(),
+            provider_id: Some(self.id.clone()),
+            revision: self
+                .head_revision_id
+                .clone()
+                .or_else(|| self.version.clone()),
+            mime_type: Some(self.mime_type.clone()),
+            source_checksum: self.md5_checksum.clone(),
+            source_checksum_algorithm: self.md5_checksum.as_ref().map(|_| "md5".into()),
         }
     }
 }

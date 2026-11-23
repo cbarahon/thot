@@ -2,14 +2,16 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Component, Path, PathBuf},
     process::Stdio,
 };
+use thot_core::sandbox_contracts::PlatformCapability;
 use thot_core::sandbox_protocol::{
     ExecuteTaskRequest, ExecuteTaskResult, ExecutionStatus, InstallPackageRequest,
-    InstallPackageResult, StageFileChunkRequest, StageFileChunkResult, SyncRequest, SyncResult,
+    InstallPackageResult, ModuleLaunch, StageFileChunkRequest, StageFileChunkResult, SyncRequest,
+    SyncResult,
 };
 use tokio::{
     io::AsyncReadExt,
@@ -23,19 +25,28 @@ pub async fn execute_task(
     if task.task_id.is_empty()
         || task.run_id.is_empty()
         || task.student_unit_id.is_empty()
-        || task.argv.is_empty()
+        || (task.argv.is_empty() && task.module.is_none())
         || task.timeout == 0
     {
         return Err("task has missing identity, argv, or timeout".into());
     }
+    let (program, args) = match &task.module {
+        Some(module) => match validate_module_launch(module, &task.argv) {
+            Ok(command) => command,
+            Err((status, diagnostic)) => {
+                return Ok(early_result(&task, status, &diagnostic));
+            }
+        },
+        None => (PathBuf::from(&task.argv[0]), task.argv[1..].to_vec()),
+    };
     let cwd = task.working_dir.canonicalize()?;
     if !cwd.starts_with("/work") || !cwd.is_dir() {
         return Err("working directory is outside /work".into());
     }
     let started = Instant::now();
-    let mut command = Command::new(&task.argv[0]);
+    let mut command = Command::new(program);
     command
-        .args(&task.argv[1..])
+        .args(&args)
         .current_dir(cwd)
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -119,6 +130,153 @@ pub async fn execute_task(
     })
 }
 
+fn validate_module_launch(
+    module: &ModuleLaunch,
+    module_args: &[String],
+) -> Result<(PathBuf, Vec<String>), (ExecutionStatus, String)> {
+    validate_module_launch_at(module, module_args, Path::new("/work/.thot/modules"))
+}
+
+fn validate_module_launch_at(
+    module: &ModuleLaunch,
+    module_args: &[String],
+    module_root: &Path,
+) -> Result<(PathBuf, Vec<String>), (ExecutionStatus, String)> {
+    if module.module_id.is_empty() || module.version.is_empty() {
+        return Err((
+            ExecutionStatus::PlatformError,
+            "module identity is incomplete".into(),
+        ));
+    }
+    for required in &module.capabilities {
+        if !capabilities()
+            .iter()
+            .any(|available| available.id == required.id && available.version == required.version)
+        {
+            return Err((
+                ExecutionStatus::Unsupported,
+                format!(
+                    "guest agent lacks capability {}@{}",
+                    required.id, required.version
+                ),
+            ));
+        }
+    }
+    let path = &module.package_path;
+    if !path.starts_with(module_root) || path == module_root {
+        return Err((
+            ExecutionStatus::PlatformError,
+            "module path is outside the private module staging area".into(),
+        ));
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| (ExecutionStatus::PlatformError, error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 32 * 1024 * 1024
+    {
+        return Err((
+            ExecutionStatus::PlatformError,
+            "module package is not a bounded regular file".into(),
+        ));
+    }
+    let actual =
+        hash_file(path).map_err(|error| (ExecutionStatus::PlatformError, error.to_string()))?;
+    if actual != module.package_sha256 {
+        return Err((
+            ExecutionStatus::PlatformError,
+            "module package SHA-256 does not match its manifest".into(),
+        ));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| (ExecutionStatus::PlatformError, error.to_string()))?;
+    if !canonical.starts_with(module_root) {
+        return Err((
+            ExecutionStatus::PlatformError,
+            "module path resolves outside its staging area".into(),
+        ));
+    }
+    let mut args = vec![canonical.to_string_lossy().into_owned()];
+    args.extend_from_slice(module_args);
+    Ok((PathBuf::from("/bin/sh"), args))
+}
+
+fn early_result(
+    task: &ExecuteTaskRequest,
+    status: ExecutionStatus,
+    diagnostic: &str,
+) -> ExecuteTaskResult {
+    ExecuteTaskResult {
+        task_id: task.task_id.clone(),
+        run_id: task.run_id.clone(),
+        student_unit_id: task.student_unit_id.clone(),
+        exit_code: None,
+        signal: None,
+        stdout: String::new(),
+        stderr: String::new(),
+        diagnostics: diagnostic.into(),
+        elapsed_ms: 0,
+        status,
+        timed_out: false,
+        resource_exceeded: false,
+        platform_error: status == ExecutionStatus::PlatformError,
+        cancelled: false,
+        interrupted: false,
+        truncated: false,
+    }
+}
+
+pub fn capabilities() -> Vec<PlatformCapability> {
+    let mut available = vec![
+        PlatformCapability {
+            id: "process.argv".into(),
+            version: 1,
+        },
+        PlatformCapability {
+            id: "files.stage".into(),
+            version: 1,
+        },
+        PlatformCapability {
+            id: "files.sha256".into(),
+            version: 1,
+        },
+        PlatformCapability {
+            id: "module.posix-shell".into(),
+            version: 1,
+        },
+    ];
+    if ["/usr/bin/guestfish", "/usr/sbin/guestfish"]
+        .iter()
+        .any(|path| Path::new(path).is_file())
+    {
+        available.push(PlatformCapability {
+            id: "disk.inspect".into(),
+            version: 1,
+        });
+    }
+    use std::os::unix::fs::FileTypeExt;
+    if fs::metadata("/dev/kvm").is_ok_and(|metadata| metadata.file_type().is_char_device()) {
+        available.push(PlatformCapability {
+            id: "nested.kvm".into(),
+            version: 1,
+        });
+    }
+    available
+}
+
+fn hash_file(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
 async fn read_capped<R: AsyncReadExt + Unpin>(
     mut reader: R,
     cap: usize,
@@ -172,11 +330,12 @@ impl StageStore {
     }
 
     pub fn stage(&mut self, chunk: StageFileChunkRequest) -> io::Result<StageFileChunkResult> {
-        const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+        const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
         const MAX_CHUNK_BYTES: usize = 256 * 1024;
         if chunk.task_id.is_empty()
             || chunk.total_size > MAX_FILE_BYTES
             || chunk.bytes.len() > MAX_CHUNK_BYTES
+            || (chunk.bytes.is_empty() && !chunk.final_chunk)
             || chunk.expected_sha256.len() != 64
             || !chunk.expected_sha256.bytes().all(|b| b.is_ascii_hexdigit())
         {
@@ -287,8 +446,7 @@ impl StageStore {
             ));
         }
         transfer.file.sync_all()?;
-        let data = fs::read(&transfer.temporary)?;
-        let digest = format!("{:x}", Sha256::digest(&data));
+        let digest = hash_file(&transfer.temporary)?;
         if digest != transfer.expected_sha256 {
             let temporary = transfer.temporary.clone();
             self.files.remove(&chunk.task_id);
@@ -380,12 +538,55 @@ pub async fn sync(task: SyncRequest) -> SyncResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
+    use thot_core::sandbox_contracts::PlatformCapability;
     use tokio::io::BufReader;
+
     #[tokio::test]
     async fn capped_reader_drains_and_marks_truncation() {
         let input = BufReader::new(&b"abcdefgh"[..]);
         let (text, truncated) = read_capped(input, 3).await.unwrap();
         assert_eq!(text, "abc");
         assert!(truncated);
+    }
+
+    #[test]
+    fn module_launch_verifies_digest_and_guest_capabilities() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("thot-module-test-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let package = root.join("entrypoint.sh");
+        fs::write(&package, b"#!/bin/sh\nprintf module-ok\\n\n").unwrap();
+        let digest = format!("{:x}", Sha256::digest(fs::read(&package).unwrap()));
+        let module = ModuleLaunch {
+            module_id: "thot.test.module".into(),
+            version: "1.0.0".into(),
+            package_sha256: digest,
+            package_path: package.clone(),
+            capabilities: vec![PlatformCapability {
+                id: "module.posix-shell".into(),
+                version: 1,
+            }],
+        };
+        assert!(validate_module_launch_at(&module, &["arg".into()], &root).is_ok());
+
+        let mut bad_digest = module.clone();
+        bad_digest.package_sha256 = "0".repeat(64);
+        assert!(validate_module_launch_at(&bad_digest, &[], &root).is_err());
+
+        let mut missing_capability = module;
+        missing_capability.capabilities.push(PlatformCapability {
+            id: "disk.inspect".into(),
+            version: 999,
+        });
+        assert!(matches!(
+            validate_module_launch_at(&missing_capability, &[], &root),
+            Err((ExecutionStatus::Unsupported, _))
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 }

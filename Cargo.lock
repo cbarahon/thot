@@ -2463,6 +2463,9 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "sha2",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2489,6 +2492,7 @@ dependencies = [
  "chrono",
  "flate2",
  "futures-util",
+ "libc",
  "regex",
  "reqwest",
  "serde",
@@ -2538,6 +2542,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ssh2",
+ "thiserror 2.0.21",
  "thot-core",
  "tokio",
 ]

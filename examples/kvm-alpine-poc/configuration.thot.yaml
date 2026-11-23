@@ -35,7 +35,10 @@ sandbox_platforms:
       preparation:
         timeout_seconds: 180
         packages: [bash]
-        scripts: []
+        scripts:
+          - path: extern/preparation/verify-bash.sh
+            sha256: f4c42a4ff86a913037fbf43346fe1418fd31081aeb56aab5527a3e7e8fa74226
+            timeout_seconds: 30
       student_clone:
         name_prefix: thot-alpine-poc-student
         linked: true
@@ -76,11 +79,23 @@ sandbox_platforms:
         expect_exit_code: 0
         expected_stdout: "42\n"
         comparison: exact
+      - id: portable-module-sum
+        action: module
+        requires: [syntax]
+        module:
+          runtime: posix-shell-script-v1
+          manifest: extern/modules/sum-check/manifest.json
+          package: extern/modules/sum-check/entrypoint.sh
+        argv: [/work/submission/sum.sh, "42"]
+        timeout_seconds: 5
+        expect_exit_code: 0
+        expected_stdout: "42\n"
+        comparison: exact
     evaluation:
       syntax_check:
         tests: [syntax]
       functional_check:
-        tests: [sum-result]
+        tests: [sum-result, portable-module-sum]
       rubric:
         calculation: weighted_sum
         scale: 10

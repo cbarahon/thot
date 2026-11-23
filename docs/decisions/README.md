@@ -12,3 +12,7 @@ Each record states its own decision status and implementation limits.
 - [ADR-0008: KVM Alpine POC project and provider contracts](0008-kvm-alpine-poc-contract.md)
 - [ADR-0009: Read-only deliverable intake agents](0009-delivery-agent-contract.md)
 - [ADR-0010: Nested test execution and reusable modules in KVM Alpine](0010-kvm-alpine-nested-test-modules.md)
+- [ADR-0011: P1 sandbox contracts and durable run evidence](0011-p1-contracts-and-run-persistence.md)
+- [ADR-0012: Alpine preparation and portable POSIX test modules](0012-alpine-preparation-and-posix-test-modules.md)
+- [ADR-0013: Independent evaluation items for sandbox schema v3](0013-v3-independent-evaluation-items.md)
+- [ADR-0014: Portable verified sandbox run archives](0014-portable-sandbox-run-archives.md)

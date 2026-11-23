@@ -15,6 +15,7 @@ pub mod project_context;
 pub mod report;
 pub mod rubrics;
 pub mod sandbox;
+pub mod sandbox_repository;
 pub mod stats;
 pub mod storage;
 mod student_csv;

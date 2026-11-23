@@ -1,6 +1,6 @@
 # Contracts and interfaces
 
-Status: Design Specification v2. The following endpoints and YAML are proposed, not currently available commands. The existing `/api/v1` API and `thot-virtualbox-agent` HTTP v1 protocol do not change as of this writing. They will be kept separate during migration.
+Status: Mixed contract reference. The P1 Rust sandbox contract and run repository are implemented as initial internal APIs; they are not yet wired to a production sandbox provider or public HTTP endpoint. The YAML examples and most workflow DSL remain target design. The existing `/api/v1` API and `thot-virtualbox-agent` HTTP v1 protocol do not change.
 
 ## Common rules
 
@@ -17,7 +17,25 @@ list() -> DeliveryInfo[]
 get(name: exact_name, destination: private_staging_path) -> AcquiredDelivery
 ```
 
-`DeliveryInfo` currently contains `name`, `size_bytes`, and nullable RFC 3339 `created_at` and `modified_at`. The target `AcquiredDelivery` adds provider ID, immutable revision/version when offered, MIME type, source checksum when offered, and SHA-256 over bytes. Current implementation caps acquisition at 128 MiB and stages files in memory before writing; both are insufficient for OVA. The target contract streams to private host staging under project/admin byte and storage quotas. Local source paths and Google credentials are never forwarded to a guest. Missing names, duplicate names not resolved by ID, unsupported Drive-native documents, permission errors, expired consent, quotas, and download failures are intake/infrastructure errors, never student assessment failures.
+`DeliveryInfo` contains `name`, `size_bytes`, optional RFC 3339 `created_at` and `modified_at`, optional stable `provider_id`, `revision`, `mime_type`, and provider checksum plus its algorithm. `get` selects an exact name and rejects ambiguous matches; `get_by_id` selects the stable source ID when supported. Run provenance binds the selected metadata to the acquired byte count, acquisition time, and SHA-256. Google Drive uses its file ID, head revision/version when offered, and MD5 metadata when offered; the acquired bytes are independently SHA-256 hashed. `delivery_limits.max_bytes` and `max_files` default to 128 MiB and 10,000 files and can be configured up to 64 GiB and 100,000 files. Drive data is streamed in bounded chunks to private staging; it is not accumulated in memory. Local paths and OAuth credentials never enter the guest or the project snapshot. Missing/ambiguous selectors, unsupported Drive-native documents, permissions, quotas, and download failures are intake/infrastructure errors, never student assessment failures.
+
+```yaml
+delivery_limits:
+  max_bytes: 8589934592 # 8 GiB; must fit available host staging storage
+  max_files: 10000
+```
+
+When `deliverable_id` is used in an assignment, it must exactly match the
+`provider_id` displayed by `thot deliveries list`; the professor should retain
+that project assignment snapshot with the evaluation record.
+
+The Alpine smoke CLI accepts the strict `thot.dev/v2` schema and the explicit
+`thot.dev/v3` evaluation-item extension in
+`thot_core::sandbox_project::SandboxProject`; v2 keeps its one weighted rubric,
+while v3 uses independent `evaluation.items[]`. The typed provider request is a
+separate internal versioned Rust contract (`SANDBOX_CONTRACT_VERSION = 1`),
+not a YAML replacement. Callers must validate the project before invoking a
+provider. V3 does not yet provide a managed provider or general workflow DSL.
 
 ## Preparation and portable test modules
 
@@ -187,6 +205,68 @@ There are no loops or scripts embedded in the initial DSL; Bounded repetitions, 
 
 ## Internal engine ports
 
+The shared `thot_core::sandbox_contracts` module defines provider kinds,
+capability versions, administrator resource ceilings, preparation inputs and
+results, immutable module references/manifests, typed test operations and
+observations, delivery provenance, run status, artifacts, journal events and
+revision metadata. `TemplateHandle`, `BaselineHandle`, and
+`StudentEnvironmentHandle` are distinct opaque types. They contain provider
+identity plus generation and ownership identifiers, not project-supplied VM
+names or paths. `HostCapabilities::validate_admission` rejects provider or
+resource mismatches and required-but-unavailable nested virtualization before
+provisioning; missing module capabilities are explicit errors with no
+fallback.
+
+`thot_runner::sandbox_provider::SandboxProvider` is the engine-facing async
+provider trait: `kind`, `preflight`, `prepare`, `run_deliverable`, `status`,
+`cancel`, and `reconcile`. The provider owns all template, baseline,
+student-environment, nested-resource, and cleanup lifecycles. The current
+KVM-Alpine smoke application has not yet been refactored to this trait; it is a
+contract implementation, not evidence that the trait is backed by a production
+provider.
+
+P1's module manifest fixes metadata identity (`module_id`, immutable `version`,
+manifest version, package SHA-256, typed required capabilities, and assets with
+path/size/SHA-256). The fixture package is metadata-only. It proves shared
+manifest validation and digest handling in engine and guest-agent crates; it is
+not an executable module. The first Alpine executable format is selected in
+ADR-0012 below; signing policy, dependency bundling, archive assets and other
+platform loaders remain open.
+
+The first Alpine P3 module runtime is now specified by
+[ADR-0012](../decisions/0012-alpine-preparation-and-posix-test-modules.md):
+one SHA-256-pinned POSIX shell script per package, argv passed as script
+arguments, required capabilities advertised during the VSOCK v2 handshake,
+and agent-side digest verification immediately before execution as the
+unprivileged student account. Project preparation names project-relative
+script files; Thot hashes them before baseline reuse, runs them only in the
+preparation VM with per-script timeout, and archives bounded output and the
+installed `apk` inventory. The smoke path streams staged files in 64 KiB
+chunks with per-chunk acknowledgements and final SHA-256 verification. This
+ABI is implemented only by the Alpine guest agent. Bundled module assets,
+Debian/Docker adapters, output ACKs, resume and in-flight cancellation remain
+open.
+
+## Independent evaluation items (v3)
+
+Schema v3 keeps named checks local to their platform and declares one or more
+independent items under `evaluation.items`. Each item defines a title, scale,
+weighted-sum criteria and check references. A test result with an infrastructure
+`pending` assessment keeps the affected item ungraded; completed items remain
+visible and graded. Academic failures and dependent skips count as completed
+negative evidence, while a skipped test whose dependency was infrastructure
+pending remains pending. The overall grade is null while any item is pending. V2
+projects still use the required single `evaluation.rubric`; see
+[ADR-0013](../decisions/0013-v3-independent-evaluation-items.md).
+
+The local CLI can export a complete verified run folder to a stored ZIP and
+import it into a new private directory. Import rejects path traversal,
+platform-specific separators, symlinks, duplicate entries and expansions over
+128 GiB, then verifies the committed run before it is accepted. The archive
+contains evidence and project snapshots, not guest disks or credentials; it
+does not make the run replayable. See
+[ADR-0014](../decisions/0014-portable-sandbox-run-archives.md).
+
 ## Sandbox platform contract
 
 The project-level `sandbox_platforms` list is the only place that chooses an execution boundary. A platform object has a stable `id`, `kind` (`kvm-debian`, `kvm-alpine`, `docker`, or `host`), kind-specific parameters, `preparation`, ordered `tests`, resource/network policy, and cleanup policy. `kvm-debian` and `kvm-alpine` share KVM provider operations but have separate image and guest-agent profiles; Alpine's proposed lifecycle is documented in [KVM_ALPINE_POC.md](../implementation/kvm-alpine.md). A test definition includes `id`, `action`, `timeout_seconds`, input selectors, same-platform `requires`/`after` edges, and output declarations. Unknown platform kinds, duplicate IDs, test membership in more than one platform, missing references, dependency cycles, and cross-platform edges are validation errors.
@@ -209,7 +289,7 @@ The `host` provider is deliberately not a sandbox. It accepts only registered ac
 
 KVM and Docker providers create one environment per student or explicitly assigned group, not one mutable environment shared by the class. `student_unit_id` is stable for the run. KVM preparation is shared only through a read-only baseline; student writes go to a linked overlay that is destroyed after evidence collection. The base image, preparation manifest, snapshot identity, parent chain, and guest agent version are recorded. A linked clone is not portable alone: export must include the base image and snapshot or mark the run non-replayable.
 
-Preparation output and test output are separate result classes. Preparation can declare installed package inventory, scripts run, hashes, stdout/stderr, exit code, elapsed time, and errors, but it cannot add a student test mark. Test result status distinguishes `completed`, `timed_out`, `resource_exceeded`, `platform_error`, `cancelled`, and `interrupted`; `process.exit_code` is nullable. A completed non-zero exit code is an observation for engine checks, not automatically an infrastructure failure.
+Preparation output and test output are separate result classes. Preparation can declare installed package inventory, scripts run, hashes, stdout/stderr, exit code, elapsed time, and errors, but it cannot add a student test mark. Execution outcome distinguishes `completed`, `timed_out`, `resource_exceeded`, `platform_error`, `cancelled`, `interrupted`, and `unsupported`; `exit_code` is nullable. A completed non-zero exit code is an observation for engine checks, not automatically an infrastructure failure. Assessment is separate: `passed`, `failed`, `skipped`, or `pending`; cleanup is separately `clean`, `pending`, or `failed`. A skipped test records a reason and does not fabricate process output. Stdout/stderr and artifacts are bounded references containing relative path, byte size, media type, SHA-256, and completeness/truncation state. Diagnostics have a stable code/message plus retryability and optional technical detail.
 
 Control is engine-initiated and scoped to a platform run, student unit, and task ID. For the local KVM Alpine POC, the guest agent initiates a local VSOCK connection to a host listener, verifies the assigned peer CID and a per-clone, one-use credential delivered through a protected bootstrap device, and negotiates the v2 protocol. Do not embed a long-lived shared token in the base image. This scopes a session but does not attest guest integrity. A future remote provider requires a separate network-transport decision. The engine can cancel and query progress but the agent cannot access engine APIs for roster, grading, or expedients. Use bounded messages and artifact transfer from the protocol section above. Host platform actions run locally through the same task/result envelope, with their weaker assurance recorded. See [ADR-0008](../decisions/0008-kvm-alpine-poc-contract.md) for the frozen POC details.
 

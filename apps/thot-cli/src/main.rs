@@ -650,6 +650,9 @@ fn print_usage() {
         "  thot report grades --all [RUN_ID] [--output-dir DIR]\n  thot report grades --students --pdf [RUN_ID] [--output-dir DIR]\n  thot report grades --professor --pdf [RUN_ID] [--output-dir DIR]\n  thot report grades --evaluation-items --csv [RUN_ID]"
     );
     println!("  thot sandbox run [PROJECT_DIR] [--agent PATH]");
+    println!("  thot sandbox report <RUN_DIR> [--json|--csv|--html FILE]");
+    println!("  thot sandbox export <RUN_DIR> <ARCHIVE.zip>");
+    println!("  thot sandbox import <ARCHIVE.zip> <DEST_DIR>");
     println!("  thot deliveries list [PROJECT_DIR]");
     println!("  thot deliveries get <NAME> [PROJECT_DIR] [--output PATH]");
 }

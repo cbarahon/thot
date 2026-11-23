@@ -16,7 +16,35 @@ pub struct SandboxProject {
     pub delivery_agent: Option<DeliveryAgentConfig>,
     #[serde(default)]
     pub delivery_folder: Option<String>,
+    #[serde(default)]
+    pub delivery_limits: DeliveryLimits,
     pub sandbox_platforms: Vec<SandboxPlatform>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveryLimits {
+    #[serde(default = "default_delivery_max_bytes")]
+    pub max_bytes: u64,
+    #[serde(default = "default_delivery_max_files")]
+    pub max_files: usize,
+}
+
+impl Default for DeliveryLimits {
+    fn default() -> Self {
+        Self {
+            max_bytes: default_delivery_max_bytes(),
+            max_files: default_delivery_max_files(),
+        }
+    }
+}
+
+fn default_delivery_max_bytes() -> u64 {
+    128 * 1024 * 1024
+}
+
+fn default_delivery_max_files() -> usize {
+    10_000
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -101,7 +129,19 @@ pub struct SandboxPreparation {
     #[serde(default)]
     pub packages: Vec<String>,
     #[serde(default)]
-    pub scripts: Vec<String>,
+    pub scripts: Vec<SandboxPreparationScript>,
+}
+
+/// Instructor-authored script stored as a project-relative file. The engine
+/// calculates its SHA-256 before creating/reusing a prepared baseline.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxPreparationScript {
+    pub path: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub timeout_seconds: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -162,14 +202,42 @@ pub struct SandboxTest {
     pub capture: Vec<String>,
     #[serde(default)]
     pub comparison: Option<String>,
+    #[serde(default)]
+    pub module: Option<SandboxTestModule>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxTestModule {
+    /// Executable contract; P3 currently implements only `posix-shell-script-v1`.
+    pub runtime: String,
+    /// Project-relative JSON module manifest.
+    pub manifest: String,
+    /// Project-relative POSIX shell script whose bytes match package_sha256.
+    pub package: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SandboxEvaluation {
     #[serde(flatten)]
     pub checks: BTreeMap<String, SandboxCheck>,
-    pub rubric: SandboxRubric,
+    #[serde(default)]
+    pub rubric: Option<SandboxRubric>,
+    /// Independent grade items for schema v3 projects. Each item may be
+    /// complete while another remains pending because of infrastructure.
+    #[serde(default)]
+    pub items: Vec<SandboxEvaluationItem>,
     pub infrastructure_errors: SandboxInfrastructurePolicy,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxEvaluationItem {
+    pub id: String,
+    pub title: String,
+    pub calculation: String,
+    pub scale: u32,
+    pub criteria: Vec<SandboxCriterion>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -202,7 +270,7 @@ pub struct SandboxInfrastructurePolicy {
 
 impl SandboxProject {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != "thot.dev/v2" {
+        if !matches!(self.schema_version.as_str(), "thot.dev/v2" | "thot.dev/v3") {
             return Err(format!(
                 "unsupported sandbox schema version `{}`",
                 self.schema_version
@@ -222,6 +290,16 @@ impl SandboxProject {
             && (path.trim().is_empty() || path.contains('\0'))
         {
             return Err("delivery_folder must be a non-empty filesystem path".into());
+        }
+        if self.delivery_limits.max_bytes == 0
+            || self.delivery_limits.max_bytes > 64 * 1024 * 1024 * 1024
+            || self.delivery_limits.max_files == 0
+            || self.delivery_limits.max_files > 100_000
+        {
+            return Err(
+                "delivery limits must be within the supported 64 GiB / 100,000 file ceilings"
+                    .into(),
+            );
         }
         if let Some(DeliveryAgentConfig::Local { path: Some(path) }) = &self.delivery_agent
             && (path.trim().is_empty() || path.contains('\0'))
@@ -343,6 +421,23 @@ impl SandboxProject {
                     platform.id
                 ));
             }
+            let mut preparation_paths = std::collections::HashSet::new();
+            for script in &lifecycle.preparation.scripts {
+                if !safe_project_path(&script.path)
+                    || !preparation_paths.insert(script.path.as_str())
+                    || script.timeout_seconds.is_some_and(|timeout| {
+                        timeout == 0 || timeout > lifecycle.preparation.timeout_seconds
+                    })
+                    || script.sha256.as_ref().is_some_and(|digest| {
+                        digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                {
+                    return Err(format!(
+                        "platform `{}` has an unsafe or duplicate preparation script",
+                        platform.id
+                    ));
+                }
+            }
             if limits.disk_gib != lifecycle.template_vm.disk_gib
                 || limits.vcpu != lifecycle.template_vm.vcpu
                 || limits.memory_mib != lifecycle.template_vm.memory_mib
@@ -359,12 +454,24 @@ impl SandboxProject {
                 if !valid_id(&test.id)
                     || !test_ids.insert(test.id.as_str())
                     || test.argv.is_empty()
-                    || test.action != "exec"
+                    || !matches!(test.action.as_str(), "exec" | "module")
+                    || (test.action == "exec" && test.module.is_some())
+                    || (test.action == "module" && test.module.is_none())
                     || test.timeout_seconds == 0
                     || test.timeout_seconds > limits.student_timeout_seconds
                 {
                     return Err(format!(
                         "test `{}` has an invalid ID, argv, or timeout",
+                        test.id
+                    ));
+                }
+                if let Some(module) = &test.module
+                    && (module.runtime != "posix-shell-script-v1"
+                        || !safe_project_path(&module.manifest)
+                        || !safe_project_path(&module.package))
+                {
+                    return Err(format!(
+                        "test `{}` module manifest/package must stay inside the project",
                         test.id
                     ));
                 }
@@ -414,17 +521,12 @@ impl SandboxProject {
                     }
                 }
             }
-            let scale = platform.evaluation.rubric.scale;
-            let points: u32 = platform
-                .evaluation
-                .rubric
-                .criteria
-                .iter()
-                .map(|criterion| criterion.points)
-                .sum();
-            if scale == 0
-                || points != scale
-                || platform.evaluation.rubric.calculation != "weighted_sum"
+            let is_v2 = self.schema_version == "thot.dev/v2";
+            if (is_v2
+                && (platform.evaluation.rubric.is_none() || !platform.evaluation.items.is_empty()))
+                || (!is_v2
+                    && (platform.evaluation.rubric.is_some()
+                        || platform.evaluation.items.is_empty()))
                 || platform.evaluation.infrastructure_errors.grade != "pending"
                 || !platform
                     .evaluation
@@ -436,23 +538,69 @@ impl SandboxProject {
                     platform.id
                 ));
             }
-            for criterion in &platform.evaluation.rubric.criteria {
-                let Some(check) = platform.evaluation.checks.get(&criterion.check) else {
-                    return Err(format!(
-                        "rubric references undefined check `{}`",
-                        criterion.check
-                    ));
-                };
-                if check.tests.is_empty()
-                    || check
-                        .tests
+            let rubrics: Vec<(&str, u32, &str, &[SandboxCriterion])> =
+                if let Some(rubric) = &platform.evaluation.rubric {
+                    vec![(
+                        "default",
+                        rubric.scale,
+                        &rubric.calculation,
+                        &rubric.criteria,
+                    )]
+                } else {
+                    let mut item_ids = std::collections::HashSet::new();
+                    for item in &platform.evaluation.items {
+                        if !valid_id(&item.id)
+                            || !item_ids.insert(item.id.as_str())
+                            || item.title.trim().is_empty()
+                        {
+                            return Err(format!(
+                                "platform `{}` has an invalid or duplicate evaluation item",
+                                platform.id
+                            ));
+                        }
+                    }
+                    platform
+                        .evaluation
+                        .items
                         .iter()
-                        .any(|test_id| !test_ids.contains(test_id.as_str()))
-                {
+                        .map(|item| {
+                            (
+                                item.id.as_str(),
+                                item.scale,
+                                item.calculation.as_str(),
+                                item.criteria.as_slice(),
+                            )
+                        })
+                        .collect()
+                };
+            for (rubric_name, scale, calculation, rubric_criteria) in rubrics {
+                let points: u32 = rubric_criteria
+                    .iter()
+                    .map(|criterion| criterion.points)
+                    .sum();
+                if scale == 0 || points != scale || calculation != "weighted_sum" {
                     return Err(format!(
-                        "check `{}` must reference configured test IDs",
-                        criterion.check
+                        "evaluation `{rubric_name}` must use weighted_sum and criteria totaling its nonzero scale"
                     ));
+                }
+                for criterion in rubric_criteria {
+                    let Some(check) = platform.evaluation.checks.get(&criterion.check) else {
+                        return Err(format!(
+                            "rubric references undefined check `{}`",
+                            criterion.check
+                        ));
+                    };
+                    if check.tests.is_empty()
+                        || check
+                            .tests
+                            .iter()
+                            .any(|test_id| !test_ids.contains(test_id.as_str()))
+                    {
+                        return Err(format!(
+                            "check `{}` must reference configured test IDs",
+                            criterion.check
+                        ));
+                    }
                 }
             }
         }

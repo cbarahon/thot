@@ -1,9 +1,10 @@
+use crate::sandbox_contracts::PlatformCapability;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionStatus {
     Completed,
     TimedOut,
@@ -11,6 +12,7 @@ pub enum ExecutionStatus {
     PlatformError,
     Cancelled,
     Interrupted,
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +52,9 @@ pub struct HandshakeResponse {
     pub supported_versions: Vec<u32>,
     pub nonce: String,
     pub secret: String,
+    /// Versioned operations/runtime features implemented by this guest agent.
+    #[serde(default)]
+    pub capabilities: Vec<PlatformCapability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +93,18 @@ pub struct ExecuteTaskRequest {
     pub stdout_limit: usize,
     pub stderr_limit: usize,
     pub is_preparation: bool,
+    #[serde(default)]
+    pub module: Option<ModuleLaunch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleLaunch {
+    pub module_id: String,
+    pub version: String,
+    pub package_sha256: String,
+    /// Relative module package path under /work/.thot/modules/.
+    pub package_path: PathBuf,
+    pub capabilities: Vec<PlatformCapability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

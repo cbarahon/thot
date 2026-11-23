@@ -1,6 +1,6 @@
 # Data model
 
-Status: proposed v2. The following names are target contracts; They do not yet replace Rust types or the POC SQLite schema.
+Status: Mixed. The broad relational model below remains a target design. P1 shared sandbox contracts and the portable run folder described below are implemented as initial Rust APIs; local sandbox runs can be integrity-verified and rendered as table, JSON, CSV, or offline HTML. This does not replace legacy POC SQLite or provide run archive import/regrade editing yet.
 
 ## Entities and identity
 
@@ -44,7 +44,20 @@ erDiagram
 
 Add a project-level `SandboxPlatform` record with a stable `platform_id`, kind (`kvm-debian`, `kvm-alpine`, `docker`, or `host`), kind-specific validated parameters, preparation definition, test membership, resource/network policy, and provider version. For `kvm-alpine`, the platform VM record includes professor-selected vCPU, memory, storage and nested-virtualization requirement. The provider records the reusable Alpine template identity separately from the per-project prepared baseline, package/repository inventory and project preparation script results. Each student receives a linked clone of that prepared baseline. Every preparation record and test attempt carries its platform ID, platform invocation ID, student/group unit ID, environment ID, and baseline reference where applicable. Results remain unambiguous if test names are reused on different platforms.
 
-Add an immutable `TestModule` record with module ID, version, package digest, runtime/ABI version, declared capabilities, dependency assets and signing/verification metadata. The engine submits the resolved module to the provider, which stages it in the disposable environment. Platform agents advertise typed capability IDs/versions; a module may run only when all required capabilities are present. The same module digest and request/result semantics are shared across compatible platform adapters. Adapter/tool versions are recorded with each test attempt; missing capability is `unsupported`, never an implicit rewrite or host fallback.
+Add an immutable `TestModule` record with module ID, version, package digest, runtime/ABI version, declared capabilities, dependency assets and signing/verification metadata. P3's first Alpine runtime is `posix-shell-script-v1`: one UTF-8 `/bin/sh` script, with package SHA-256 pinned in the manifest. Other module assets are not supported by this runtime yet. The engine resolves the manifest and script before provisioning, records them as content-addressed run artifacts, then stages them in the disposable environment. The guest agent advertises typed capability IDs/versions in the VSOCK handshake, verifies the staged script digest again, and launches it as the unprivileged student user. A module may run only when all required capabilities are present. The same module digest and request/result semantics can be shared across compatible Linux adapters; Debian and Docker adapters remain unimplemented. Missing capability is `unsupported`, never an implicit rewrite or host fallback.
+
+Schema v3 adds `EvaluationItem` records scoped to a platform. An item has a
+stable ID/title, scale, calculation and criteria referencing named checks.
+Store each item's status and nullable mark independently: technical gaps make
+only affected items pending while completed items remain available. The
+aggregate mark is nullable until all configured items are complete. V2 retains
+the previous single-rubric shape.
+
+Project preparation scripts are project-relative instructor-owned files. Their
+actual SHA-256 is computed before baseline selection and included in the
+baseline fingerprint. The run journal retains requested packages, package
+manager, installed package inventory artifact, script digest/timeout/exit code,
+and bounded stdout/stderr artifacts.
 
 A KVM preparation record includes distribution/image digest, package manager and repository identity, preparation package/script hashes, installed package inventory, completion result, shutdown/flush confirmation, snapshot ID, backing-chain hashes, and provider version. An Alpine record also captures requested and verified nested-virtualization mode and outer VM resources. Each per-student linked clone references that baseline and records its overlay identity and nested resource limits. Docker environments record image digest and runtime identity. Host actions record the allowlisted adapter and policy version, with explicit `isolation_assurance: host-restricted`. Docker records whether it shares the host kernel or runs inside a KVM guest. Project and run records must never imply that these options provide equal isolation.
 
@@ -53,6 +66,52 @@ Platform-local dependency edges must have the same `platform_id` at both ends. V
 Internal IDs do not contain routes. `run_id` combines readable label and UTC seconds; Exclusive creation rejects collision and proposes suffix only when necessary. A teacher is not trusted to be the only client. Folder names derived from tags replace unsupported characters with `_` and add `_1`, `_2` suffixes in collisions. The original mapping → route is stored; identity is never deduced from the route. External references of the students are preserved exactly, without destructively normalizing accents.
 
 ## Portable folder
+
+### Implemented P1 run package
+
+`thot_engine::sandbox_repository::ProjectRunRepository` stores a run below
+`<project>/results/<run-id>/`. Current paths are JSON/JSONL and the run is
+single-writer while open:
+
+```text
+results/<run-id>/
+  run.json                         # status and current committed revision
+  snapshot/                         # exact configuration, roster, assignments
+  inputs/<student-unit>/<name>      # immutable acquired deliverable bytes
+  deliveries/<student-unit>.json    # source ID/revision/checksum + acquired SHA-256
+  artifacts/sha256/<prefix>/<hash>  # content-addressed stdout/stderr/evidence
+  journal/events.jsonl              # fsynced sequence with previous/event hashes
+  revisions/<revision-id>/revision.json
+```
+
+The repository creates a project-wide nonblocking writer lock, snapshots
+bounded input metadata before execution, records acquired inputs by verified
+SHA-256, stores output blobs by digest, and atomically publishes a revision
+pointer only after its result paths exist. A committed revision contains the
+configuration hash and evidence-manifest hash. `verify_run` checks the
+configuration snapshot, journal chain, revision metadata, result presence and
+evidence hashes. Reopening a repository marks prior `created`/`running` runs
+`interrupted`; it does not resume or replay uncertain external work. Run and
+journal hashes detect accidental corruption, not malicious rewriting by a
+person who can edit the whole folder. The folder is not safe for concurrent
+writers over a network share unless filesystem locking and rename durability
+are proven there.
+
+When run under `sudo`, the repository restores ownership of the run tree,
+results directory and writer lock to the invoking UID/GID on commit and on
+drop/error cleanup. This allows the professor to read, archive, move and edit
+the package after a privileged KVM run. It does not change ownership of
+project inputs or guest resources. Run-package files use mode `0600` and
+directories use `0700`; the results directory and lock are private to the
+professor account so student deliverables are not exposed to other local users.
+
+The current smoke CLI writes this package format from its KVM-Alpine run and
+keeps a per-student JSON result. It excludes OAuth credentials and token
+caches. `thot sandbox export/import` creates a bounded ZIP of a complete
+verified run and verifies it again after extraction; `thot sandbox report`
+renders table, JSON, CSV or offline HTML without a daemon. These tools do not
+provide report editing, legacy SQLite import, retention policy, VM restoration
+or reproducible replay.
 
 ```text
 actividad/

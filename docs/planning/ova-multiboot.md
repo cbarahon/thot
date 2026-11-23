@@ -1,9 +1,10 @@
 # OVA multiboot on `kvm-alpine`: gaps, decisions, and delivery plan
 
-**Status:** planning closed for the first laptop implementation. Hardware, Drive and classroom qualification are pending. The OVA multiboot scenario is not currently
-executable through the `thot.dev/v2` KVM Alpine CLI. This document defines the
-missing architecture and work required before the professor tutorial can claim
-end-to-end support.
+**Status:** architecture planning is established, but implementation and
+qualification remain open. P4–P7 work now includes a v3 independent-item
+evaluation contract and local portable-report command; the OVA workflow is
+still not executable end-to-end through the KVM Alpine CLI. This document tracks
+the remaining provider, OVA operation, security and hardware gates.
 
 **Goal:** a professor configures one project in YAML, authorizes read-only
 Google Drive access, assigns named OVA files to students, runs the project on a
@@ -40,46 +41,73 @@ the new provider architecture and KVM.
 - The legacy engine already has isolated-by-process helper code for supported
   disk image inventory and a VirtualBox OVA import flow, but those are not
   wired into the v2 KVM project test model.
+- Internal typed contracts name OVA inventory, partition-table, filesystem,
+  installed-system, GRUB boot and shared-data operations. These are contract
+  types only: no provider/agent adapter currently executes these operations
+  against a submitted OVA.
+- `thot.dev/v3` represents independent evaluation items. The local report
+  command verifies a completed run folder before rendering table, JSON, CSV or
+  offline HTML.
+
+### Supplied OVA: static intake evidence only
+
+The instructor-provided `ArchLinux_Dualboot.ova` was inspected without
+extracting its virtual disk or booting it. Its SHA-256 is
+`3a9195aa6d7f0842f297e065bc04b66ae2da18380da287f5feaa2a273af030b5`.
+The tar directory contains one OVF, one 540,672-byte NVRAM file, and one
+stream-optimized VMDK whose archive member is 8,487,255,552 bytes. The OVF
+declares a 60 GiB virtual disk, 4 GiB RAM, one vCPU, EFI firmware, and one
+VirtualBox NAT adapter. The manifest uses SHA-1 digests. These declarations do
+not establish actual partition layout, successful boot, or guest correctness.
+
+The disposable test host currently has 4 CPUs, about 5.8 GiB RAM, a 60 GiB
+root filesystem with about 39 GiB free, and KVM enabled. This is insufficient
+to qualify a 4 GiB nested Windows VM inside a useful Alpine environment while
+keeping host headroom. The 60 GiB virtual disk may also expand close to the
+host's remaining storage during conversion or guest writes. Only the tar
+directory and small OVF descriptor were read; no virtual-disk parser or boot
+operation was exercised. The activity remains blocked on a larger resource profile and a
+validated clone-local disk inspection path.
 
 ### What the new architecture does not yet do
 
 The KVM Alpine POC is not the managed `SandboxProvider` implementation. Its
 local CLI path has a narrower lifecycle and result format. It does not
-currently persist engine expedients or expose a daemon-managed run history.
-The sandbox v2 schema only defines `action: exec`, an argv vector, exact
-expected process exit/stdout checks, and one weighted-sum rubric. It has no
-typed disk-inspection operation, typed nested-VM operation, multi-OS boot
-workflow, per-test artifacts, or two evaluation items. Its current smoke
-profile is designed for short shell tests, not for starting a Windows VM
-inside the guest. The target configuration must let the professor size the
-outer Alpine VM and explicitly require nested virtualization for this use
-case.
+currently publish engine expedients or expose a daemon-managed run history.
+The v3 schema supports independent evaluation items, and internal Rust
+contracts name typed OVA/disk/boot operations, but YAML cannot yet configure
+those operations and the guest agent only executes POSIX-shell modules. There
+is no OVA parser workflow, nested-VM operation, or multi-OS boot test. The
+current smoke profile is designed for short shell tests, not for starting a
+Windows VM inside the guest. The target configuration must let the professor
+size the outer Alpine VM and explicitly require nested virtualization for
+this use case.
 
-The current delivery agent contract is also too small for large OVA transfer:
-it uses a 128 MiB cap, reports name/size/timestamps but does not retain a
-stable Google Drive file ID or revision, and downloads a file as a bounded
-buffer before writing it. OVA deliverables are commonly much larger, may have
-duplicate Drive filenames, and need provenance that identifies the exact
-version assessed. The current feature does not support resumable transfers,
-Shared Drive selection, or an end-to-end OAuth-and-OVA run test.
+P1 retains Google Drive IDs and revision/version metadata, records the provider
+checksum when offered, supports selecting an assignment by stable
+`deliverable_id`, and streams downloads to disk while computing an independent
+SHA-256. `delivery_limits.max_bytes` and `max_files` are configurable up to
+64 GiB and 100,000 files (defaults remain 128 MiB and 10,000 files). Large-file
+live Drive acquisition, resumable downloads, project-wide disk quota
+reservation and safe OVA parsing remain unqualified.
 
 ## 2. Gap analysis
 
 | Area | Current gap | Required outcome |
 |---|---|---|
-| Delivery selection | Delivery config is supported only by the local sandbox CLI path; no provider abstraction is wired into a durable v2 run service. | Project/run engine selects the configured agent, checks assignment identity, obtains the item once, and records an immutable source identity. |
-| Google Drive OVA transfer | Small-file limit; no persistent Drive ID/revision; duplicate names are ambiguous; no resumable streaming or shared-drive policy. | Bounded streaming to private staging, quotas based on configured host policy, resume/retry rules, stable file ID + revision/size/hash, explicit duplicate-name resolution, and no credential flow into guests. |
-| Project schema | One platform, `exec` only, expected exact stdout/exit, a single rubric. | Versioned typed OVA and nested-VM task definitions; multiple independent evaluation checks and exactly two configurable evaluation items for this use case. |
-| KVM platform lifecycle | Current CLI shortcut uses a cloud image and linked qcow2 baseline; no provider handle/ownership registry, full snapshot lifecycle, or restart recovery. | Provider-backed template, project baseline, student run lifecycle, ownership, lock, cleanup, cancellation and recovery contracts before class use. |
+| Delivery selection | The local sandbox CLI resolves assignments through local/Google Drive agents and persists acquired source metadata and bytes in the verified run folder. It is not wired into a daemon-managed sandbox provider. | Provider-backed orchestration selects the assigned item once and records immutable source identity, with restart-safe intake and ACK sequencing. |
+| Google Drive OVA transfer | Large-file streaming and provenance primitives exist, but live OAuth/OVA-size transfer, interruption recovery, Shared Drives and disk quota reservation have not been qualified. Duplicate exact names require stable IDs. | Bounded streaming to private staging, disk reservations, stable file ID + revision/size/hash, explicit duplicate-name resolution, and no credential flow into guests. |
+| Project schema | V2 remains one platform, `exec`/POSIX module and one rubric. V3 adds independent evaluation items. Typed OVA operations exist only in internal Rust contracts; there is no YAML workflow/operation adapter. | Versioned module and nested-VM task definitions; exact observation selectors; two independent evaluation items configurable for this use case. |
+| KVM platform lifecycle | The local CLI uses a cloud image, linked qcow2 baseline and per-student overlay with cleanup. It is not a `SandboxProvider` implementation and lacks persistent ownership registry, named snapshot lifecycle, nested resources and restart reconciliation. | Provider-backed template, project baseline, per-student and nested-VM lifecycle, ownership, cancellation, cleanup and recovery contracts before class use. |
 | OVA ingestion | OVA is a tar archive whose OVF references one or more virtual disks; safely unpacking, validating the descriptor, and mapping multiple disks are not in the v2 flow. | Quota-bound, non-following, path-safe OVA intake; verify OVF references and declared sizes; reject traversal, links, sparse-file abuse, excess entries and unsupported controllers before provisioning. |
 | Disk layout inspection | Existing legacy `disk_info` can list disk/filesystem objects, but the KVM guest has no typed operation to inspect an OVA, GPT type GUIDs, EFI files, or multiple disks. | In-clone parser returns normalized partition and OS candidates, GPT type GUIDs, filesystem and label metadata, EFI boot files, per-disk identity, limits, diagnostics, and content hashes. |
 | OS identification | No robust Arch, Alpine, Windows, or EFI installation detector across multiple attached disks. `linux_rootfs_info` is not a multi-installation inventory. | Report each detected installation with confidence and evidence; distinguish `not_found`, `unsupported`, and `inspection_error`; define how names/labels are assigned to required roles. |
 | GRUB verification | No GRUB parser, menu-entry contract, or way to select a particular entry and prove OS identity. The existing `start_vm` only starts one default VM boot. | A deterministic supported GRUB entry selector; boot each required entry with the in-clone VirtualBox console; confirm OS identity; capture per-entry status/output/timeouts. |
-| Nested virtualization | The Alpine sandbox guest has no QEMU/libvirt stack or nested KVM device. Its current 1 vCPU/512 MiB-style low-resource profile cannot host an OS VM, especially Windows. | Professor-configurable outer Alpine memory/vCPU/storage plus explicit nested KVM capability, host preflight, and nested-VM ceilings inside the disposable per-student Alpine clone. |
+| Nested virtualization | The smoke guest has no QEMU/libvirt stack or passed-through `/dev/kvm`; its 1 vCPU/512 MiB, 2 GiB profile cannot host this OVA. Configuration resource ceilings allow larger outer guests, but this does not pass through nesting or enforce a child-VM budget. | Professor-configurable outer resources plus explicit nested KVM capability, host and guest preflight, child-VM CPU/RAM/disk ceilings, and enforcement inside the disposable per-student clone. |
 | Shared data check | No operation boots each OS and verifies an identical shared volume. A detected partition is not evidence that it mounts or is usable. | A defined guest verification channel for Arch, Alpine and Windows; isolated fresh state per OS; run-specific marker write, flush, cross-OS read, write and re-read; cleanup and evidence per OS. |
 | Guest trust | Student-controlled OS root can falsify in-guest reports. No guest attestation exists. | State the assurance model. Use independent disk observations where possible and report boot/guest command evidence as observed behavior, not proof against a deliberately deceptive root user. |
-| Result model | Current v2 output does not persist a full per-platform test/run/attachment record or append-only artifact manifest. | Per-student source provenance; per-test normalized status; per-OS sub-results; stdout/stderr, exit code, durations, timeouts, infrastructure errors; bounded artifacts and hashes; provider cleanup state; assessment and instructor override separated. |
-| Evaluation model | Current sandbox config has one set of checks, one weighted sum, and fixed expected output semantics. | Checks for layout, each OS boot, each shared read/write, evaluation failure vs infrastructure state, two separately calculated evaluation items, plus CSV/PDF export. |
+| Result model | The local run repository persists input provenance, bounded streams and content-addressed artifacts, preparation/module data, cleanup and revisions. No normalized OVA per-disk/per-OS result is produced, and it is not published as a daemon expedient. | Per-student source provenance; normalized per-disk and per-OS results; bounded evidence; provider cleanup state; assessment and instructor override separated. |
+| Evaluation model | V3 supports independent weighted items and a pending-aware local summary/export, but there are no OVA observation selectors or evidence-specific checks. | Checks for layout, each OS boot, each shared read/write, academic failure vs infrastructure uncertainty, two calculated items, plus report CSV/PDF or gradebook-compatible export. |
 | Professor experience | No configuration validation for the proposed boot profiles, shared-volume rules, OVA limits, or resource admission. OAuth is a CLI flow and the project currently has no guided run summary. | Validate project before obtaining a VM; explain OAuth, Drive file mapping, resource estimate and host requirements in plain language; render actionable per-student and per-platform reports. |
 | Validation | No fixtures cover genuine OVA parsing, nested boot, Windows, shared-volume interoperability, Drive downloads at OVA size, or recovery. | Synthetic, redistributable test images and Drive mock fixtures; one real disposable-host qualification matrix before release. |
 
@@ -120,7 +148,7 @@ The engine queries the same attempt while the provider reconciles its resources.
 
 | Decision | First implementation |
 |---|---|
-| D1. Placement | Host KVM exposes nested CPU virtualization to Alpine. VirtualBox in the Alpine clone imports and boots the OVA with EFI. The provider owns all VM resources and cleanup. |
+| D1. Placement | **Unqualified proposal:** host KVM exposes nested virtualization to Alpine; a nested hypervisor imports and boots the OVA with EFI. VirtualBox remains the current candidate, but the project has no VirtualBox-in-Alpine installation or nested KVM device pass-through proof. Before implementation, compare VirtualBox and QEMU/KVM in Alpine for package availability, EFI/OVF import fidelity, console automation, Windows behavior, and required privilege. Do not assume either is usable until a known-good EFI VM boots inside a disposable clone. |
 | D2. Preparation and sizing | Use professor-selected vCPU, RAM, disk and nesting, subject to admission limits. Install declared Alpine repository packages, then hashed professor scripts in order. Before sealing the powered-off baseline, use the execution account to boot and remove a known-good EFI guest. A failed probe blocks intake. |
 | D3. Disk tests | Adopt the professor’s proposal. Ship separate internal partition-table, filesystem and installed-OS inventory tests. Each emits facts for every supported disk. The engine applies configurable checks to the joined observations. |
 | D4. GRUB | The course declares one unique menu path per OS. Use the VirtualBox console to select the actual GRUB entry from a cold boot, allowing Windows chainloading. Save the selected entry and corroborate the running OS identity. A menu label or successful VM start alone earns no boot credit. |
@@ -161,11 +189,11 @@ See the [VM activity decisions](../implementation/vm-activity-reference.md), [di
 
 ## 4. Proposed project contract
 
-The project continues to use `configuration.thot.yaml` and
-`schema_version: thot.dev/v2`, but needs a schema revision or compatible v2
-extension. The current Rust type denies unknown fields and validates only
-`action: exec`; adding these keys requires explicit typed model work and
-fixtures. A candidate shape is:
+The project continues to use `configuration.thot.yaml`. The strict
+`thot.dev/v2` reader retains its single rubric; the `thot.dev/v3` reader now
+supports multiple independent weighted evaluation items. V3 still lacks the
+typed OVA operation DSL, nested resource configuration, and module asset
+bundles shown below. This is a target shape, not a runnable configuration:
 
 ```yaml
 delivery_agent:
@@ -229,12 +257,12 @@ The rubric fixture uses five binary layout checks and six runtime checks (boot a
 
 | Work package | Depends on | Deliverable and acceptance |
 |---|---|---|
-| 1. Qualify nested VirtualBox | Planning | On the target laptop, prepare Alpine, verify driver and execution account, boot a known-good EFI OVA through GRUB, exercise the Linux and Windows probes, then destroy the clone. Record host/guest versions, time, peak RAM and disk amplification. If this fails, keep the profile unavailable and revisit only the failing assumption. |
-| 2. Freeze executable fixtures | Planning | Add v3 parser, module manifest, typed observation schemas, exact check selectors, two rubrics and two evaluation items. Golden fixtures cover good, partial and pending outcomes plus unchanged v2 behavior. |
-| 3. Large-file intake and transfer | 2 | Stream a real multi-GiB Drive download through bounded host staging and onward to a clone. Replace both the delivery cap and small guest-file bootstrap path. Check byte limits, digest at both ends, duplicate names, OAuth refresh/revocation, interrupted transfer, cancellation and disk-full cleanup. Record peak memory and verify no secrets enter the guest. |
+| 1. Qualify nested hypervisor | Planning | **Blocked on host capacity and implementation choice.** On adequate hardware, compare VirtualBox and QEMU/KVM in Alpine, expose nested KVM to the disposable guest, boot a known-good EFI OVA through GRUB, exercise Linux/Windows probes, then destroy the clone. Record host/guest versions, time, peak RAM and disk amplification. If qualification fails, keep this profile unavailable and revisit the assumption. |
+| 2. Freeze executable fixtures | Planning | **Partial:** the v3 reader, independent weighted evaluation items, internal typed OVA operation names, provider request/result and observation envelopes exist. Still needed: YAML operation/module definitions, exact observation selectors, executable module ABI/assets, and full good/partial/pending fixtures. Preserve v2 behavior. |
+| 3. Large-file intake and transfer | 2 | Stream a real multi-GiB Drive download through reserved, bounded host staging and into a sufficiently large disposable guest volume. Existing delivery transfers support configured limits to 64 GiB, but the smoke VM's 2 GiB guest disk and transfer path are not an OVA profile. Check byte limits, digest at both ends, duplicate names, OAuth refresh/revocation, interrupted transfer, cancellation and disk-full cleanup. Record peak memory and verify no secrets enter the guest. |
 | 4. Provider execution | 1, 2 | Implement configure, submit, progress, result acknowledgement and terminal cleanup. Reuse the prepared baseline only for matching image, resource, package, module-adapter and script inputs. Force disconnect/restart mid-test and reconcile the same attempt. Verify no second acquisition while cleanup is pending. |
 | 5. Import and observe | 2, 4 | Parse OVF and referenced disks within the clone under archive limits. Reject unsafe paths, links, external references, malformed and oversized images. Exercise all three inventory modules on multiple disks, repeated labels, missing roles and unreadable filesystems. Compare shared legacy fields against recorded parser fixtures. |
 | 6. Boot and share | 1, 4, 5 | Drive the real GRUB menu and verify three OS identities and cross-boot markers. Cover wrong OS, missing entry, failed mount, read-only volume, hibernated Windows volume, missing probe and bounded timeout. Report each sub-result independently. |
-| 7. Persist and qualify | 3–6 | Run one known-good, one academically incorrect and one infrastructure-failure delivery. Verify expected per-student expedients, group deduplication, grades, portable CSV/PDF and offline regrade. Confirm removal of every owned clone and overlay. Have a professor reproduce the run from the fresh-host tutorial and publish measured requirements. |
+| 7. Persist and qualify | 3–6 | **Partial:** verified folder persistence and ZIP import/export work; table/JSON/CSV/offline HTML report work. Still run one known-good, one academically incorrect and one infrastructure-failure OVA through the provider. Verify per-student expedients, group deduplication, item grades, CSV/PDF and offline regrade. Confirm removal of every owned clone and overlay. Have a professor reproduce the run from the fresh-host tutorial and publish measured requirements. |
 
 Implementation can start with the hardware qualification and schema fixtures in parallel. Production readiness requires the live Drive transfer, nested multiboot run, cleanup evidence and report comparison above. A failed qualification reopens its specific decision and records the affected platform versions and fixture. It cannot produce a student penalty.

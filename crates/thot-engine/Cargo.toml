@@ -25,3 +25,4 @@ ssh2.workspace = true
 zip = "0.5"
 tar = "0.4"
 flate2 = "1.0"
+libc = "0.2"

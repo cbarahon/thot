@@ -1,324 +1,312 @@
-# Screen an OVA with the VirtualBox daemon workflow
+# OVA multiboot screening: implementation status and test-host walkthrough
 
-This guide describes how to assess student OVA files containing EFI, Arch
-Linux, Alpine Linux, Windows, and a shared data partition. It covers Thot
-installation, project organization, evaluation design, running a project, and
-exporting marks.
+**Status: the end-to-end OVA evaluation is not supported by the published Thot
+release tested here.** The walkthrough below records what an instructor can
+install and configure today, where the workflow stops, and the evidence from a
+real run on the test host. A created Alpine VM or an OVA inventory listing is
+not proof that the student image was inspected or booted.
 
-For the requested future implementation on the new KVM Alpine architecture,
-see the [dedicated gap analysis and delivery plan](../planning/ova-multiboot.md).
-This tutorial retains the current legacy VirtualBox workflow analysis and a
-partial screening example; it is not the target KVM architecture contract.
+This guide distinguishes the published `v0.1.44` installed on the test host
+from newer, unpublished workspace changes. Follow the published-release
+contracts in this guide when installing from the release installer. The local
+KVM-Alpine CLI is a separate path from `thotd` and the legacy VirtualBox agent.
 
-## Read this before preparing a course
+## Current capability boundary
 
-The complete requested assessment is **not supported by the current release**.
-The example runs preliminary checks. Thot currently has these relevant capabilities:
-
-| Requirement | Current support | What it proves |
+| Stage | Published release behavior | OVA evaluation gap |
 |---|---|---|
-| Obtain an OVA from Google Drive | Partial | `thot-delivery` can list/get Drive files for `thot sandbox run` projects. The legacy OVA/VirtualBox workflow used for this assessment still reads from a local folder; it does not use the Drive delivery agent. Download the OVA into the configured local delivery folder or use a trusted Drive sync tool. |
-| Inspect virtual disk partitions and filesystems | Partial | `libguestfs/disk_info` reports devices, partitions, filesystems, sizes, labels, UUIDs, and filesystem usage for supported disk images. It does not reliably identify an EFI System Partition, Windows installation, Arch Linux root, Alpine root, or a GPT partition's type GUID. |
-| Detect installed Linux root | Partial | `libguestfs/linux_rootfs_info` detects Linux root information, but it is not a multi-OS inventory or Windows detector. |
-| Import and boot an OVA | Partial | `VirtualBox/import_ova` and `VirtualBox/start_vm` import and start an owned VM. A successful start proves only that the VM starts to its default boot path. |
-| Prove each GRUB menu entry boots | Not supported | There is no built-in multiboot menu selection or per-entry boot verifier. |
-| Prove all operating systems can read/write the shared partition | Not supported | No built-in test boots each OS and verifies a common shared-data marker. A partition merely existing does not prove that each OS can access it. |
-| Grade with checks, rubrics, two evaluation items, and report exports | Supported | The legacy project engine supports checks, rubric aggregation, evaluation items, and CSV/PDF reports. |
+| Local delivery | `thot deliveries list PROJECT` lists local entries; `thot sandbox run PROJECT` acquires the configured delivery. | Intake is fixed at 128 MiB total and 10 MiB per file. The submitted 8.49 GB OVA is rejected before it is transferred to Alpine. This release has no professor-configurable intake limit. |
+| Alpine KVM | Creates a pinned Alpine cloud-image VM and a prepared baseline; creates per-student linked overlays after intake; starts the guest agent over VSOCK; runs `exec` and pinned `posix-shell-script-v1` tests. | The test host run did not reach student clone creation or guest-agent test execution. The local CLI does not submit progress/results to `thotd`. The trial's 8 GiB guest disk is only a bootstrap profile: it cannot hold the OVA and extracted VMDK together, and it is far too small for the declared 60 GiB virtual disk. |
+| Preparation | Installs configured Alpine packages and appends configured shell-command strings. | In `v0.1.44`, `preparation.scripts` is a list of command strings, not project-relative script-file objects. Alpine 3.24.1's configured repositories do not provide `virtualbox`. Nested `/dev/kvm` access and VirtualBox are not qualified. A command that hides its own error can still let the provider mark preparation complete. |
+| OVA operations | None in the KVM guest test contract. | No OVA import, partition/EFI/filesystem inventory, OS identification, GRUB entry selection, nested guest boot, or shared-data access checks are implemented in this path. |
+| Results | The attempted release CLI created an empty UUID-named directory under the project results folder. | It did not write a student report, expedient, grade, or grading report. The legacy daemon report commands do not consume this local KVM run. |
+| Legacy VM tests | The daemon has separate VirtualBox and libguestfs actions, operated by the VirtualBox agent. | They are not KVM-Alpine modules, are not configured by this sandbox YAML, and do not cover the full multiboot rubric. |
 
-## 1. Prepare a fresh Linux work laptop
+The planning decisions and implementation gates are in the [OVA multiboot
+plan](../planning/ova-multiboot.md) and [platform
+roadmap](../planning/platform-roadmap.md).
 
-Use a supported x86_64 Linux installation with a desktop session or
-administrator access to a VirtualBox host. Enable hardware virtualization
-(Intel VT-x or AMD-V) in firmware. Keep enough free disk space for each OVA,
-extracted virtual disks, and temporary VM copies. A practical starting point
-is 100 GB free and 8 GB RAM; the right amount depends on the submitted VM sizes
-and the number of sequential runs.
+## Fresh Debian host setup
 
-Install the current Thot release using [the deployment guide](../../deploy/README.md):
+Use a Debian 13 x86_64 host with KVM enabled. The supplied OVA's OVF declares a
+60 GiB virtual disk and 4 GiB RAM; the OVA file itself is about 8.49 GB. Provide
+additional space and memory for the Alpine guest, OVA staging, extracted disk,
+and any nested guest. The test host used below had 4 CPUs, 5.8 GiB RAM, a 59 GiB
+root filesystem, and about 38 GiB free at the end of the attempt. It is not a
+qualified host for running the nested multiboot workload.
+
+Install the published release and the KVM host tools:
 
 ```sh
 curl -fLO https://github.com/cbarahon/thot/releases/latest/download/thot-install.sh
 sudo bash thot-install.sh
-```
-
-Install VirtualBox from the supported package source for the host distribution
-and install its matching extension/support packages only if the course image
-requires them. Install the libguestfs tools used for offline disk inspection.
-For Debian-based hosts, package availability and VirtualBox version depend on
-the configured repositories; follow the official VirtualBox instructions for
-the selected release, then install:
-
-```sh
 sudo apt update
-sudo apt install libguestfs-tools
-VBoxManage --version
-virt-filesystems --version
+sudo apt install qemu-system-x86 libvirt-daemon-system libvirt-clients virtinst \
+  libguestfs-tools cloud-image-utils curl
+sudo systemctl enable --now libvirtd
+sudo virsh net-autostart default
+test -c /dev/kvm
+sudo virsh net-list --all
+thot --help
 ```
 
-Record the exact VirtualBox version. Thot's VM activity configuration requires
-an expected version. Do not expose the local daemon or VirtualBox agent on a
-public interface. Keep API and agent binds on loopback, and use a dedicated
-unprivileged service account and VirtualBox profile as described in
-[VM activity reference](../implementation/vm-activity-reference.md) and
-[`deploy/README.md`](../../deploy/README.md). Imported student VMs are untrusted.
-Do not enable shared folders, clipboard, drag-and-drop, USB passthrough, or
-unnecessary network access. A laptop used for personal work is a poor place to
-run hostile student images; use a dedicated work profile or a separate
-assessment host.
+The tested installer installed `thot`, `thotd`, the static Alpine guest agent,
+and `thot-virtualbox-agent`; it did not install VirtualBox. The KVM command
+needs root privileges and writable libvirt storage. Put `THOT_KVM_ALPINE_ROOT`
+under a directory that the `libvirt-qemu` account can traverse, for example
+`/var/lib/libvirt/images/thot-ova-screening`. The private project directory
+under `/home/sysadmin` was not accessible to libvirt and could not be used as
+the VM storage root.
 
-The release installer creates the service and agent configuration, but it
-does not install VirtualBox. Configure the host and service according to the
-deployment guide before starting a run. The daemon defaults to loopback port
-8081. Start/check the services with:
+The release installer is distinct from `make deploy`: `make deploy` publishes
+a release and is not an installation command. The host's tested release was
+`v0.1.44`; `thot-alpine-agent --version` reported `0.1.44 protocol=2`. The
+installer preserved the pre-existing daemon configuration in
+`/home/sysadmin/thot-preinstall-backup-20261123/`.
 
-```sh
-sudo systemctl status thotd thot-virtualbox-agent
-curl --fail http://127.0.0.1:8081/health
-```
+## Create the professor project
 
-The agent's configured SSH target is for the VirtualBox host integration; do
-not point it at an untrusted student's guest. Never put guest passwords or
-OAuth tokens in the project repository.
-
-## 2. Make the Google Drive submissions available
-
-Create a course folder in the professor's Drive and share it only with the
-professor and the intended graders. Keep one OVA per student and choose a
-stable filename that identifies the student without relying on the OVA's
-internal VM name, for example:
+Create a private project directory. The OVA remains in the local delivery
+folder; it does not need to be copied into the project.
 
 ```text
-drive-course/
-├── student-001.ova
-├── student-002.ova
-└── student-003.ova
-```
-
-For this legacy OVA workflow, download the files with the browser or use a
-trusted, read-only Google Drive synchronization tool to copy them into the
-local project delivery folder. Verify the expected files and available disk
-space before starting. The `gdrive` delivery agent is currently connected to
-the newer `thot sandbox run` project model, while OVA import and VirtualBox
-tests run through the separate legacy `thot run create` service. These two
-paths are not integrated yet. Do not configure `delivery_agent: gdrive` in the
-legacy `configuration.yaml`; it will not make OVA runs read from Drive.
-
-For ordinary non-OVA projects, Google Drive authorization is documented in
-[delivery agent guide](delivery-agents.md). That flow requests read-only Drive
-access and stores the professor's token outside the project folder.
-
-## 3. Create the course project
-
-Use a project directory with the legacy `configuration.yaml`, roster,
-assignment mapping, and local delivery folder:
-
-```text
-arch-multiboot-course/
-├── configuration.yaml
-├── students.csv
+ova-screening-kvm-alpine/
+├── configuration.thot.yaml
+├── students.yaml
 ├── assignments.yaml
-├── delivery/
-│   ├── student-001.ova
-│   ├── student-002.ova
-│   └── student-003.ova
-└── extern/
-    └── tests/                 # only if using a reviewed instructor test
+├── extern/
+│   ├── preparation/
+│   │   └── install-virtualbox.sh
+│   └── tests/
+│       └── check-vbox-and-ova.sh
+└── results/
 ```
 
-`students.csv` should include a unique `external_id`, `name`, and `email` for
-each student. `assignments.yaml` maps each `student_external_id` to the exact
-`delivery_filename`. A simple mapping is:
+For the example OVA, `/home/sysadmin/ArchLinux_Dualboot.ova`, use one roster
+entry and one assignment:
 
 ```yaml
+# students.yaml
+schema_version: thot.dev/v2
+identity_field: student_id
+students:
+  - student_id: student1
+    name: OVA screening candidate
+```
+
+```yaml
+# assignments.yaml
+schema_version: thot.dev/v2
 assignments:
-  - student_external_id: student-001
-    delivery_filename: student-001.ova
-  - student_external_id: student-002
-    delivery_filename: student-002.ova
+  - student_id: student1
+    deliverable: ArchLinux_Dualboot.ova
 ```
 
-Use `thot assignments get` to inspect mappings and
-`thot assignments import assignments.yaml` to replace them. The daemon must
-be able to read the project and the local delivery folder. Paths in
-`configuration.yaml` are resolved from the project directory. Use
-`concurrency: 1`: VirtualBox import, shared host ports, and guest access are
-not suitable for parallel student runs in the current implementation.
-
-## 4. What can be run with the current release
-
-The following is a **partial screening configuration**, not a complete test of
-the stated requirements. It uses currently implemented test references to
-check that an OVA imports, that libguestfs can enumerate disk contents, and
-that VirtualBox can start the VM. The disk folder assumes one supported disk
-image per imported VM. `disk_inventory` does not assert the required operating
-systems or partition roles, and `vm_starts` does not select each GRUB entry.
-There is intentionally no claim that this proves shared-data access.
+The following is the shape accepted by the **tested `v0.1.44` release**. It
+intentionally omits `delivery_limits`: that release rejects the field as
+unknown. Its intake limits are fixed in the executable. `preparation.scripts`
+contains shell-command strings in this release; it does not copy or execute a
+script file named by a path. The separate script files below are kept as
+readable instructor project material, but the tested release cannot load them
+through the configuration contract.
 
 ```yaml
-activity_name: Arch, Alpine, Windows multiboot (preliminary screening)
-delivery_folder: ./delivery
-concurrency: 1
-timeout: 600
-rubrics_multiplier: 10
-evaluation_multiplier: 1
-
-tests:
-  - name: import_ova
-    description: Import the assigned virtual appliance.
-    test: VirtualBox/import_ova
-    timeout: 1800
-    parameters:
-      - vm_name: thot_multiboot
-      - vbox_group: /thot_multiboot
-      - vm_path: ./vms
-
-  - name: disk_inventory
-    description: Inspect imported disk partitions and filesystems offline.
-    test: libguestfs/disk_info
-    requirements: [import_ova]
-    timeout: 600
-    parameters:
-      - disk_path: ./vms
-
-  - name: linux_rootfs
-    description: Detect a Linux root filesystem, if supported by libguestfs.
-    test: libguestfs/linux_rootfs_info
-    requirements: [import_ova]
-    timeout: 600
-    parameters:
-      - disk_path: ./vms
-
-  - name: vm_starts
-    description: Start the imported VM using its configured default boot path.
-    test: VirtualBox/start_vm
-    requirements: [import_ova]
-    timeout: 240
-    parameters:
-      - vm_name: thot_multiboot
-
-  - name: vm_stops
-    description: Request guest shutdown after the default-path startup check.
-    test: VirtualBox/stop_vm
-    requirements: [vm_starts]
-    timeout: 180
-    parameters:
-      - vm_name: thot_multiboot
-
-checks:
-  - name: appliance_imported
-    description: VirtualBox imported the assigned OVA.
-    check: pass
-    test: import_ova
-
-  - name: disk_inspected
-    description: libguestfs returned a disk inventory.
-    check: pass
-    test: disk_inventory
-
-  - name: linux_root_detected
-    description: libguestfs identified a Linux root installation.
-    check: pass
-    test: linux_rootfs
-
-  - name: default_path_starts
-    description: The VM starts on its configured default boot path.
-    check: pass
-    test: vm_starts
-
-  - name: clean_shutdown
-    description: The VM stopped after its default-path startup check.
-    check: pass
-    test: vm_stops
-
-rubrics:
-  - name: disk_and_linux_evidence
-    description: Import and basic offline disk/Linux evidence.
-    checks: [appliance_imported, disk_inspected, linux_root_detected]
-    calculation: avg
-
-  - name: default_boot_evidence
-    description: Default VM startup and shutdown evidence.
-    checks: [default_path_starts, clean_shutdown]
-    calculation: avg
-
-evaluation:
-  - name: installation_and_disk
-    description: Preliminary import and disk inspection score.
-    rubrics: [disk_and_linux_evidence]
-    calculation: avg
-
-  - name: default_boot
-    description: Preliminary default-path startup score.
-    rubrics: [default_boot_evidence]
-    calculation: avg
+# configuration.thot.yaml
+schema_version: thot.dev/v2
+project_id: ova-screening-archlinux-dualboot
+name: Arch Linux dualboot OVA screening attempt
+language: en
+students_file: students.yaml
+assignments_file: assignments.yaml
+delivery_agent:
+  kind: local
+  path: /home/sysadmin
+sandbox_platforms:
+  - id: alpine-ova-screening
+    kind: kvm-alpine
+    isolation_scope: kvm-guest
+    lifecycle:
+      template_name: thot-ova-alpine-template
+      template_image:
+        distribution: Alpine Linux
+        release: 3.24.1
+        architecture: x86_64
+        image_url: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-x86_64-bios-cloudinit-r0.qcow2
+        sha512: 8d756f6fc7653daa4fb4e2e213d8a66007bcb1e5a846e28891af62c47b90685c694486c2746099ad99e9e8f5278db76b69d11dfe1e9361aa4c8406df16929a9c
+      template_vm:
+        vcpu: 1
+        memory_mib: 1024
+        disk_gib: 8
+        firmware: bios
+      agent:
+        install_from: pinned-static-binary
+        version: "0.1.44"
+        listen: guest-initiated-only
+      project_clone:
+        name: thot-ova-alpine-prepared
+        linked: true
+        source_snapshot: prepared-baseline
+      preparation:
+        timeout_seconds: 240
+        packages: [bash]
+        # This release interprets each entry as shell text, not a file path.
+        # The command records the package attempt and powers off the guest.
+        # It is deliberately not a successful evaluation of VirtualBox setup.
+        scripts:
+          - "if apk add --no-progress virtualbox >/var/log/thot-virtualbox-install.log 2>&1; then touch /var/lib/thot-preparation-complete; fi; sync; poweroff"
+      student_clone:
+        name_prefix: thot-ova-screen
+        linked: true
+        reset_from: prepared-baseline
+        cleanup: always
+    limits:
+      vcpu: 1
+      memory_mib: 1024
+      disk_gib: 8
+      preparation_timeout_seconds: 240
+      student_timeout_seconds: 30
+      stdout_bytes: 4096
+      stderr_bytes: 4096
+    network:
+      template_install: allow-configured-alpine-mirror-only
+      preparation: allow-configured-alpine-mirror-only
+      student_tests: deny
+    inputs:
+      - role: student-deliverable
+        copy_to: /work/submission.ova
+        read_only: true
+      - role: instructor-tests
+        path: extern/tests
+        copy_to: /work/instructor-tests
+        read_only: true
+    tests:
+      - id: virtualbox-and-ova-presence
+        action: exec
+        argv: [sh, /work/instructor-tests/check-vbox-and-ova.sh]
+        timeout_seconds: 10
+        expect_exit_code: 0
+        capture: [stdout, stderr, exit_code, duration_ms]
+    evaluation:
+      syntax_check:
+        tests: [virtualbox-and-ova-presence]
+      functional_check:
+        tests: [virtualbox-and-ova-presence]
+      rubric:
+        calculation: weighted_sum
+        scale: 10
+        criteria:
+          - check: syntax_check
+            points: 0
+          - check: functional_check
+            points: 10
+      infrastructure_errors:
+        grade: pending
+        never_convert_to_zero: true
 ```
 
-This yields two evaluation items, each on a 0–10 scale. A failed check gives
-zero for that check. An import, inspection, or VM infrastructure error must be
-reviewed in the test result; do not treat an infrastructure error as proof of
-student failure. Thot's current scoring model can calculate marks from failed
-tests, so professors should inspect statuses and diagnostics before publishing
-grades.
-
-Before evaluating a class, validate the project with one known-good OVA and
-one intentionally invalid OVA. Confirm the VM storage location, import
-cleanup, available disk space, and that no student guest can reach host
-services. The current host safety controls reduce exposure but do not make
-arbitrary OVA files safe.
-
-## 5. Run and review the current partial project
-
-With the daemon and VirtualBox agent configured, change to the project folder
-and check the configured local inventory:
+Example human-readable preparation and test scripts:
 
 ```sh
-cd "$HOME/arch-multiboot-course"
-thot assignments get
-thot run create "$PWD"
-thot run list
-thot run status RUN_ID
+#!/bin/sh
+# extern/preparation/install-virtualbox.sh
+set -eu
+apk add --no-progress virtualbox
+command -v VBoxManage
+VBoxManage --version
 ```
-
-Use the run ID printed by `thot run create`. A run imports each assigned OVA,
-performs the configured tests in order, captures stdout/stderr/exit codes and
-diagnostics, calculates checks/rubrics/evaluation items, and removes
-Thot-owned VM resources during cleanup. If import or cleanup fails, stop and
-inspect the result before rerunning; do not manually delete VM files while
-Thot still records ownership.
-
-Inspect a student's expedient and the class matrices:
 
 ```sh
-thot run expedient EXPEDIENT_ID
-thot report expedients RUN_ID
-thot report test_stats RUN_ID
-thot report checks_stats RUN_ID
-thot report rubric_stats RUN_ID
+#!/bin/sh
+# extern/tests/check-vbox-and-ova.sh
+set -eu
+test -s /work/submission.ova
+command -v VBoxManage >/dev/null
+printf 'OVA-present-and-VirtualBox-available\n'
 ```
 
-For marks suitable for spreadsheets, export the evaluation items as CSV:
+These scripts express the intended checks. The published release configuration
+shown above does not load them from those paths, and the OVA cannot pass the
+release's intake limit in any case. Do not treat a configured test that never
+ran as a pass or a student failure.
+
+## Run and interpret the attempt
+
+Use a VM storage root accessible to libvirt and retain the project results:
 
 ```sh
-thot report grades --evaluation-items --csv RUN_ID > "$PWD/grades.csv"
+sudo env THOT_KVM_ALPINE_ROOT=/var/lib/libvirt/images/thot-ova-screening \
+  thot sandbox run /path/to/ova-screening-kvm-alpine
 ```
 
-To create the professor summary PDF, individual student reports, and a
-Moodle-ready CSV in one step:
+The local-delivery inventory can be inspected with:
 
 ```sh
-thot report grades --all RUN_ID --output-dir "$PWD/grades/RUN_ID"
+thot deliveries list /path/to/ova-screening-kvm-alpine
 ```
 
-Review failed, timed-out, skipped, and error statuses before releasing grades.
-Use the student PDFs for per-student evidence and `professor_grades.pdf` for
-the cohort overview. Keep the OVA source, project configuration, and exported
-reports together when archiving the course. The reports include test
-observations and scoring inputs; retain them according to the institution's
-student-data policy.
+The release's `thot --help` only advertises `thot sandbox run`; do not rely on
+newer workspace commands such as `thot sandbox report`, `export`, or `import`
+unless those commands are included in the release actually installed. Likewise,
+`thot run create` selects the legacy daemon/VirtualBox workflow and is not a
+substitute for this KVM command.
 
-## Related documentation
+### Test-host trial record
 
-- [Implemented functionality catalog](../implementation/vm-activity-reference.md)
-- [Delivery agents and Google Drive OAuth](delivery-agents.md)
-- [Deployment guide](../../deploy/README.md)
-- [KVM Alpine sandbox status](../implementation/kvm-alpine.md)
+The professor-style trial was performed on `sysadmin@192.168.1.35` on 23 Nov
+2026. The installer checksum verification succeeded; `thotd` and
+`thot-virtualbox-agent` were active afterward. Host KVM prerequisites were
+available, `/dev/kvm` existed, and libvirt's `default` NAT network was active.
+No VirtualBox host executable was installed. The source OVA measured
+8,487,809,024 bytes.
+
+The project and retained diagnostics are at
+`/home/sysadmin/ova-screening-kvm-alpine`. The VM storage and preserved
+template/prepared-baseline disks are under
+`/var/lib/libvirt/images/thot-ova-screening`. Run output is in the project's
+`results/` folder. **Nothing was cleaned after the trial.** The guest is powered
+off and no student clone is running.
+
+Observed sequence and result:
+
+1. The first configuration was rejected because `delivery_limits` is unknown
+   to the installed release. The next shape was rejected because this release
+   expects preparation script strings, not `{path: ...}` objects.
+2. A project runtime under the private home directory failed at libvirt file
+   access. Moving the runtime to `/var/lib/libvirt/images` allowed the Alpine
+   template and project-preparation VM to start.
+3. The first preparation command tried to execute the relative path
+   `extern/preparation/install-virtualbox.sh` inside Alpine. Cloud-init logged
+   exit code 127 because the release did not transfer that file. That failed
+   baseline and the host logs were retained.
+4. With the release-compatible inline command, Alpine logged:
+   `virtualbox (no such package)` and `VBoxManage` was absent. The configured
+   shell command masked the `apk add` failure while shutting down, so the
+   provider accepted the preparation marker. The retained guest log makes this
+   false-positive preparation result visible. A professor script must
+   propagate failure; the release should also expose and persist each
+   preparation command's status before this workflow is used for grading.
+5. The engine then stopped at intake with:
+   `deliverable "ArchLinux_Dualboot.ova" exceeds the 128 MiB intake limit`.
+   No OVA bytes were copied to the guest. No student overlay, OVA import,
+   partition inspection, GRUB boot, shared-data check, test result, expedient,
+   or grade report was produced. The UUID directory under project `results/`
+   is empty; the captured CLI failure and guest/libvirt diagnostics are beside
+   it.
+
+Useful preserved evidence includes `results/cli-run-attempt-06.log`,
+`results/guest-virtualbox-install.log`,
+`results/guest-cloud-init-output.log`, `results/guest-runcmd.sh`,
+`results/libvirt-prepare.log`, and
+`results/attempt-04-incomplete-baseline.qcow2`. The last file is a 517 MiB
+incomplete baseline retained from the earlier timeout. The current Alpine
+template and baseline remain in the KVM storage root and can be inspected with
+`sudo guestfish` or `sudo qemu-img info`.
+
+This trial verifies only that the release can download/verify the Alpine image,
+create a libvirt template, boot a preparation VM, and reach the local-delivery
+intake check. It does **not** verify VirtualBox installation, OVA inspection,
+student test execution, progress streaming, expedient generation, or grading.
+The multiboot use case should remain blocked until large-file intake/staging,
+reliable preparation status, VirtualBox or an alternative OVA test module,
+nested virtualization policy, test-result persistence/report integration,
+and the actual EFI/GRUB/OS/shared-data checks are implemented and qualified.

@@ -2,7 +2,9 @@
 
 This is a runnable synthetic project for `thot sandbox run` on Linux/KVM. The command uses the shared `thot-core` v2 configuration and `thot-engine` check/rubric evaluator. It is not yet managed by `thotd` or the canonical lifecycle provider interface.
 
-The CLI uses a pinned Alpine 3.24.1 x86_64 cloud-init qcow2 image and its configured SHA-512 digest. It creates a prepared linked qcow2 overlay, then one student overlay per roster entry. Student domains have no virtual network device. A per-clone cloud-init seed injects the static guest agent and one-use VSOCK token; submissions and instructor tests are sent in bounded, SHA-256 checked chunks. Assignments point to deliverable directories, a suitable layout for checked-out repositories. Result reports are saved under `results/`.
+The CLI uses a pinned Alpine 3.24.1 x86_64 cloud-init qcow2 image and its configured SHA-512 digest. It creates a prepared linked qcow2 overlay, then one student overlay per roster entry. Student domains have no virtual network device. A per-clone cloud-init seed injects the static guest agent and one-use VSOCK token; submissions, instructor tests, and pinned test modules stream in acknowledged chunks with SHA-256 verification. Assignments point to deliverable directories, a suitable layout for checked-out repositories. Results and test evidence are saved in a portable, verified run folder under `results/<run-id>/`.
+
+`lifecycle.preparation.scripts` names project-relative shell files, optionally pins their expected SHA-256, and supports per-script timeouts. Thot hashes each file before baseline reuse and records output, exit status and installed package inventory. The sample includes a Bash preparation check and a `posix-shell-script-v1` sum-check module under `extern/modules/`; the module manifest pins its package digest and required guest capabilities. This first module ABI supports one script file per module, with argv passed as script arguments. See [ADR-0012](../../docs/decisions/0012-alpine-preparation-and-posix-test-modules.md) for scope and limitations.
 
 The expected outcomes are:
 

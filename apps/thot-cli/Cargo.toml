@@ -14,6 +14,7 @@ libc = "0.2"
 thot-core = { path = "../../crates/thot-core" }
 thot-kvm-alpine = { path = "../thot-alpine-poc" }
 thot-delivery = { path = "../../crates/thot-delivery" }
+thot-engine = { path = "../../crates/thot-engine" }
 tokio.workspace = true
 reqwest.workspace = true
 serde_yaml.workspace = true

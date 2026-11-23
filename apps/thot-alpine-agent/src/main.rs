@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     supported_versions: vec![ALPINE_PROTOCOL_VERSION],
                     nonce: handshake.nonce,
                     secret: String::new(),
+                    capabilities: executor::capabilities(),
                 })
             }
             AgentRequest::ExecuteTask(task) => {

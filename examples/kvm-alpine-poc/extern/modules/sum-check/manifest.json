@@ -1,0 +1,11 @@
+{
+  "manifest_version": 1,
+  "module_id": "thot.smoke.sum-check",
+  "version": "1.0.0",
+  "package_sha256": "e3faf4d5aa5b29949d003dbb4bc3399e561587a1943cf51d0b0480535582bb70",
+  "capabilities": [
+    { "id": "process.argv", "version": 1 },
+    { "id": "module.posix-shell", "version": 1 }
+  ],
+  "assets": []
+}

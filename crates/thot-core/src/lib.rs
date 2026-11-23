@@ -72,6 +72,7 @@ pub struct GetStudentsResponse {
 pub mod agent_protocol;
 pub mod deliveries;
 pub mod expedients;
+pub mod sandbox_contracts;
 pub mod sandbox_project;
 pub mod sandbox_protocol;
 pub mod test_results;

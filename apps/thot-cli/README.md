@@ -20,6 +20,9 @@ thot [-h HOST] [-p PORT] run expedient EXPEDIENT_ID
 thot [-h HOST] [-p PORT] run cancel RUN_ID
 thot [-h HOST] [-p PORT] run cleanup EXPEDIENT_ID
 thot sandbox run [PROJECT_DIR] [--agent PATH]
+thot sandbox report <RUN_DIR> [--json|--csv|--html FILE]
+thot sandbox export <RUN_DIR> <ARCHIVE.zip>
+thot sandbox import <ARCHIVE.zip> <DEST_DIR>
 thot deliveries list [PROJECT_DIR]
 thot deliveries get <NAME> [PROJECT_DIR] [--output PATH]
 thot [-h HOST] [-p PORT] report runs [--csv|--yaml|--json]
@@ -41,6 +44,16 @@ the selected delivery agent, and instructor tests from the project directory. It
 `thotd`; it launches disposable KVM guests and delegates test and rubric
 evaluation to `thot-engine`. Result JSON is written under
 `PROJECT_DIR/results/<evaluation-id>/`, preserving earlier evaluations.
+After a run, `thot sandbox report PROJECT_DIR/results/<run-id>` verifies the
+committed run journal and evidence hashes before displaying a compact
+student/item summary. Use `--json` or `--csv` for spreadsheet/import workflows,
+or `--html report.html` to write a self-contained offline report. The HTML
+export is presentation output; the verified run folder remains the source of
+truth. `thot sandbox export` creates a stored (no recompression) ZIP only from
+a complete integrity-verified run. `thot sandbox import` rejects unsafe paths,
+links, duplicates, and oversized archives, then verifies the run before
+accepting it. Imported evidence can be reported with the same command; it does
+not restore a VM or replay tests.
 
 Run it from the project directory with `sudo thot sandbox run .`. The KVM host
 needs `/dev/kvm`, libvirt/QEMU, `virt-install`, `qemu-img`, `cloud-localds`,
