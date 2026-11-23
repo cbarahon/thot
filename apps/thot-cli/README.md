@@ -1,7 +1,8 @@
 # `thot` command-line client
 
-The CLI talks to `thotd`; it never invokes `VBoxManage` or sends guest
-credentials. Its default API endpoint is `http://127.0.0.1:8081`.
+Most CLI commands talk to `thotd`; the local sandbox command below invokes the
+configured Linux KVM provider directly. Its default API endpoint for server
+commands is `http://127.0.0.1:8081`.
 
 ```text
 thot [-h HOST] [-p PORT] import students <file.csv>
@@ -18,6 +19,9 @@ thot [-h HOST] [-p PORT] run delete RUN_ID
 thot [-h HOST] [-p PORT] run expedient EXPEDIENT_ID
 thot [-h HOST] [-p PORT] run cancel RUN_ID
 thot [-h HOST] [-p PORT] run cleanup EXPEDIENT_ID
+thot sandbox run [PROJECT_DIR] [--agent PATH]
+thot deliveries list [PROJECT_DIR]
+thot deliveries get <NAME> [PROJECT_DIR] [--output PATH]
 thot [-h HOST] [-p PORT] report runs [--csv|--yaml|--json]
 thot [-h HOST] [-p PORT] report deliveries [RUN_ID] [--csv|--yaml|--json]
 thot [-h HOST] [-p PORT] report deliveries tests [RUN_ID] [--csv|--yaml|--json]
@@ -30,6 +34,44 @@ thot [-h HOST] [-p PORT] clean
 thot [-h HOST] [-p PORT] prune
 thot [-h HOST] [-p PORT] reset
 ```
+
+`thot sandbox run` is the local Linux KVM workflow for `kind: kvm-alpine`. It
+loads `configuration.thot.yaml`, the configured student and assignment files,
+the selected delivery agent, and instructor tests from the project directory. It does not need
+`thotd`; it launches disposable KVM guests and delegates test and rubric
+evaluation to `thot-engine`. Result JSON is written under
+`PROJECT_DIR/results/<evaluation-id>/`, preserving earlier evaluations.
+
+Run it from the project directory with `sudo thot sandbox run .`. The KVM host
+needs `/dev/kvm`, libvirt/QEMU, `virt-install`, `qemu-img`, `cloud-localds`,
+`guestfish`, and `curl`. Install the static `thot-alpine-agent` beside `thot`,
+or pass its path with `--agent`. The runner checks its configured version and
+protocol before creating guests. A starter project and configuration are in
+[`examples/kvm-alpine-poc`](../../examples/kvm-alpine-poc/).
+
+The current local provider supports one `kvm-alpine` platform per project.
+Student guests have no virtual network device. The preparation guest uses the
+libvirt `default` network to install configured Alpine packages; professor
+preparation scripts run with guest root access. Treat project configuration
+and those scripts as trusted instructor input. Infrastructure failures stop
+the CLI and do not create a student grade.
+
+`thot deliveries list PROJECT_DIR` previews the configured source and reports
+deliverable names, sizes, and available dates. `thot deliveries get NAME
+PROJECT_DIR --output PATH` retrieves one item for inspection and refuses to
+overwrite an existing path. Without `delivery_agent` in project YAML, Thot
+uses local `delivery_folder`; if omitted, it derives the folder from the
+student-deliverable path template or defaults to `delivery`. Assignments in
+the KVM sandbox project refer to exact names from this inventory.
+
+For Google Drive, configure `delivery_agent.kind: gdrive` and a folder URL.
+Create a Google Cloud OAuth Desktop application, enable Drive API, and set
+`THOT_GDRIVE_CLIENT_ID` and `THOT_GDRIVE_CLIENT_SECRET` for first
+authorization. The first `thot deliveries list` opens browser consent and
+requests read-only Drive access. Tokens stay in the professor's private Thot
+configuration directory, outside project files. See
+[`docs/DELIVERY_AGENTS.md`](../../docs/DELIVERY_AGENTS.md) for setup and scope
+limitations.
 
 Bare `thot run` searches the current directory for exactly one supported
 `.thot` archive or a root `configuration.thot.yaml` / legacy

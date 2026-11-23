@@ -10,17 +10,17 @@ The POC implementation contains competing provider traits, incompatible configur
 
 ### Canonical configuration
 
-The canonical configuration for this POC is `configuration.thot.yaml`, with `schema_version: thot.dev/v2`. The checked-in `examples/kvm-alpine-poc/configuration.thot.yaml` is the canonical example and is to be corrected only when implementation details require it. `students.yaml` and `assignments.yaml` remain separate versioned project files referenced by the root configuration. No parallel `configuration.yaml` form is introduced for sandbox v2. Existing legacy VM activity configuration continues to use `VMActivityProject` and its existing compatibility rules; there is no implicit conversion between the two schemas.
+The canonical configuration is `configuration.thot.yaml`, with `schema_version: thot.dev/v2`. `thot-core::sandbox_project::SandboxProject` is the shared Rust model, and `examples/kvm-alpine-poc/configuration.thot.yaml` is its canonical fixture. `students.yaml` and `assignments.yaml` are separate project files referenced by the root configuration. Checks are descriptive mappings from check IDs to required test IDs; each test declares its expected exit code and optional exact stdout. Rubric criteria reference check IDs and points. No parallel `configuration.yaml` form is introduced for sandbox v2. Existing legacy VM activity configuration continues to use `VMActivityProject` and its compatibility rules; there is no implicit conversion between the schemas.
 
 The Rust configuration model belongs in `thot-core` and is serde serializable/deserializable:
 
-- `SandboxProjectConfigV2`: `schema_version`, `project_id`, `name`, `language`, `students_file`, optional `submissions_file`, `assignments_file`, and `sandbox_platforms`.
-- `SandboxPlatformConfig`: stable `id`, tagged `kind`, platform lifecycle settings, resource limits, network policy, input declarations, ordered test declarations, and evaluation rules.
-- `SandboxPlatformKind`: `KvmAlpine` for this POC. The enum is explicitly tagged by the YAML `kind` string; unsupported kinds fail validation.
-- `KvmAlpineConfig`: template image identity, fixed template name, configured project baseline name, VM resources, agent build/version, preparation package/script declarations, per-student clone policy, and host resource ceilings.
-- `TestStepConfig`, `InputConfig`, `ResourceLimits`, `NetworkPolicy`, `EvaluationConfig`, and rubric/check configuration: typed fields with explicit units and defaults. Commands use `argv: Vec<String>` and `cwd`, never a shell command string. Shell interpretation occurs only when argv explicitly selects a shell executable.
+- `SandboxProject`: schema version, project identity/name, referenced roster and assignments files, and sandbox platforms.
+- `SandboxPlatform`: stable `id`, `kind`, isolation scope, lifecycle, resource limits, network policy, input declarations, ordered tests, and evaluation rules.
+- `SandboxLifecycle`: image and template identity, VM resources, guest agent version, project-baseline configuration, preparation packages/scripts, and per-student clone policy.
+- `SandboxTest`: stable ID, action, dependency IDs, `argv`, timeout, expected exit code, and optional exact stdout. No shell parsing is implicit; the professor may explicitly put a shell executable in argv.
+- `SandboxEvaluation`: named checks referencing test IDs plus rubric criteria referencing check IDs and point values.
 
-The parser validates references, unique IDs, path containment, bounded positive limits, dependency ordering/acyclicity, and platform-local test dependencies before host effects. Unknown schema versions and unsupported platform kinds are rejected. The project YAML can request limits below host policy but cannot raise host ceilings or assert that a security control is enabled. The concrete Rust structs must match the fixture and this contract; aliases for the current incompatible placeholder structs are not part of the contract.
+The parser validates references, unique IDs, path containment, bounded positive limits, dependency ordering, test IDs, and rubric references before host effects. Unknown schema versions and unsupported platform kinds are rejected. The project YAML can request limits below host policy but cannot raise host ceilings or assert that a security control is enabled. The first local CLI implementation supports one `kvm-alpine` platform; additional kinds need explicit providers.
 
 ### One provider API and typed handles
 
@@ -79,7 +79,7 @@ Raw stdout, stderr, and declared test artifacts are stored as bounded binary blo
 
 ## Consequences
 
-The current `sandbox_platforms` fixture is the schema source for implementation and requires matching Rust structs and validation. `thot-core` gains v2 configuration/runtime types without changing legacy `VMActivityProject` deserialization. Existing `TestStatus` remains unchanged for legacy workflows; adapters must map only after an explicit compatibility rule. The agent, host provider, engine persistence, portable project layout, and API run model must share these v2 types or generated protocol fixtures. The status contract can represent a test that ran and failed academically, a technically incomplete test, and cleanup failure without collapsing them.
+The `thot sandbox run` local CLI currently reads the shared v2 core types and delegates exact test/rubric checks to `thot-engine`. It remains a local execution path until it is refactored onto the lifecycle `SandboxProvider` interface and integrated with durable engine/API run records. Existing `TestStatus` remains unchanged for legacy workflows; adapters must map only after an explicit compatibility rule. The agent, host provider, engine persistence, portable project layout, and API run model must share these v2 types or generated protocol fixtures.
 
 The handshake secret's bootstrap device and guest process identity must be implemented before enabling untrusted scripts. VSOCK peer CID and the secret authenticate session scope, not guest software integrity. High-assurance grading against a hostile guest requires an external observer or stronger architecture and is outside this POC.
 

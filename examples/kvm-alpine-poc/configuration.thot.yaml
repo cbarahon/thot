@@ -4,8 +4,9 @@ name: Alpine KVM quick viability check
 language: en
 students_file: students.yaml
 assignments_file: assignments.yaml
+delivery_folder: students
 
-# Proposed POC contract. The engine/provider described in docs does not implement these settings yet.
+# Local kvm-alpine POC configuration. The dedicated POC CLI executes this fixture.
 sandbox_platforms:
   - id: low-resource-alpine
     kind: kvm-alpine
@@ -14,21 +15,18 @@ sandbox_platforms:
       template_name: thot-alpine-platform
       template_image:
         distribution: Alpine Linux
-        release: 3.24.4
+        release: 3.24.1
         architecture: x86_64
-        iso_flavor: virt
-        iso_url: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.4-x86_64.iso
-        checksum_url: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.4-x86_64.iso.sha256
-        verify_checksum: true
+        image_url: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-x86_64-bios-cloudinit-r0.qcow2
+        sha512: 8d756f6fc7653daa4fb4e2e213d8a66007bcb1e5a846e28891af62c47b90685c694486c2746099ad99e9e8f5278db76b69d11dfe1e9361aa4c8406df16929a9c
       template_vm:
         vcpu: 1
         memory_mib: 512
         disk_gib: 2
         firmware: bios
-      template_packages: [openssh, ca-certificates]
       agent:
         install_from: pinned-static-binary
-        version: "0.1.43"
+        version: "0.1.44"
         listen: guest-initiated-only
       project_clone:
         name: thot-alpine-poc-sum-project
@@ -57,8 +55,7 @@ sandbox_platforms:
       student_tests: deny
     inputs:
       - role: student-deliverable
-        path_template: students/{student_id}/sum.sh
-        copy_to: /work/submission/sum.sh
+        copy_to: /work/submission
         read_only: true
       - role: instructor-tests
         path: extern/tests
@@ -80,8 +77,10 @@ sandbox_platforms:
         expected_stdout: "42\n"
         comparison: exact
     evaluation:
-      syntax_check: syntax.exit_code == 0
-      functional_check: sum-result.exit_code == 0 and sum-result.stdout == "42\n"
+      syntax_check:
+        tests: [syntax]
+      functional_check:
+        tests: [sum-result]
       rubric:
         calculation: weighted_sum
         scale: 10

@@ -1,0 +1,18 @@
+[package]
+name = "thot-delivery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.22"
+chrono.workspace = true
+libc = "0.2"
+reqwest = { workspace = true, features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+thot-core = { path = "../thot-core" }
+url = "2"
+uuid.workspace = true

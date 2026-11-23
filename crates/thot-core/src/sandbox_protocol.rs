@@ -1,9 +1,7 @@
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::time::Duration;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::str::FromStr;
-use std::error::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExecutionStatus {
@@ -29,6 +27,7 @@ pub enum AgentRequest {
 pub enum AgentResponse {
     Handshake(HandshakeResponse),
     InstallPackageResult(InstallPackageResult),
+    StageFileChunkResult(StageFileChunkResult),
     ExecuteTaskResult(ExecuteTaskResult),
     SyncResult(SyncResult),
     AcknowledgeResult(AcknowledgeResult),
@@ -65,6 +64,13 @@ pub struct StageFileChunkRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageFileChunkResult {
+    pub task_id: String,
+    pub complete: bool,
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallPackageRequest {
     pub task_id: String,
     pub package_name: String,
@@ -75,7 +81,6 @@ pub struct ExecuteTaskRequest {
     pub task_id: String,
     pub run_id: String,
     pub student_unit_id: String,
-    pub task_id: String,
     pub working_dir: PathBuf,
     pub argv: Vec<String>,
     pub limits: ExecutionLimits,
@@ -116,6 +121,7 @@ pub struct ExecuteTaskResult {
     pub run_id: String,
     pub student_unit_id: String,
     pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
     pub stdout: String,
     pub stderr: String,
     pub diagnostics: String,
@@ -171,25 +177,25 @@ pub struct ProtocolErrorResponse {
     pub error_message: String,
 }
 
-pub const ALPINE_PROTOCOL_VERSION: u32 = 1;
+pub const ALPINE_PROTOCOL_VERSION: u32 = 2;
 pub const MAX_FRAME_BYTES: usize = 1_048_576;
 
-fn write_frame<W: std::io::Write, T: Serialize>(writer: &mut W, data: &T) -> Result<(), ProtocolError> {
-    let frame = serde_json::to_string(data)?;
-    let frame_size = frame.len() as u32;
-    if frame_size > MAX_FRAME_BYTES as u32 {
+pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, data: &T) -> Result<(), ProtocolError> {
+    let frame = serde_json::to_vec(data).map_err(ProtocolError::InvalidJson)?;
+    if frame.is_empty() || frame.len() > MAX_FRAME_BYTES {
         return Err(ProtocolError::OversizedFrame);
     }
+    let frame_size = frame.len() as u32;
     writer.write_all(&frame_size.to_be_bytes())?;
-    writer.write_all(frame.as_bytes())?;
+    writer.write_all(&frame)?;
     Ok(())
 }
 
-fn read_frame<R: std::io::Read, T: DeserializeOwned>(reader: &mut R) -> Result<T, ProtocolError> {
+pub fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<T, ProtocolError> {
     let mut buffer = [0; 4];
     reader.read_exact(&mut buffer)?;
     let frame_size = u32::from_be_bytes(buffer);
-    if frame_size as usize > MAX_FRAME_BYTES {
+    if frame_size == 0 || frame_size as usize > MAX_FRAME_BYTES {
         return Err(ProtocolError::OversizedFrame);
     }
     let mut frame = vec![0; frame_size as usize];
@@ -212,9 +218,13 @@ mod tests {
             nonce: "nonce000".to_string(),
             secret: "secret111".to_string(),
         });
-        let encoded = write_frame(&mut std::io::Cursor::new(vec![]), &request).unwrap();
+        let mut encoded = Vec::new();
+        write_frame(&mut encoded, &request).unwrap();
         let decoded: AgentRequest = read_frame(&mut std::io::Cursor::new(&encoded)).unwrap();
-        assert_eq!(request, decoded);
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::to_value(decoded).unwrap()
+        );
     }
 
     #[test]
@@ -227,28 +237,24 @@ mod tests {
             nonce: "nonce000".to_string(),
             secret: "secret111".to_string(),
         });
-        let encoded = write_frame(&mut std::io::Cursor::new(vec![]), &request).unwrap();
-        let decoded: AgentRequest = read_frame(&mut std::io::Cursor::new(&encoded[0..encoded.len() - 1])).unwrap_err();
-        assert!(matches!(decoded, ProtocolError::InvalidFrameSize));
+        let mut encoded = Vec::new();
+        write_frame(&mut encoded, &request).unwrap();
+        let decoded: Result<AgentRequest, ProtocolError> =
+            read_frame(&mut std::io::Cursor::new(&encoded[..encoded.len() - 1]));
+        assert!(matches!(decoded, Err(ProtocolError::Io(_))));
     }
 
     #[test]
     fn test_invalid_json() {
-        let encoded = vec![0, 0, 0, 4, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
-        let decoded: Result<AgentRequest, ProtocolError> = read_frame(&mut std::io::Cursor::new(&encoded));
+        let encoded = vec![0, 0, 0, 5, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
+        let decoded: Result<AgentRequest, ProtocolError> =
+            read_frame(&mut std::io::Cursor::new(&encoded));
         assert!(matches!(decoded, Err(ProtocolError::InvalidJson(_))));
     }
 
     #[test]
     fn test_oversized_frame() {
-        let request = AgentRequest::Handshake(HandshakeRequest {
-            protocol_version: ALPINE_PROTOCOL_VERSION,
-            run_id: vec![b'a'; MAX_FRAME_BYTES + 1].into(),
-            student_unit_id: "unit456".to_string(),
-            expected_peer_cid: "peer789".to_string(),
-            nonce: "nonce000".to_string(),
-            secret: "secret111".to_string(),
-        });
+        let request = "x".repeat(MAX_FRAME_BYTES + 1);
         let encoded = write_frame(&mut std::io::Cursor::new(vec![]), &request).unwrap_err();
         assert!(matches!(encoded, ProtocolError::OversizedFrame));
     }
@@ -262,4 +268,33 @@ pub enum ProtocolError {
     UnsupportedVersion(u32),
     MismatchedIdentity,
     ReplayedSession,
+    Io(std::io::Error),
 }
+
+impl From<std::io::Error> for ProtocolError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<serde_json::Error> for ProtocolError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::InvalidJson(error)
+    }
+}
+
+impl std::fmt::Display for ProtocolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidFrameSize => formatter.write_str("invalid frame size"),
+            Self::InvalidJson(error) => write!(formatter, "invalid JSON: {error}"),
+            Self::OversizedFrame => formatter.write_str("frame exceeds maximum size"),
+            Self::UnsupportedVersion(version) => write!(formatter, "unsupported version {version}"),
+            Self::MismatchedIdentity => formatter.write_str("message identity mismatch"),
+            Self::ReplayedSession => formatter.write_str("replayed session"),
+            Self::Io(error) => write!(formatter, "frame I/O error: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ProtocolError {}

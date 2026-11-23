@@ -2025,13 +2025,13 @@ impl PdfDocument {
         let mut chunks: Vec<Vec<usize>> = Vec::new();
         let mut current = Vec::new();
         let mut current_width = identity_width;
-        for column in 2..headers.len() {
-            if !current.is_empty() && current_width + widths[column] > usable {
+        for (column, width) in widths.iter().enumerate().take(headers.len()).skip(2) {
+            if !current.is_empty() && current_width + *width > usable {
                 chunks.push(std::mem::take(&mut current));
                 current_width = identity_width;
             }
             current.push(column);
-            current_width += widths[column];
+            current_width += *width;
         }
         if !current.is_empty() {
             chunks.push(current);
@@ -2080,9 +2080,9 @@ impl PdfDocument {
         let headers = (0..headers.len())
             .map(|index| headers.get(index).cloned().unwrap_or_default())
             .collect::<Vec<_>>();
-        if repeated_heading.is_some() {
+        if let Some(heading) = repeated_heading {
             self.section_break();
-            self.heading(repeated_heading.unwrap());
+            self.heading(heading);
         }
         if self.y + table_row_height(&headers, widths) > self.height - 40.0 {
             self.page();

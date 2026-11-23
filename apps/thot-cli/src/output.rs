@@ -1,7 +1,6 @@
 //! Purpose: Renders JSON API values as human-readable YAML for CLI output.
 
 use serde_json::Value;
-use serde_yaml;
 use std::io::{self, Write};
 
 /// Prints a JSON value as a YAML document to stdout.

@@ -1,5 +1,5 @@
 schema_version: thot.dev/v2
 assignments:
-  - {student_id: student1, deliverable: students/student1/sum.sh}
-  - {student_id: student2, deliverable: students/student2/sum.sh}
-  - {student_id: student3, deliverable: students/student3/sum.sh}
+  - {student_id: student1, deliverable: student1}
+  - {student_id: student2, deliverable: student2}
+  - {student_id: student3, deliverable: student3}

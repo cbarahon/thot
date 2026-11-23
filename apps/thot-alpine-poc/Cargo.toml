@@ -1,0 +1,30 @@
+[package]
+name = "thot-kvm-alpine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autobins = false
+
+[lib]
+name = "thot_kvm_alpine"
+path = "src/main.rs"
+
+[[bin]]
+name = "thot-alpine-poc"
+path = "src/bin.rs"
+
+[dependencies]
+thot-core = { path = "../../crates/thot-core" }
+thot-engine = { path = "../../crates/thot-engine" }
+thot-delivery = { path = "../../crates/thot-delivery" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio.workspace = true
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"

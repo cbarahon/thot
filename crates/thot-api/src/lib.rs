@@ -12,13 +12,11 @@ use serde_json::json;
 use thot_core::ImportStudentsRequest;
 use thot_engine::project_context::ProjectContextError;
 use thot_engine::{AssignmentService, DeliveryRunService, StudentService, StudentServiceError};
-use thot_engine::SandboxRunService;
 
 mod assignments;
 mod delivery_runs;
 mod maintenance;
 mod reports;
-mod sandbox_runs;
 
 #[derive(Clone)]
 struct StudentState {
@@ -48,16 +46,6 @@ pub fn router_with_runs(
         .merge(maintenance::router(runs.clone()))
         .merge(reports::router(runs))
         .merge(assignments::router(assignments_service))
-}
-
-pub fn router_with_sandbox_runs(
-    students: StudentService,
-    runs: DeliveryRunService,
-    assignments_service: AssignmentService,
-    sandbox_runs: SandboxRunService,
-) -> Router {
-    router_with_runs(students, runs, assignments_service)
-        .merge(sandbox_runs::router(sandbox_runs))
 }
 
 async fn health() -> Json<serde_json::Value> {

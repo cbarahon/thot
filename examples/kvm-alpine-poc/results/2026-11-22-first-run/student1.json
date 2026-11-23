@@ -1,0 +1,48 @@
+{
+  "criteria": [
+    {
+      "check": "syntax_check",
+      "maximum": 2,
+      "points": 2
+    },
+    {
+      "check": "functional_check",
+      "maximum": 8,
+      "points": 8
+    }
+  ],
+  "grade": 10,
+  "platform": "kvm-alpine",
+  "run_id": "ed6622c9-dcc6-4041-878e-97f4d4f2fb2b",
+  "scale": 10,
+  "schema_version": "thot.result/v2",
+  "student_id": "student1",
+  "tests": [
+    {
+      "result": {
+        "assessment": "passed",
+        "diagnostics": "",
+        "duration_ms": 9,
+        "exit_code": 0,
+        "status": "completed",
+        "stderr": "",
+        "stdout": "",
+        "truncated": false
+      },
+      "test_id": "syntax"
+    },
+    {
+      "result": {
+        "assessment": "passed",
+        "diagnostics": "",
+        "duration_ms": 1,
+        "exit_code": 0,
+        "status": "completed",
+        "stderr": "",
+        "stdout": "42\n",
+        "truncated": false
+      },
+      "test_id": "sum-result"
+    }
+  ]
+}

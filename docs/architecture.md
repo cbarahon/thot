@@ -8,6 +8,29 @@ The POC catalog and guide documents a Rust `thotd` service, CLI, `configuration.
 
 The objective is to keep the evaluation reproducible from evidence, replacing the host-bound execution with an isolated laboratory and making the project a self-sufficient portfolio.
 
+## Deliverable intake agents
+
+Student work enters through a read-only delivery-agent boundary before it reaches a sandbox. The project chooses one provider per evaluation: local filesystem or Google Drive. `list` returns exact names, sizes, and available dates; `get(name)` materializes one bounded item into private host staging. The runner hashes the acquired bytes and sends only the selected submission into the student environment. Assignments reference names from the inventory, not machine-specific source paths. Local filesystem remains the default when the project omits an agent declaration.
+
+Google Drive OAuth is performed as the professor through a loopback desktop-app callback and requests a read-only scope. The refresh/access token cache is outside the project and result archive. Sandbox agents never receive Google credentials. The current `kvm-alpine` CLI uses this contract; the legacy daemon delivery-folder flow has not yet migrated.
+
+```mermaid
+sequenceDiagram
+  participant I as Instructor CLI
+  participant A as Delivery agent
+  participant S as Local folder or Google Drive
+  participant V as Student VM
+  I->>A: list()
+  A->>S: enumerate direct children
+  S-->>A: names, sizes, available timestamps
+  A-->>I: inventory
+  I->>A: get(assigned exact name)
+  A->>S: read-only fetch
+  S-->>A: bytes
+  A-->>I: private staged file + SHA-256
+  I->>V: bounded submission copy
+```
+
 ## Generic model
 
 ## Sandbox platforms and test phases

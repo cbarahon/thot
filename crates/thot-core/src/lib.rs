@@ -72,6 +72,8 @@ pub struct GetStudentsResponse {
 pub mod agent_protocol;
 pub mod deliveries;
 pub mod expedients;
+pub mod sandbox_project;
+pub mod sandbox_protocol;
 pub mod test_results;
 pub mod vm_activity;
 
@@ -89,12 +91,6 @@ pub struct DeliveryRunRequest {
     #[serde(default)]
     pub delivery_directory: Option<String>,
 }
-
-pub mod sandbox;
-pub mod sandbox_protocol;
-
-pub use sandbox::SandboxRunRequest;
-pub use sandbox_protocol::*;
 
 #[cfg(test)]
 mod tests {

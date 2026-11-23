@@ -14,6 +14,7 @@ pub mod project_config;
 pub mod project_context;
 pub mod report;
 pub mod rubrics;
+pub mod sandbox;
 pub mod stats;
 pub mod storage;
 mod student_csv;
@@ -38,12 +39,3 @@ pub enum EngineError {
     #[error("error de inicialización de almacenamiento: {0}")]
     StorageInit(String),
 }
-
-pub mod provider;
-pub mod sandbox_config;
-pub mod sandbox_provider;
-pub mod sandbox_run_service;
-
-pub use provider::EngineProviderAdapter;
-pub use sandbox_run_service::{SandboxRunService, SandboxRunRecord};
-pub use sandbox_run_service::ServiceError as SandboxServiceError;

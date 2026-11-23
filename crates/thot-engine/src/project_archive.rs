@@ -351,7 +351,7 @@ mod tests {
         let root = temp_path("project");
         fs::create_dir_all(&root).unwrap();
         let archive = root.join("project.thot.zip");
-        let destination = root.join("staging");
+        let destination = temp_path("project-staging");
         let file = File::create(&archive).unwrap();
         let mut writer = ZipWriter::new(file);
         writer
@@ -359,12 +359,13 @@ mod tests {
             .unwrap();
         writer.write_all(b"activity_name: Demo\n").unwrap();
         writer.finish().unwrap();
-        let extracted = snapshot_project_directory(&root, &destination, &[]).unwrap();
+        let extracted = extract_project_archive(&archive, &destination).unwrap();
         assert_eq!(
             fs::read(extracted.join("configuration.yaml")).unwrap(),
             b"activity_name: Demo\n"
         );
         fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(destination).unwrap();
     }
 
     #[test]
@@ -372,7 +373,7 @@ mod tests {
         let root = temp_path("unsafe");
         fs::create_dir_all(&root).unwrap();
         let archive = root.join("unsafe.thot.zip");
-        let destination = root.join("staging");
+        let destination = temp_path("unsafe-staging");
         let file = File::create(&archive).unwrap();
         let mut writer = ZipWriter::new(file);
         writer
@@ -380,7 +381,7 @@ mod tests {
             .unwrap();
         writer.write_all(b"bad").unwrap();
         writer.finish().unwrap();
-        assert!(snapshot_project_directory(&root, &destination, &[]).is_err());
+        assert!(extract_project_archive(&archive, &destination).is_err());
         assert!(!destination.exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -390,7 +391,7 @@ mod tests {
         let root = temp_path("tgz");
         fs::create_dir_all(&root).unwrap();
         let archive = root.join("project.thot.tgz");
-        let destination = root.join("staging");
+        let destination = temp_path("tgz-staging");
         let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());
         let mut builder = Builder::new(encoder);
         let mut header = Header::new_gnu();
@@ -406,12 +407,13 @@ mod tests {
             .unwrap();
         let encoder = builder.into_inner().unwrap();
         encoder.finish().unwrap();
-        snapshot_project_directory(&root, &destination, &[]).unwrap();
+        extract_project_archive(&archive, &destination).unwrap();
         assert_eq!(
             fs::read(destination.join("configuration.yaml")).unwrap(),
             b"activity_name: Demo\n"
         );
         fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(destination).unwrap();
     }
 
     #[test]
@@ -419,7 +421,7 @@ mod tests {
         let root = temp_path("thot_gz");
         fs::create_dir_all(&root).unwrap();
         let archive = root.join("project.thot.gz");
-        let destination = root.join("staging");
+        let destination = temp_path("thot-gz-staging");
         let encoder = GzEncoder::new(File::create(&archive).unwrap(), Compression::default());
         let mut builder = Builder::new(encoder);
         let mut header = Header::new_gnu();
@@ -435,11 +437,12 @@ mod tests {
             .unwrap();
         let encoder = builder.into_inner().unwrap();
         encoder.finish().unwrap();
-        snapshot_project_directory(&root, &destination, &[]).unwrap();
+        extract_project_archive(&archive, &destination).unwrap();
         assert_eq!(
             fs::read(destination.join("configuration.yaml")).unwrap(),
             b"activity_name: Demo\n"
         );
         fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(destination).unwrap();
     }
 }

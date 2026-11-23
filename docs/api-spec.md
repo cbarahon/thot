@@ -8,6 +8,17 @@ JSON UTF-8 for messages, secure YAML without executable tags for documents. `sch
 
 ID UUID or generated opaque identifier, RFC 3339 UTC dates, duration in whole milliseconds, quantities with explicit unit MiB/GiB. SHA-256 over blob bytes; Object traces over RFC 8785 canonical JSON. YAML is not canonicalized directly. Common diagnosis: `code`, `message` understandable, `field`, `retryable`, `technical_detail` optional worded.
 
+## Delivery-agent contract
+
+The current CLI exposes this contract locally; no public HTTP delivery-agent endpoint is introduced yet. Implementations are selected from project configuration and must be read-only:
+
+```text
+list() -> DeliveryInfo[]
+get(name: exact_name, destination: private_staging_path) -> AcquiredDelivery
+```
+
+`DeliveryInfo` contains `name`, `size_bytes`, and nullable RFC 3339 `created_at` and `modified_at`. `AcquiredDelivery` contains the selected metadata and SHA-256 over file bytes or the deterministic directory-tree manifest. Current policy limits are 128 MiB total and 10,000 files; student VM staging further applies its 10 MiB per-file limit. Local source paths are professor configuration and are never forwarded to a guest. Google Drive credentials never appear in project YAML, API requests, or result files. Missing names, duplicate Google Drive names, unsupported Drive-native documents, permission errors, expired consent, quotas, and download failures are intake/infrastructure errors, never student assessment failures.
+
 ## Example declarative configuration
 
 Complete example of the requested flow at the contract level: the digests and the referenced key are values ​​provided by the template/installation. The `image_ref` type must resolve to an installed digest before executing. The commands are argv lists, without shell interpolation. `${...}` is a typed reference and is only allowed in fields that declare it; it does not evaluate expressions or command substitutions.

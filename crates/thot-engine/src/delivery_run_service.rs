@@ -2103,6 +2103,9 @@ mod path_tests {
         let database_path = root.join("thot.sqlite3");
         std::fs::File::create(&database_path).unwrap();
         let database_url = format!("sqlite:{}", database_path.display());
+        crate::SqliteStudentRepository::connect(&database_url)
+            .await
+            .unwrap();
         let service =
             DeliveryRunService::connect(&database_url, root.join("artifacts"), test_runtime())
                 .await

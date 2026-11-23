@@ -28,6 +28,9 @@ erDiagram
 | Student | `internal_id` UUID, non-empty unique external `id`, name; optional mail; `identity_field` choose import column |
 | Submission | `submission_id` UUID, label, list of typed inputs; filename-independent identity |
 | Input | `input_id`, type, selector/role, source, SHA-256, and size; Git adds URL without credential, ref requested and commit resolved |
+| DeliveryAgent | `kind` (`local` or `gdrive`), non-secret source selector, version; local stores a path, Google Drive stores a folder URL only |
+| DeliveryMetadata | exact `name`, `size_bytes`, optional `created_at`/`modified_at`, provider file ID where available; no OAuth secret or token |
+| AcquiredDelivery | `name`, source kind, fetched SHA-256, byte size, available source dates, acquisition time; points to the materialized immutable run input |
 | Assignment | `student_internal_id`, `submission_id`; unique pairs, N×N; an individual correction does not alter shared results |
 | ExecutionUnit | `unit_id`, ordered set of deliveries/inputs, effective workflow and footprint; a unit shares a laboratory |
 | Run | `run_id`, UTC date, status, current revision, units and snapshot references |
@@ -55,6 +58,7 @@ actividad/
   students.yaml                 # o students.csv
   submissions.yaml              # local or Git resources per submission
   assignments.yaml
+  delivery/                     # optional local source; never required for Google Drive
   extern/                       # instructor scripts/configuration
   delivery/                     # originales importados
   overrides.yaml                # correcciones editables
@@ -75,6 +79,8 @@ actividad/
 ```
 
 `configuration.yaml` is supported as legacy with notice; both names together are error. Roster YAML takes precedence over CSV with notice; the snapshot preserves which one was used and the effective conversion. `assignments.yaml` is canonical; JSON is converted explicitly and the coexistence is error. `submissions.yaml` groups various inputs and preserves roles such as `source`, `disk`, `report`. Selection by role/type and exact cardinality or rank, never by incidental directory order. The scheme validates extensions as hints, not as proof of the actual format.
+
+For the current `thot.dev/v2` sandbox CLI, optional `delivery_agent` is a tagged configuration object: `{kind: local, path: ./submissions}` or `{kind: gdrive, folder_url: https://drive.google.com/drive/folders/ID}`. When omitted, `delivery_folder` (or its documented student-input-root fallback) selects local intake, then `delivery` is the final default. Assignment `deliverable` fields are exact names returned by `list`. OAuth client credentials and tokens are user-level secrets and are excluded from this model and all project snapshots.
 
 The complete package includes all the tickets needed to repeat; a light export may exclude them, but it is marked `replayable: false` and lists absences. L1/L2 live disks are not portable results by default; They are preserved only as a requested and limited artifact. A materialized view can be regenerated without SQLite; All necessary data must be confirmed before the engine reports success.
 

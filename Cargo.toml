@@ -7,12 +7,14 @@ members = [
   "apps/thotd",
   "apps/thot-cli",
   "crates/thot-runner",
+  "crates/thot-delivery",
   "apps/thot-virtualbox-agent",
   "apps/thot-alpine-agent",
+  "apps/thot-alpine-poc",
 ]
 
 [workspace.package]
-version = "0.1.43"
+version = "0.1.44"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 

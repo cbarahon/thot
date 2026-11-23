@@ -38,6 +38,9 @@ Thot preserves the workflow: submission → tests and evidence → checks → ru
 | FR-24 | Keep agent and engine responsibilities separate | Agent executes ordered tests and reports observations; engine validates results and alone creates expedients and grades |
 | FR-25 | Communicate platform assurance and failure clearly | Reports name the platform kind, isolation scope, image/runtime identity, preparation status, cleanup status, and any infrastructure error |
 | FR-26 | Distinguish Debian and low-resource Alpine KVM profiles | `kvm-debian` and `kvm-alpine` have independent pinned templates, agents, preparations, and resource limits while sharing the provider result contract |
+| FR-27 | Read deliverables through a configured agent | The local agent is the default; local and Google Drive agents provide exact-name list/get operations with size and available timestamps |
+| FR-28 | Authorize Google Drive read-only access for the professor | OAuth uses a local loopback callback, stores tokens outside project data, and never exposes credentials to student VMs |
+| FR-29 | Bind assignments to deliverable inventory names and record fetched provenance | Missing or ambiguous names fail before guest execution; result records include source name, size, dates, and SHA-256 |
 
 ## Non-functional requirements
 
@@ -58,6 +61,7 @@ Thot preserves the workflow: submission → tests and evidence → checks → ru
 | NFR-13 | KVM is the high-isolation option; Docker shares the host kernel; direct host execution is an explicitly lower-assurance exception, never described as sandboxed |
 | NFR-14 | Student execution starts from clean per-student/per-group state; one student's filesystem and processes cannot be reused by another |
 | NFR-15 | Preparation and each test have bounded wall time, CPU, memory, disk, process count, output bytes, and network access where supported |
+| NFR-16 | Delivery-agent reads are bounded and read-only; local intake rejects symlinks and Google OAuth tokens use owner-only file permissions |
 
 ## Scope
 

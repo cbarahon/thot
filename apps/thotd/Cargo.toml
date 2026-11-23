@@ -11,4 +11,3 @@ thot-engine = { path = "../../crates/thot-engine" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-thot-runner = { path = "../../crates/thot-runner" }

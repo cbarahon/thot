@@ -1,11 +1,13 @@
 //! Purpose: CLI entry point for student import/export and delivery-run commands.
 mod api_client;
 mod assignment_commands;
+mod delivery_agent_commands;
 mod delivery_commands;
 mod grade_reports;
 mod maintenance_commands;
 mod output;
 mod report_commands;
+mod sandbox_commands;
 
 use std::{
     collections::HashMap,
@@ -22,6 +24,7 @@ use tokio::{
 
 const DEFAULT_HOST: &str = "localhost";
 const DEFAULT_PORT: u16 = 8081;
+type CsvReadResult = Result<(Vec<StudentInput>, Vec<(u64, String)>), Box<dyn Error>>;
 
 #[derive(Debug, Default)]
 struct CliOptions {
@@ -64,6 +67,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
         [command, ..] if command == "assignments" => {
             assignment_commands::handle(&options.command[1..], &settings).await?;
         }
+        [command, ..] if command == "deliveries" => {
+            delivery_agent_commands::handle(&options.command[1..])?;
+        }
         [command, ..] if command == "report" => {
             if options.command.get(1).is_some_and(|arg| arg == "grades") {
                 grade_reports::handle(&options.command[2..], &settings).await?;
@@ -73,6 +79,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
         }
         [run, ..] if run == "run" => {
             delivery_commands::handle(&options.command[1..], &settings).await?;
+        }
+        [sandbox, ..] if sandbox == "sandbox" => {
+            sandbox_commands::handle(&options.command[1..])?;
         }
         [import, students, path] if import == "import" && students == "students" => {
             let (records, malformed) = read_students_csv(Path::new(path))?;
@@ -331,9 +340,7 @@ fn field_kind(header: &str) -> Option<&'static str> {
     }
 }
 
-fn read_students_csv(
-    path: &Path,
-) -> Result<(Vec<StudentInput>, Vec<(u64, String)>), Box<dyn Error>> {
+fn read_students_csv(path: &Path) -> CsvReadResult {
     let contents = fs::read_to_string(path)?;
     let mut parsed = parse_csv(&contents);
     if parsed.is_empty() {
@@ -642,6 +649,9 @@ fn print_usage() {
     println!(
         "  thot report grades --all [RUN_ID] [--output-dir DIR]\n  thot report grades --students --pdf [RUN_ID] [--output-dir DIR]\n  thot report grades --professor --pdf [RUN_ID] [--output-dir DIR]\n  thot report grades --evaluation-items --csv [RUN_ID]"
     );
+    println!("  thot sandbox run [PROJECT_DIR] [--agent PATH]");
+    println!("  thot deliveries list [PROJECT_DIR]");
+    println!("  thot deliveries get <NAME> [PROJECT_DIR] [--output PATH]");
 }
 
 #[cfg(test)]
@@ -758,6 +768,11 @@ mod tests {
                 .as_nanos(),
         ));
         fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("configuration.thot.yaml"),
+            "activity_name: CLI student import fixture\ndelivery_folder: ./delivery\nconcurrency: 1\ntimeout: 30\ntests:\n  - name: import_fixture\n    test: VirtualBox/import_ova\n",
+        )
+        .unwrap();
         let database_url = format!("sqlite:{}", root.join("thot.sqlite3").display());
         let repository = SqliteStudentRepository::connect(&database_url)
             .await
@@ -777,7 +792,7 @@ mod tests {
         assert_eq!(valid_students[0].name, "Anna Garcia");
         assert_eq!(valid_students[0].email, "anna@example.org");
         assert_eq!(valid_students[0].group_name.as_deref(), Some("ASIX2"));
-        let valid_response = import_through_router(&app, valid_students).await;
+        let valid_response = import_through_router(&app, &root, valid_students).await;
         assert_eq!(valid_response["imported"], 1);
         assert_eq!(valid_response["discarded"], 0);
 
@@ -795,14 +810,14 @@ mod tests {
         assert_eq!(malformed_rows.len(), 1);
         assert_eq!(malformed_rows[0].0, 4);
         assert_eq!(malformed_students.len(), 3);
-        let malformed_response = import_through_router(&app, malformed_students).await;
+        let malformed_response = import_through_router(&app, &root, malformed_students).await;
         assert_eq!(malformed_response["imported"], 2);
         assert_eq!(malformed_response["discarded"], 1);
         assert_eq!(malformed_response["rejected"][0]["row"], 3);
 
         let list_request = Request::builder()
             .method("GET")
-            .uri("/get/students")
+            .uri(format!("/get/students?project_path={}", root.display()))
             .body(Body::empty())
             .unwrap();
         let list_response = app.clone().oneshot(list_request).await.unwrap();
@@ -828,6 +843,7 @@ mod tests {
 
     async fn import_through_router(
         app: &axum::Router,
+        project_path: &std::path::Path,
         students: Vec<StudentInput>,
     ) -> serde_json::Value {
         let request = Request::builder()
@@ -835,7 +851,10 @@ mod tests {
             .uri("/import/students")
             .header("content-type", "application/json")
             .body(Body::from(
-                serde_json::to_vec(&serde_json::json!({ "students": students })).unwrap(),
+                serde_json::to_vec(
+                    &serde_json::json!({ "project_path": project_path, "students": students }),
+                )
+                .unwrap(),
             ))
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();

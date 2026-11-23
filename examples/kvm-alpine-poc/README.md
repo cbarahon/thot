@@ -1,17 +1,28 @@
 # KVM Alpine POC fixture
 
-This folder is a synthetic project for a future `kvm-alpine` provider. It is documentation/configuration and test data only: the current Thot implementation does not recognize `kind: kvm-alpine`, auto-install Alpine, create snapshots or linked clones, or execute this project.
+This is a runnable synthetic project for `thot sandbox run` on Linux/KVM. The command uses the shared `thot-core` v2 configuration and `thot-engine` check/rubric evaluator. It is not yet managed by `thotd` or the canonical lifecycle provider interface.
 
-The proposed workflow is:
+The CLI uses a pinned Alpine 3.24.1 x86_64 cloud-init qcow2 image and its configured SHA-512 digest. It creates a prepared linked qcow2 overlay, then one student overlay per roster entry. Student domains have no virtual network device. A per-clone cloud-init seed injects the static guest agent and one-use VSOCK token; submissions and instructor tests are sent in bounded, SHA-256 checked chunks. Assignments point to deliverable directories, a suitable layout for checked-out repositories. Result reports are saved under `results/`.
 
-1. Validate host KVM, libvirt/storage, quotas, and required network policy.
-2. Reuse or build the pinned reusable VM named `thot-alpine-platform`, verifying ISO checksum/signature and template provenance.
-3. Reuse or create the uniquely named project clone `thot-alpine-poc-sum-project`; install Bash in the one-time preparation phase, then shut down and snapshot it.
-4. For each student, create a fresh linked clone from that prepared snapshot, copy that student's script plus instructor test scripts, run syntax then functional tests, collect bounded output, and remove the clone.
-5. Let the Thot engine evaluate the collected observations and build expedients. The guest agent only executes tests and reports evidence.
+The expected outcomes are:
 
-See [configuration.thot.yaml](configuration.thot.yaml), [synthetic roster](students.yaml), [assignments](assignments.yaml), [test expectations](extern/tests/README.md), and the [architecture/host feasibility analysis](../../docs/KVM_ALPINE_POC.md).
+- `student1`: valid Bash adds 17 and 25; 10/10.
+- `student2`: valid Bash multiplies instead; syntax criterion passes; 2/10.
+- `student3`: invalid Bash syntax; functional test is skipped; 0/10.
 
-Expected cases: Student One's script is correct; Student Two's valid Bash multiplies instead of adding; Student Three has a syntax error. The expected functional input is `17 25`, producing exactly `42` plus a newline.
+Assignments refer to exact names from the delivery-agent inventory. With no `delivery_agent` configured, Thot uses `delivery_folder` (`students/`) and fetches each matching file or directory before VM staging. To use Google Drive, configure a `gdrive` agent in `configuration.thot.yaml`; see [delivery-agent setup](../../docs/DELIVERY_AGENTS.md). Thot does not clone Git repositories itself: place repository checkouts in the local folder or upload them to Drive.
 
-The example pins Alpine 3.24.4 x86_64 `virt` ISO for reproducibility. Verify the official checksum/signature and review the current Alpine security/support status before a future implementation uses it. The repository development host lacks `/dev/kvm`. A separate Debian 13 KVM test host is available, but no Alpine guest lifecycle has completed there; the current code does not build. See the [implementation audit and closure plan](../../docs/KVM_ALPINE_POC.md#implementation-audit-missing-and-incorrect-behavior).
+The smoke run from 2026-11-22 is archived under [results/2026-11-22-smoke](results/2026-11-22-smoke/). It ran on `sysadmin@192.168.1.35`, a Debian 13 KVM host. It does not validate the daemon/API provider integration, named libvirt snapshots, timeout recovery, resource enforcement, or export/import workflow.
+
+Build the host CLI and static Alpine guest agent from the workspace, install both on a Linux KVM host with libvirt, `virt-install`, `qemu-img`, `cloud-localds`, and `guestfish`, then run the command as the professor:
+
+```sh
+RUSTFLAGS='-C target-feature=+crt-static' cargo build -p thot-alpine-agent --target x86_64-unknown-linux-musl --release
+cargo build -p thot-cli --release
+sudo install -m 0755 target/release/thot /usr/local/bin/thot
+sudo install -m 0755 target/x86_64-unknown-linux-musl/release/thot-alpine-agent /usr/local/bin/thot-alpine-agent
+cd examples/kvm-alpine-poc
+sudo thot sandbox run .
+```
+
+See [configuration.thot.yaml](configuration.thot.yaml), [synthetic roster](students.yaml), [assignments](assignments.yaml), [test expectations](extern/tests/README.md), and the [architecture and closure gaps](../../docs/KVM_ALPINE_POC.md).
