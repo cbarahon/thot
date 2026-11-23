@@ -25,7 +25,7 @@ The parser validates references, unique IDs, path containment, bounded positive 
 ### One provider API and typed handles
 
 ADR-0010 moves lifecycle orchestration inside the sandbox provider. The
-engine submits an entire deliverable attempt through the [provider contract](../api-spec.md#engine-facing-provider-interface).
+engine submits an entire deliverable attempt through the [provider contract](../architecture/contracts.md#engine-facing-provider-interface).
 The following operations and opaque handles describe internal KVM provider
 steps. The provider owns their ordering, retries and cleanup.
 

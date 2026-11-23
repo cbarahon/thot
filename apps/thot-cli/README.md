@@ -70,7 +70,7 @@ Create a Google Cloud OAuth Desktop application, enable Drive API, and set
 authorization. The first `thot deliveries list` opens browser consent and
 requests read-only Drive access. Tokens stay in the professor's private Thot
 configuration directory, outside project files. See
-[`docs/DELIVERY_AGENTS.md`](../../docs/DELIVERY_AGENTS.md) for setup and scope
+[`docs/guides/delivery-agents.md`](../../docs/guides/delivery-agents.md) for setup and scope
 limitations.
 
 Bare `thot run` searches the current directory for exactly one supported

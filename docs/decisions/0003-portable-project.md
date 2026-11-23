@@ -20,4 +20,4 @@ Requires exclusive writer, recoverable commit, inventory and quotas; Active edit
 
 ## Validation and review
 
-P1/P7 must demonstrate transfer, recovery, reconstruction and importation without loss. Review this ADR if those conditions are not met. See [architecture](../architecture.md), [contracts](../api-spec.md) and [open issues](../PROJECT_PLATFORM_PROPOSAL_REVIEW.md).
+P1/P7 must demonstrate transfer, recovery, reconstruction and importation without loss. Review this ADR if those conditions are not met. See [architecture](../architecture/overview.md), [contracts](../architecture/contracts.md) and [open issues](../planning/platform-review.md).

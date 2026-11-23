@@ -20,4 +20,4 @@ Increased consumption, bootstrapping, and nesting dependency; Real Linux certifi
 
 ## Validation and review
 
-P0/P2 must validate nesting, permissions, network, quotas and forced destruction. Review this ADR if those conditions are not met. See [architecture](../architecture.md), [contracts](../api-spec.md) and [open issues](../PROJECT_PLATFORM_PROPOSAL_REVIEW.md).
+P0/P2 must validate nesting, permissions, network, quotas and forced destruction. Review this ADR if those conditions are not met. See [architecture](../architecture/overview.md), [contracts](../architecture/contracts.md) and [open issues](../planning/platform-review.md).

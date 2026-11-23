@@ -16,7 +16,7 @@ Status: Proposed planning, no code changes in this release. Each phase requires 
 ## OVA multiboot use case on KVM Alpine
 
 The generic phases above do not by themselves define the OVA/Google Drive
-workflow. Use the dedicated [OVA multiboot KVM Alpine gap plan](OVA_MULTIBOOT_KVM_ALPINE_GAP_PLAN.md)
+workflow. Use the dedicated [OVA multiboot KVM Alpine gap plan](ova-multiboot.md)
 for its architecture decisions, schema extensions, Drive large-file transfer,
 safe OVA inspection, nested VM topology, per-OS GRUB boot, cross-OS shared-data
 verification, grading and acceptance matrix. That plan refines the generic P0

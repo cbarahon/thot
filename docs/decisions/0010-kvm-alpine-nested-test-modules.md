@@ -90,7 +90,7 @@ Uncertain cleanup pauses the sequence before the next submission.
   capabilities and isolation assurance differ. Capability absence is explicit.
 - The current 128 MiB delivery cap, `exec`-only task schema and simple local
   POC lifecycle do not satisfy this decision; see the [OVA KVM Alpine gap
-  plan](../OVA_MULTIBOOT_KVM_ALPINE_GAP_PLAN.md).
+  plan](../planning/ova-multiboot.md).
 
 ## Alternatives considered
 

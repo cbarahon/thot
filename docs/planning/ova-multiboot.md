@@ -157,7 +157,7 @@ For boot testing, keep **one writable OVA copy for the entire deliverable**. Shu
 | Manifest-checked cleanup | Keep resource UUID and storage ownership checks inside the provider. Record verified teardown or pending cleanup even after cancellation. |
 | Legacy execution environment | Replace daemon-local paths, external host processes, remote VBoxManage SSH and shared host ports with the clone-local adapter and private probe channel. Sequential intake follows the provider completion contract. |
 
-See the [VM activity decisions](THOT_VM_ACTIVITY_POC.md), [disk inspection implementation](../crates/thot-engine/src/tests/libguestfs.rs), [VirtualBox agent](../apps/thot-virtualbox-agent/README.md) and [provider contract](api-spec.md#engine-facing-provider-interface).
+See the [VM activity decisions](../implementation/vm-activity-reference.md), [disk inspection implementation](../../crates/thot-engine/src/tests/libguestfs.rs), [VirtualBox agent](../../apps/thot-virtualbox-agent/README.md) and [provider contract](../architecture/contracts.md#engine-facing-provider-interface).
 
 ## 4. Proposed project contract
 

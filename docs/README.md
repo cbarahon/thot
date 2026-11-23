@@ -1,34 +1,27 @@
-# Thoth documentation
+# Thot documentation
 
-## Current status
+Start with [implementation status](status.md) to see which workflows run today, what has been tested, and which features are planned.
 
-The [implemented catalog](IMPLEMENTED_CATALOG.md), [POC guide](THOT_VM_ACTIVITY_POC.md), and [installation](../deploy/README.md) describe the POC VirtualBox, its testing, qualification, and reporting. The workspace also contains a transition to [VirtualBox HTTP v1 agent](../apps/thot-virtualbox-agent/README.md) and [execution folders](../apps/thotd/README.md); some POC texts still reflect the previous deployment. This separation should not be confused with isolation of external code.
+## Install and run Thot
 
-## Proposed platform v2
-
-All of the following documents are design, not published functionality:
-
-| Document | Content |
+| I want to… | Read |
 |---|---|
-| [Requirements](requirements.md) | Functional/non-functional requirements and acceptance criteria |
-| [Architecture](architecture.md) | Generic model, KVM + Docker, security, operation and Linux requirements |
-| [Data model](data-model.md) | Portable project, identities, results, files and editing |
-| [Contracts and interfaces](api-spec.md) | YAML for workflow, tasks/results, protocol, API and artifacts |
-| [Implementation plan](implementation-plan.md) | Phases, dependencies, testing, migration and subsequent evolution |
-| [Architectural decisions](decisions/README.md) | ADR with alternatives and consequences |
-| [Proposal Review](PROJECT_PLATFORM_PROPOSAL_REVIEW.md) | Difficulties, risks and pending decisions |
+| Install Thot on a fresh host | [Deployment and host setup](../deploy/README.md) |
+| Run my first sandbox assessment | [KVM Alpine starter project](../examples/kvm-alpine-poc/README.md) |
+| Configure local or Google Drive submissions | [Delivery agents and OAuth](guides/delivery-agents.md) |
+| Screen a submitted OVA using the existing daemon | [VirtualBox screening tutorial](guides/ova-screening.md) |
+| Find a command or export grades | [CLI reference](../apps/thot-cli/README.md) |
 
-`ROADMAP.md` and `TODO.md` have been replaced by the deployment plan, which retains the Unicode reporting work and evolution options. The POC guidelines are maintained because they are still necessary to operate/migrate the existing implementation.
+## Architecture and decisions
 
-The [KVM Alpine POC](KVM_ALPINE_POC.md) describes the proposed low-resource `kvm-alpine` platform and a synthetic project fixture.
+Read the [architecture overview](architecture/overview.md) for the engine, providers, execution agents and isolation boundaries. Use the [requirements](architecture/requirements.md), [data model](architecture/data-model.md) and [interface contracts](architecture/contracts.md) for the target design. The [decision register](decisions/README.md) records the rationale and status of individual choices.
 
-The [OVA multiboot tutorial](OVA_MULTIBOOT_TUTORIAL.md) walks through the
-Arch/Alpine/Windows plus shared-data assessment scenario. It identifies which
-parts the current VirtualBox OVA workflow can check and which internal tests
-are still needed before the full grading workflow is supported.
+## Implementation and planning
 
-The [KVM Alpine OVA gap plan](OVA_MULTIBOOT_KVM_ALPINE_GAP_PLAN.md) maps this
-same use case onto the new `kvm-alpine` architecture. It records the current
-gaps, proposed decisions, phase gates, and acceptance tests for Drive intake,
-safe OVA inspection, nested VM execution, GRUB verification, shared-data
-checks, durable grading, and professor qualification.
+| Question | Reference |
+|---|---|
+| How does the Alpine implementation work and what passed on hardware? | [KVM Alpine implementation record](implementation/kvm-alpine.md) |
+| Which tests, checks, rubrics and reports does the daemon implement? | [VM activity reference](implementation/vm-activity-reference.md) |
+| Where does the daemon store runs, and how does its VirtualBox agent work? | [Daemon](../apps/thotd/README.md) · [VirtualBox agent](../apps/thot-virtualbox-agent/README.md) |
+| What has been decided for the nested OVA multiboot assessment? | [Multiboot decisions, tasks and qualification gates](planning/ova-multiboot.md) |
+| What work remains across the platform? | [Platform roadmap](planning/platform-roadmap.md) · [Engineering review and open risks](planning/platform-review.md) |

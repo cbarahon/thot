@@ -1,6 +1,6 @@
 # Thot platform requirements
 
-Status: proposed architecture, 2026-11-15. None of the new capabilities described here are implemented. Target contracts use `thot.dev/v2`. The Spanish source is preserved in [es/requirements.md](es/requirements.md).
+These requirements describe the target platform. See the [implementation status](../status.md) for current coverage.
 
 ## Purpose and users
 

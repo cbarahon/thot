@@ -1,10 +1,6 @@
-# Implemented functionality catalog
+# VM activity implementation reference
 
-> POC reference: some sections retain the earlier deployment model. The working tree also includes the [HTTP v1 VirtualBox agent](../apps/thot-virtualbox-agent/README.md) and [project-folder changes](../apps/thotd/README.md). The [v2 architecture](architecture.md) is a proposal, not an implemented sandbox.
-
-This is the reference for the behavior and options implemented by the current Thot POC. It covers project configuration, tests, scoring, CLI workflows, reports, and operational limits. Project files configure tests under `tests`, checks under `checks`, rubric aggregations under `rubrics`, and final evaluation aggregations under `evaluation` in `configuration.yaml`.
-
-Thot currently ships as the Rust `thotd` service and `thot` CLI. It targets native Linux-hosted VirtualBox OVA assessment, with generic process, CSV, scoring, and report features that can be reused for other project types. A browser UI, SSE, container runner, and distributed workers are not implemented. See [proposed architecture and current baseline](architecture.md), the [VM activity POC guide](THOT_VM_ACTIVITY_POC.md), [deployment instructions](../deploy/README.md), and the [proposed implementation plan](implementation-plan.md).
+This reference covers the daemon workflow (`thot run create`). The engine sends VirtualBox operations to the VirtualBox HTTP agent. For current host setup, use the [deployment guide](../../deploy/README.md). For the portable run folder and evidence layout, see the [daemon guide](../../apps/thotd/README.md). The earlier native-host POC guide described an older deployment.
 
 | Kind | Reference or methods | Purpose |
 |---|---|---|
@@ -21,6 +17,12 @@ Thot currently ships as the Rust `thotd` service and `thot` CLI. It targets nati
 | Check | `pass`, `regex_match`, `regex_extract`, `yaml_match`, `yaml_extract`, `stats/regex_extract`, `stats/yaml_extract`, `aggr/checks`, `import/csv` | Evaluates tests, aggregates check results, or imports per-student check results. |
 | Rubric | `avg`, `max`, `min`, `median`, `p1`, `p5`, `p10`…`p90`, `p95`, `p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates configured checks or imports per-student rubric marks. |
 | Evaluation | `avg`, `max`, `min`, `median`, `p1`, `p5`, `p10`…`p90`, `p95`, `p99`, `weighted_avg`, `sum`, `import/csv` | Aggregates rubric marks or imports final marks for an evaluation item. |
+
+## Execution and cleanup
+
+The engine runs the ordered tests once per distinct assigned OVA. Students sharing a submission receive separate expedients referencing that execution. The project snapshot preserves instructor inputs for later review. The agent records VM identity and owned storage in a cleanup manifest. After errors or cancellation, cleanup verifies ownership before removing resources. Review pending cleanup in the expedient before retrying.
+
+For the active installation, use the [VirtualBox agent setup](../../apps/thot-virtualbox-agent/README.md). The earlier native-host deployment used a daemon-local VirtualBox profile and shared forwarded ports. Keep legacy maintenance commands and their local profile requirements in mind when operating an upgraded installation.
 
 ## Configuration and result conventions
 
@@ -276,7 +278,7 @@ Every project student receives an expedient, even if no delivery is assigned. Su
 
 `thot report expedients [RUN_ID]` prints four matrices: `expedient_x_test`, `expedient_x_check`, `expedient_x_rubric`, and `expedient_x_evaluation`. Test/check cells show `Ok`, `X`, `R`, or blank; rubric marks are rounded to three decimal places. Report endpoints return JSON, while the CLI supports terminal tables and `--csv`, `--yaml`, or `--json` output.
 
-`thot report grades --students --pdf [RUN_ID]` creates an individual progress-report PDF for each student, including final evaluation marks, rubric and check details, a test-results appendix, and a calculation appendix showing test-to-check rules, rubric inputs, calculation methods, multipliers, weights, and results. Test artifacts are included with each test: supported images are embedded, text and source files are shown in a shaded monospace block, and other files are copied beside the PDF and linked from it. `thot report grades --professor --pdf [RUN_ID]` creates a PDF with evaluation-item, rubric, check, and test matrices across the run's students, followed by a calculation appendix explaining the test/check/rubric/evaluation chain and its weights. `thot report grades --all [RUN_ID]` creates all student PDFs under `students/`, `professor_grades.pdf`, and `moodle_grades.csv` together in the same run output folder; `--output-dir DIR` chooses that folder. Full names and descriptions are used in section labels; abbreviated EI/R/C codes appear only in matrix column headers when full names do not fit. Check outcomes are drawn as a check mark or `X`, and marks are rounded to three significant digits. PDF Unicode glyph coverage is limited by the current built-in font; see [plan de implementación](implementation-plan.md). `thot report grades --evaluation-items --csv [RUN_ID]` writes student name, external ID, email, and one column per final evaluation item to stdout. All grades reports default to the newest run; PDF output defaults to `grades/<run-id>/` and accepts `--output-dir DIR`.
+`thot report grades --students --pdf [RUN_ID]` creates an individual progress-report PDF for each student, including final evaluation marks, rubric and check details, a test-results appendix, and a calculation appendix showing test-to-check rules, rubric inputs, calculation methods, multipliers, weights, and results. Test artifacts are included with each test: supported images are embedded, text and source files are shown in a shaded monospace block, and other files are copied beside the PDF and linked from it. `thot report grades --professor --pdf [RUN_ID]` creates a PDF with evaluation-item, rubric, check, and test matrices across the run's students, followed by a calculation appendix explaining the test/check/rubric/evaluation chain and its weights. `thot report grades --all [RUN_ID]` creates all student PDFs under `students/`, `professor_grades.pdf`, and `moodle_grades.csv` together in the same run output folder; `--output-dir DIR` chooses that folder. Full names and descriptions are used in section labels; abbreviated EI/R/C codes appear only in matrix column headers when full names do not fit. Check outcomes are drawn as a check mark or `X`, and marks are rounded to three significant digits. PDF Unicode glyph coverage is limited by the current built-in font; see [plan de implementación](../planning/platform-roadmap.md). `thot report grades --evaluation-items --csv [RUN_ID]` writes student name, external ID, email, and one column per final evaluation item to stdout. All grades reports default to the newest run; PDF output defaults to `grades/<run-id>/` and accepts `--output-dir DIR`.
 
 ## CLI workflows
 
@@ -303,4 +305,4 @@ The JSON API also exposes `GET /health`; `POST /import/students` and `GET /get/s
 | `extern/<path>` | Project-supplied `.py` uses `python3`, `.sh` uses `sh`, and other paths must be executable. Runs as `thotd`, with configured timeout/output limits, and is not sandboxed. Treat bundles as trusted code. |
 | `thotd` persistence | SQLite database plus service-managed filesystem roots for snapshots, reports, artifacts, and VM storage. This POC has no multi-host worker, web UI, container runner, or remote object-storage backend. |
 
-For Unicode glyph rendering in PDF reports, see the open documentation task in [plan de implementación](implementation-plan.md). PDF font support remains a known presentation limitation.
+For Unicode glyph rendering in PDF reports, see the open documentation task in [plan de implementación](../planning/platform-roadmap.md). PDF font support remains a known presentation limitation.

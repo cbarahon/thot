@@ -20,4 +20,4 @@ Allows Git/make/KVM/SSH scenarios. Root in L1 can falsify observations from the 
 
 ## Validation and review
 
-P4 demonstrates interaction between agents and lack of access between units. Review this ADR if those conditions are not met. See [architecture](../architecture.md), [contracts](../api-spec.md) and [open issues](../PROJECT_PLATFORM_PROPOSAL_REVIEW.md).
+P4 demonstrates interaction between agents and lack of access between units. Review this ADR if those conditions are not met. See [architecture](../architecture/overview.md), [contracts](../architecture/contracts.md) and [open issues](../planning/platform-review.md).

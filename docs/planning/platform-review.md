@@ -1,6 +1,6 @@
 # Review of the platform proposal
 
-Status: Engineering Review, 2026-11-15. The proposal is specified in [requirements](requirements.md), [architecture](architecture.md), [model](data-model.md), [interfaces](api-spec.md), [plan](implementation-plan.md) and [ADR](decisions/README.md). The decisions are **proposed**, pending prototype and acceptance; This documentation does not install or verify a sandbox.
+Status: Engineering Review, 2026-11-15. The proposal is specified in [requirements](../architecture/requirements.md), [architecture](../architecture/overview.md), [model](../architecture/data-model.md), [interfaces](../architecture/contracts.md), [plan](platform-roadmap.md) and [ADR](../decisions/README.md). The decisions are **proposed**, pending prototype and acceptance; This documentation does not install or verify a sandbox.
 
 ## Observed and target state
 
@@ -47,7 +47,7 @@ The proposed `kvm`, `docker`, and `host` choices are execution boundaries with d
 | How do failures affect grades? | Failed boot, package mirror outage, guest-agent loss, and a student's non-zero exit code have different meanings. | Keep platform diagnostics separate from academic checks; infrastructure failure yields incomplete/pending evaluation until retry or instructor override. Decide retry limits and whether remaining tests run. |
 | When is cleanup complete? | A timed-out process can leave descendants, linked overlays, containers, or libvirt domains behind. | Cleanup is a provider operation independent of instructor `finally` steps; verify resource removal, quarantine uncertain leftovers, and block unsafe reuse. Decide operator escalation and retention. |
 
-See [ADR-0007](decisions/0007-sandbox-platforms.md) for the proposed platform contract and validation gates.
+See [ADR-0007](../decisions/0007-sandbox-platforms.md) for the proposed platform contract and validation gates.
 
 | ID/priority | Difficulty or decision | Proposal / alternatives | Evidence of closure and phase |
 |---|---|---|---|

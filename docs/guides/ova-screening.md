@@ -1,4 +1,4 @@
-# OVA multiboot assessment: professor's tutorial
+# Screen an OVA with the VirtualBox daemon workflow
 
 This guide describes how to assess student OVA files containing EFI, Arch
 Linux, Alpine Linux, Windows, and a shared data partition. It covers Thot
@@ -6,15 +6,14 @@ installation, project organization, evaluation design, running a project, and
 exporting marks.
 
 For the requested future implementation on the new KVM Alpine architecture,
-see the [dedicated gap analysis and delivery plan](OVA_MULTIBOOT_KVM_ALPINE_GAP_PLAN.md).
+see the [dedicated gap analysis and delivery plan](../planning/ova-multiboot.md).
 This tutorial retains the current legacy VirtualBox workflow analysis and a
 partial screening example; it is not the target KVM architecture contract.
 
 ## Read this before preparing a course
 
 The complete requested assessment is **not supported by the current release**.
-Do not use the example configuration below as if it were an executable current
-configuration. Thot currently has these relevant capabilities:
+The example runs preliminary checks. Thot currently has these relevant capabilities:
 
 | Requirement | Current support | What it proves |
 |---|---|---|
@@ -26,36 +25,6 @@ configuration. Thot currently has these relevant capabilities:
 | Prove all operating systems can read/write the shared partition | Not supported | No built-in test boots each OS and verifies a common shared-data marker. A partition merely existing does not prove that each OS can access it. |
 | Grade with checks, rubrics, two evaluation items, and report exports | Supported | The legacy project engine supports checks, rubric aggregation, evaluation items, and CSV/PDF reports. |
 
-The existing `extern/<path>` test can run a professor-provided program, but it
-runs as a child of `thotd` with the daemon account's permissions. It is trusted
-host code; it is **not** a safe way to run arbitrary student scripts. A
-multiboot verifier would need to control VirtualBox, inspect untrusted disk
-images, boot several guest operating systems, and transfer a shared test
-marker. Adding a large external script would put that complex logic in the
-least isolated execution path and make results harder to validate. The
-recommended implementation is a small set of maintained internal tests behind
-the VirtualBox agent, with strict timeouts, bounded output, explicit guest
-access, and structured evidence:
-
-1. An offline `VirtualBox/ova_layout` test: inspect the OVA manifest and all
-   disks; report partition table, partition type GUIDs, labels, filesystems,
-   and detected OS signatures. It must distinguish “not detected” from
-   “inspection failed.”
-2. A `VirtualBox/multiboot_shared_data` test: boot each configured GRUB entry
-   in a fresh VM state, verify the expected OS identity, mount the expected
-   shared partition, and read/write/verify a run-specific marker. It must
-   record which entry was tested, the evidence from the guest, timeouts, and
-   cleanup status. It must reset to a clean VM state between OS boots.
-
-These should be internal tests because their host-side operations and
-student-image parsing can be audited, bounded, and evolved with Thot's
-ownership and cleanup rules. A professor script may still supply the *guest
-commands* as data, but must not become an unrestricted host orchestration
-program. The current project format cannot describe this workflow safely or
-portably. The configuration in the “Target project configuration” section is
-a proposed contract for the tests above, not something the current binary
-accepts.
-
 ## 1. Prepare a fresh Linux work laptop
 
 Use a supported x86_64 Linux installation with a desktop session or
@@ -65,7 +34,7 @@ extracted virtual disks, and temporary VM copies. A practical starting point
 is 100 GB free and 8 GB RAM; the right amount depends on the submitted VM sizes
 and the number of sequential runs.
 
-Install the current Thot release using [the deployment guide](../deploy/README.md):
+Install the current Thot release using [the deployment guide](../../deploy/README.md):
 
 ```sh
 curl -fLO https://github.com/cbarahon/thot/releases/latest/download/thot-install.sh
@@ -90,8 +59,8 @@ Record the exact VirtualBox version. Thot's VM activity configuration requires
 an expected version. Do not expose the local daemon or VirtualBox agent on a
 public interface. Keep API and agent binds on loopback, and use a dedicated
 unprivileged service account and VirtualBox profile as described in
-[`THOT_VM_ACTIVITY_POC.md`](THOT_VM_ACTIVITY_POC.md) and
-[`deploy/README.md`](../deploy/README.md). Imported student VMs are untrusted.
+[VM activity reference](../implementation/vm-activity-reference.md) and
+[`deploy/README.md`](../../deploy/README.md). Imported student VMs are untrusted.
 Do not enable shared folders, clipboard, drag-and-drop, USB passthrough, or
 unnecessary network access. A laptop used for personal work is a poor place to
 run hostile student images; use a dedicated work profile or a separate
@@ -135,7 +104,7 @@ paths are not integrated yet. Do not configure `delivery_agent: gdrive` in the
 legacy `configuration.yaml`; it will not make OVA runs read from Drive.
 
 For ordinary non-OVA projects, Google Drive authorization is documented in
-[`DELIVERY_AGENTS.md`](DELIVERY_AGENTS.md). That flow requests read-only Drive
+[delivery agent guide](delivery-agents.md). That flow requests read-only Drive
 access and stores the professor's token outside the project folder.
 
 ## 3. Create the course project
@@ -297,169 +266,7 @@ cleanup, available disk space, and that no student guest can reach host
 services. The current host safety controls reduce exposure but do not make
 arbitrary OVA files safe.
 
-## 5. Target complete evaluation configuration
-
-Once the two internal tests described above are implemented, add them to the
-project and use a configuration like this. This YAML documents the intended
-course contract; the test names and parameters shown here are **not implemented
-in the current release**. The required `boot_profiles` must map to explicit
-GRUB menu entries or stable entry identifiers agreed with students. Partition
-identification should use GPT type GUID plus filesystem/label rules, not only
-partition position or human-readable names.
-
-```yaml
-activity_name: Arch, Alpine, Windows multiboot assessment
-delivery_folder: ./delivery
-concurrency: 1
-timeout: 1800
-rubrics_multiplier: 10
-evaluation_multiplier: 1
-
-tests:
-  - name: import_ova
-    test: VirtualBox/import_ova
-    timeout: 1800
-    parameters:
-      - vm_name: thot_multiboot
-      - vbox_group: /thot_multiboot
-      - vm_path: ./vms
-
-  - name: ova_layout
-    description: Validate EFI, Arch, Alpine, Windows, and shared-data partitions.
-    test: VirtualBox/ova_layout
-    requirements: [import_ova]
-    timeout: 600
-    parameters:
-      - require_gpt: true
-      - efi_type_guid: C12A7328-F81F-11D2-BA4B-00A0C93EC93B
-      - linux_root_filesystems: ext4,btrfs
-      - windows_filesystems: ntfs
-      - shared_partition_label: THOT_SHARED
-      - shared_filesystems: exfat,ntfs
-
-  - name: multiboot_shared_data
-    description: Boot each configured GRUB entry and verify shared-data read/write.
-    test: VirtualBox/multiboot_shared_data
-    requirements: [import_ova, ova_layout]
-    timeout: 1800
-    parameters:
-      - boot_profiles: archlinux,alpine,windows
-      - shared_partition_label: THOT_SHARED
-      - marker_path: /THOT_SHARED/thot-course-probe.txt
-      - require_read_after_write: true
-      - reset_vm_state_between_profiles: true
-
-checks:
-  - name: ova_imported
-    description: OVA imports successfully.
-    check: pass
-    test: import_ova
-  - name: efi_partition
-    description: An EFI System Partition with the required type is present.
-    check: yaml_match
-    test: ova_layout
-    property: stdout
-    parameters:
-      - JSONPath: "$.partitions[?(@.role == 'efi' && @.present == true)]"
-  - name: archlinux_partition
-    description: An Arch Linux root partition is detected.
-    check: yaml_match
-    test: ova_layout
-    property: stdout
-    parameters:
-      - JSONPath: "$.partitions[?(@.role == 'archlinux' && @.present == true)]"
-  - name: alpine_partition
-    description: An Alpine Linux root partition is detected.
-    check: yaml_match
-    test: ova_layout
-    property: stdout
-    parameters:
-      - JSONPath: "$.partitions[?(@.role == 'alpine' && @.present == true)]"
-  - name: windows_partition
-    description: A Windows installation partition is detected.
-    check: yaml_match
-    test: ova_layout
-    property: stdout
-    parameters:
-      - JSONPath: "$.partitions[?(@.role == 'windows' && @.present == true)]"
-  - name: shared_partition
-    description: The shared Linux/Windows data partition is detected.
-    check: yaml_match
-    test: ova_layout
-    property: stdout
-    parameters:
-      - JSONPath: "$.partitions[?(@.role == 'shared' && @.present == true)]"
-  - name: grub_boots_arch
-    description: The Arch Linux GRUB entry boots and identifies Arch Linux.
-    check: yaml_match
-    test: multiboot_shared_data
-    property: stdout
-    parameters:
-      - JSONPath: "$.boot_profiles[?(@.id == 'archlinux' && @.booted == true && @.os_verified == true)]"
-  - name: grub_boots_alpine
-    description: The Alpine Linux GRUB entry boots and identifies Alpine Linux.
-    check: yaml_match
-    test: multiboot_shared_data
-    property: stdout
-    parameters:
-      - JSONPath: "$.boot_profiles[?(@.id == 'alpine' && @.booted == true && @.os_verified == true)]"
-  - name: grub_boots_windows
-    description: The Windows GRUB entry boots and identifies Windows.
-    check: yaml_match
-    test: multiboot_shared_data
-    property: stdout
-    parameters:
-      - JSONPath: "$.boot_profiles[?(@.id == 'windows' && @.booted == true && @.os_verified == true)]"
-  - name: arch_shared_access
-    description: Arch reads back the shared marker it wrote.
-    check: yaml_match
-    test: multiboot_shared_data
-    property: stdout
-    parameters:
-      - JSONPath: "$.shared_access[?(@.os == 'archlinux' && @.write_verified == true && @.read_verified == true)]"
-  - name: alpine_shared_access
-    description: Alpine reads back the shared marker it wrote.
-    check: yaml_match
-    test: multiboot_shared_data
-    property: stdout
-    parameters:
-      - JSONPath: "$.shared_access[?(@.os == 'alpine' && @.write_verified == true && @.read_verified == true)]"
-  - name: windows_shared_access
-    description: Windows reads back the shared marker it wrote.
-    check: yaml_match
-    test: multiboot_shared_data
-    property: stdout
-    parameters:
-      - JSONPath: "$.shared_access[?(@.os == 'windows' && @.write_verified == true && @.read_verified == true)]"
-
-rubrics:
-  - name: partition_layout
-    description: Required disk and operating-system partitions.
-    checks: [ova_imported, efi_partition, archlinux_partition, alpine_partition, windows_partition, shared_partition]
-    calculation: avg
-  - name: boot_and_shared_data
-    description: Each OS boots from GRUB and accesses shared data.
-    checks: [grub_boots_arch, grub_boots_alpine, grub_boots_windows, arch_shared_access, alpine_shared_access, windows_shared_access]
-    calculation: avg
-
-evaluation:
-  - name: system_structure
-    description: OVA and required partition layout.
-    rubrics: [partition_layout]
-    calculation: avg
-  - name: boot_and_data_access
-    description: GRUB boot paths and shared-data access from each OS.
-    rubrics: [boot_and_shared_data]
-    calculation: avg
-```
-
-The test must produce structured JSON/YAML on stdout with stable fields and
-independent evidence for each check. A single overall exit code is not enough:
-it would hide which GRUB entry or OS failed. A boot timeout, libguestfs error,
-or cleanup failure must be recorded as infrastructure state and must not be
-converted into a zero academic mark without professor review.
-
-## 6. Run and review the current partial project
+## 5. Run and review the current partial project
 
 With the daemon and VirtualBox agent configured, change to the project folder
 and check the configured local inventory:
@@ -509,38 +316,9 @@ reports together when archiving the course. The reports include test
 observations and scoring inputs; retain them according to the institution's
 student-data policy.
 
-## 7. Closure checklist for full support
-
-The end-to-end scenario is ready for a course only after the following work is
-implemented and tested on the professor's target host:
-
-- Integrate the read-only Google Drive delivery agent with legacy OVA runs, or
-  document a supported Drive sync/import command that verifies filenames,
-  sizes, and SHA-256 before a run.
-- Add bounded OVA manifest/disk extraction and reliable EFI/GPT/OS/shared
-  partition classification, including multiple-disk appliances.
-- Add a deterministic way to select each student GRUB menu entry, boot the
-  corresponding OS, and prove OS identity.
-- Prove shared-data write/read across independent clean boots of Arch, Alpine,
-  and Windows; define filesystem choice, mount rules, marker location, and
-  whether Windows fast startup/hibernation is rejected.
-- Make each boot attempt recoverable and ensure VM snapshot/reset/cleanup after
-  power failure, timeout, malformed OVA, and agent disconnect.
-- Verify all guest networking is isolated from the laptop and that results
-  preserve per-OS stdout, stderr, exit status, timeout, platform errors,
-  cleanup status, and evidence hashes.
-- Run a known-good and deliberately broken fixture on the exact supported
-  VirtualBox, libguestfs, and Linux versions; then run a small professor pilot
-  before grading a full class.
-
-Until those checks pass, the partial configuration above is suitable only for
-basic OVA import, disk inventory, and default-path startup screening. It must
-not be described as verifying the complete multiboot/shared-data assignment.
-
 ## Related documentation
 
-- [Implemented functionality catalog](IMPLEMENTED_CATALOG.md)
-- [Legacy VM activity POC and host safety](THOT_VM_ACTIVITY_POC.md)
-- [Delivery agents and Google Drive OAuth](DELIVERY_AGENTS.md)
-- [Deployment guide](../deploy/README.md)
-- [KVM Alpine sandbox status](KVM_ALPINE_POC.md)
+- [Implemented functionality catalog](../implementation/vm-activity-reference.md)
+- [Delivery agents and Google Drive OAuth](delivery-agents.md)
+- [Deployment guide](../../deploy/README.md)
+- [KVM Alpine sandbox status](../implementation/kvm-alpine.md)

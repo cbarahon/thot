@@ -20,4 +20,4 @@ Compliance and transition adapter must be developed; message delivery can be rep
 
 ## Validation and review
 
-P3 checks loss/duplication/cancellation and limits. Remote network requires another ADR with mTLS and authorization. Review this ADR if those conditions are not met. See [architecture](../architecture.md), [contracts](../api-spec.md) and [open issues](../PROJECT_PLATFORM_PROPOSAL_REVIEW.md).
+P3 checks loss/duplication/cancellation and limits. Remote network requires another ADR with mTLS and authorization. Review this ADR if those conditions are not met. See [architecture](../architecture/overview.md), [contracts](../architecture/contracts.md) and [open issues](../planning/platform-review.md).

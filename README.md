@@ -95,13 +95,13 @@ Thot uses the configured local `delivery_folder`; if that is omitted, it uses
 the project’s existing local delivery layout. The Google Drive agent reads a
 configured Drive folder with read-only OAuth. It requires a Google Cloud OAuth
 Desktop client, Drive API enabled, and professor consent. See
-[`docs/DELIVERY_AGENTS.md`](docs/DELIVERY_AGENTS.md) before configuring it.
+[`docs/guides/delivery-agents.md`](docs/guides/delivery-agents.md) before configuring it.
 
 To adapt the sample for a course, edit `configuration.thot.yaml`, the roster,
 assignments, instructor tests, and delivery folder. Assignments refer to exact
 names shown by `thot deliveries list`. Test commands and professor preparation
 scripts execute inside the guest; treat those instructor-authored files and
-configuration as trusted inputs. Review the [KVM POC limitations and status](docs/KVM_ALPINE_POC.md)
+configuration as trusted inputs. Review the [KVM POC limitations and status](docs/implementation/kvm-alpine.md)
 before using it for consequential grading.
 
 ## Other workflows

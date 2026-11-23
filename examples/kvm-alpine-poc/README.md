@@ -10,7 +10,7 @@ The expected outcomes are:
 - `student2`: valid Bash multiplies instead; syntax criterion passes; 2/10.
 - `student3`: invalid Bash syntax; functional test is skipped; 0/10.
 
-Assignments refer to exact names from the delivery-agent inventory. With no `delivery_agent` configured, Thot uses `delivery_folder` (`students/`) and fetches each matching file or directory before VM staging. To use Google Drive, configure a `gdrive` agent in `configuration.thot.yaml`; see [delivery-agent setup](../../docs/DELIVERY_AGENTS.md). Thot does not clone Git repositories itself: place repository checkouts in the local folder or upload them to Drive.
+Assignments refer to exact names from the delivery-agent inventory. With no `delivery_agent` configured, Thot uses `delivery_folder` (`students/`) and fetches each matching file or directory before VM staging. To use Google Drive, configure a `gdrive` agent in `configuration.thot.yaml`; see [delivery-agent setup](../../docs/guides/delivery-agents.md). Thot does not clone Git repositories itself: place repository checkouts in the local folder or upload them to Drive.
 
 The smoke run from 2026-11-22 is archived under [results/2026-11-22-smoke](results/2026-11-22-smoke/). It ran on `sysadmin@192.168.1.35`, a Debian 13 KVM host. It does not validate the daemon/API provider integration, named libvirt snapshots, timeout recovery, resource enforcement, or export/import workflow.
 
@@ -25,4 +25,4 @@ cd examples/kvm-alpine-poc
 sudo thot sandbox run .
 ```
 
-See [configuration.thot.yaml](configuration.thot.yaml), [synthetic roster](students.yaml), [assignments](assignments.yaml), [test expectations](extern/tests/README.md), and the [architecture and closure gaps](../../docs/KVM_ALPINE_POC.md).
+See [configuration.thot.yaml](configuration.thot.yaml), [synthetic roster](students.yaml), [assignments](assignments.yaml), [test expectations](extern/tests/README.md), and the [architecture and closure gaps](../../docs/implementation/kvm-alpine.md).
