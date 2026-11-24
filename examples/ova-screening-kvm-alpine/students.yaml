@@ -1,0 +1,5 @@
+schema_version: thot.dev/v2
+identity_field: student_id
+students:
+  - student_id: student1
+    name: OVA screening candidate

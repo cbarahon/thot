@@ -1,0 +1,4 @@
+schema_version: thot.dev/v2
+assignments:
+  - student_id: student1
+    deliverable: ArchLinux_Dualboot.ova

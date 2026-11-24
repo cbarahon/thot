@@ -20,7 +20,7 @@ flowchart LR
 Every agent implements two operations:
 
 - `list()` returns direct child deliverables with their exact name, byte size, creation time when available, and last modified time when available. Directories are valid deliverables for local project/repository checkouts; their size is the recursive sum of regular files and their modified date is the newest child date.
-- `get(name, destination)` retrieves exactly one item with that exact name. Zero matches and ambiguous names are errors. The retrieved object records its source metadata and SHA-256 digest. Current intake caps are 128 MiB and 10,000 files. Symlinks and unsupported filesystem entries are rejected.
+- `get(name, destination)` retrieves exactly one item with that exact name. Zero matches and ambiguous names are errors. The retrieved object records its source metadata and SHA-256 digest. Defaults are 128 MiB and 10,000 files; project configuration can raise these to 64 GiB and 100,000 files. Symlinks and unsupported filesystem entries are rejected.
 
 Assignments use the inventory name, not an arbitrary source path. This makes the same assignment portable between local and Google Drive sources. Duplicate names in a Google Drive folder are rejected for retrieval because Drive permits duplicate filenames.
 
@@ -30,6 +30,11 @@ Assignments use the inventory name, not an arbitrary source path. This makes the
 
 ```yaml
 delivery_folder: ./delivery
+# Defaults are 128 MiB and 10,000 files. Raise these only when host storage,
+# guest staging and processing capacity are sufficient.
+delivery_limits:
+  max_bytes: 21474836480 # 20 GiB
+  max_files: 10000
 # Omit delivery_agent to use the local filesystem at delivery_folder.
 # To set an explicit local source:
 delivery_agent:

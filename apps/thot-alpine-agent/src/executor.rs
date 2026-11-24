@@ -5,7 +5,7 @@ use std::{
     io::{self, Read, Write},
     os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Component, Path, PathBuf},
-    process::Stdio,
+    process::{Command as StdCommand, Stdio},
 };
 use thot_core::sandbox_contracts::PlatformCapability;
 use thot_core::sandbox_protocol::{
@@ -18,6 +18,8 @@ use tokio::{
     process::{Child, Command},
     time::{Duration, Instant, timeout},
 };
+
+const MODULE_INFRASTRUCTURE_EXIT_CODE: i32 = 75;
 
 pub async fn execute_task(
     task: ExecuteTaskRequest,
@@ -39,6 +41,16 @@ pub async fn execute_task(
         },
         None => (PathBuf::from(&task.argv[0]), task.argv[1..].to_vec()),
     };
+    let supplementary_gids = match module_supplementary_gids(task.module.as_ref()) {
+        Ok(groups) => groups,
+        Err(diagnostic) => {
+            return Ok(early_result(
+                &task,
+                ExecutionStatus::PlatformError,
+                &diagnostic,
+            ));
+        }
+    };
     let cwd = task.working_dir.canonicalize()?;
     if !cwd.starts_with("/work") || !cwd.is_dir() {
         return Err("working directory is outside /work".into());
@@ -58,8 +70,13 @@ pub async fn execute_task(
     {
         command.process_group(0);
         unsafe {
-            command.as_std_mut().pre_exec(|| {
-                if libc::setgroups(0, std::ptr::null()) != 0 {
+            command.as_std_mut().pre_exec(move || {
+                let (group_count, group_pointer) = if supplementary_gids.is_empty() {
+                    (0, std::ptr::null())
+                } else {
+                    (supplementary_gids.len(), supplementary_gids.as_ptr())
+                };
+                if libc::setgroups(group_count, group_pointer) != 0 {
                     return Err(io::Error::last_os_error());
                 }
                 if libc::setgid(1001) != 0 {
@@ -116,18 +133,29 @@ pub async fn execute_task(
         stderr,
         diagnostics: diagnostic,
         elapsed_ms: started.elapsed().as_millis(),
-        status: if timed_out {
-            ExecutionStatus::TimedOut
-        } else {
-            ExecutionStatus::Completed
-        },
+        status: execution_status(timed_out, task.module.is_some(), exit_code),
         timed_out,
         resource_exceeded: false,
-        platform_error: false,
+        platform_error: execution_status(timed_out, task.module.is_some(), exit_code)
+            == ExecutionStatus::PlatformError,
         cancelled: false,
         interrupted: false,
         truncated: stdout_truncated || stderr_truncated,
     })
+}
+
+fn execution_status(timed_out: bool, is_module: bool, exit_code: Option<i32>) -> ExecutionStatus {
+    if timed_out {
+        ExecutionStatus::TimedOut
+    } else if is_module && exit_code == Some(MODULE_INFRASTRUCTURE_EXIT_CODE) {
+        // Portable module ABI convention: exit 75 means the module could not
+        // perform its action because the sandbox platform was unavailable or
+        // misconfigured. Keep the assessment pending instead of grading it as
+        // a student failure.
+        ExecutionStatus::PlatformError
+    } else {
+        ExecutionStatus::Completed
+    }
 }
 
 fn validate_module_launch(
@@ -260,7 +288,125 @@ pub fn capabilities() -> Vec<PlatformCapability> {
             version: 1,
         });
     }
+    if libvirt_system_installed() {
+        available.push(PlatformCapability {
+            id: "libvirt.system".into(),
+            version: 1,
+        });
+    }
     available
+}
+
+fn libvirt_system_installed() -> bool {
+    group_id("libvirt").ok().flatten().is_some()
+        && ["/usr/bin/virsh", "/usr/bin/qemu-system-x86_64"]
+            .iter()
+            .all(|path| Path::new(path).is_file())
+}
+
+fn module_supplementary_gids(module: Option<&ModuleLaunch>) -> Result<Vec<libc::gid_t>, String> {
+    let Some(module) = module else {
+        return Ok(Vec::new());
+    };
+    let needs_libvirt = module
+        .capabilities
+        .iter()
+        .any(|capability| capability.id == "libvirt.system" && capability.version == 1);
+    if !needs_libvirt {
+        return Ok(Vec::new());
+    }
+    let gid = group_id("libvirt")?.ok_or_else(|| {
+        "module requires libvirt.system but the libvirt group is missing".to_owned()
+    })?;
+    if !libvirt_system_socket_ready() {
+        ensure_guest_libvirt_services()?;
+    }
+    if !libvirt_system_socket_ready() {
+        return Err(
+            "module requires libvirt.system but the restricted libvirt socket is unavailable"
+                .into(),
+        );
+    }
+    Ok(vec![gid])
+}
+
+fn ensure_guest_libvirt_services() -> Result<(), String> {
+    // Alpine's modular libvirt daemons may not have started yet when the
+    // guest agent accepts its first task. Start only the fixed, platform-owned
+    // service set; never accept service names or commands from a project.
+    let service_manager = ["/sbin/rc-service", "/usr/sbin/rc-service"]
+        .iter()
+        .find(|path| Path::new(path).is_file());
+    let Some(service_manager) = service_manager else {
+        return Ok(());
+    };
+    let mut failures = Vec::new();
+    for service in [
+        "dbus",
+        "polkit",
+        "virtlogd",
+        "virtlockd",
+        "virtqemud",
+        "virtproxyd",
+    ] {
+        let result = StdCommand::new(service_manager)
+            .args([service, "start"])
+            .output()
+            .map_err(|error| {
+                format!("could not start Alpine libvirt service {service}: {error}")
+            })?;
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr).trim().to_owned();
+            let stdout = String::from_utf8_lossy(&result.stdout).trim().to_owned();
+            failures.push(format!(
+                "{service} exit={} stdout={stdout:?} stderr={stderr:?}",
+                result.status
+            ));
+        }
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if libvirt_system_socket_ready() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !failures.is_empty() {
+        return Err(format!(
+            "could not initialize guest-local libvirt services: {}",
+            failures.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+fn group_id(name: &str) -> Result<Option<libc::gid_t>, String> {
+    let groups = fs::read_to_string("/etc/group").map_err(|error| error.to_string())?;
+    for line in groups.lines() {
+        let fields = line.split(':').collect::<Vec<_>>();
+        if fields.len() >= 3 && fields[0] == name {
+            let gid = fields[2]
+                .parse::<libc::gid_t>()
+                .map_err(|error| format!("invalid GID for `{name}` group: {error}"))?;
+            return Ok(Some(gid));
+        }
+    }
+    Ok(None)
+}
+
+fn libvirt_system_socket_ready() -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+    let Some(gid) = group_id("libvirt").ok().flatten() else {
+        return false;
+    };
+    ["/run/libvirt/libvirt-sock", "/var/run/libvirt/libvirt-sock"]
+        .iter()
+        .filter_map(|path| fs::symlink_metadata(path).ok())
+        .any(|metadata| {
+            metadata.file_type().is_socket()
+                && metadata.gid() == gid
+                && metadata.permissions().mode() & 0o060 == 0o060
+        })
 }
 
 fn hash_file(path: &Path) -> io::Result<String> {
@@ -541,6 +687,26 @@ mod tests {
     use sha2::Digest;
     use thot_core::sandbox_contracts::PlatformCapability;
     use tokio::io::BufReader;
+
+    #[test]
+    fn module_infrastructure_exit_is_not_a_student_failure() {
+        assert_eq!(
+            execution_status(false, true, Some(MODULE_INFRASTRUCTURE_EXIT_CODE)),
+            ExecutionStatus::PlatformError
+        );
+        assert_eq!(
+            execution_status(false, true, Some(1)),
+            ExecutionStatus::Completed
+        );
+        assert_eq!(
+            execution_status(false, false, Some(MODULE_INFRASTRUCTURE_EXIT_CODE)),
+            ExecutionStatus::Completed
+        );
+        assert_eq!(
+            execution_status(true, true, Some(MODULE_INFRASTRUCTURE_EXIT_CODE)),
+            ExecutionStatus::TimedOut
+        );
+    }
 
     #[tokio::test]
     async fn capped_reader_drains_and_marks_truncation() {

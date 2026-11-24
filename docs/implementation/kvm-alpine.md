@@ -61,6 +61,16 @@ After preparation, flush writes and power off the VM before taking a disk snapsh
 
 For each student or explicitly assigned group, create a linked clone from the prepared baseline with a generated unique name and fresh writable overlay. Transfer only that student's selected deliverable, declared instructor tests, and needed module package into the guest. File staging streams chunks, acknowledges each chunk, and publishes only after SHA-256 verification; the configured host aggregate intake limit is capped at 64 GiB. Inputs/module packages are read-only to test processes. Execute steps sequentially; syntax check runs first, then direct argv tests or a pinned `posix-shell-script-v1` module. The agent captures exit code, stdout, stderr, elapsed time, timeout/status and diagnostics. It verifies module capabilities and package digest again before running as UID/GID 1001. The engine side owns check evaluation, rubric calculation and the durable run package.
 
+The Alpine guest additionally advertises `libvirt.system` only when its own
+libvirt socket is group-owned by `libvirt` and grants that group read/write
+access. The agent grants this supplementary group only to the pinned module
+that declares the capability; it clears supplementary groups for every other
+test. The socket remains inside the disposable Alpine guest and is not the
+professor host's libvirt socket. In the `posix-shell-script-v1` module ABI,
+exit code 75 means platform/infrastructure failure and maps to typed
+`platform_error`; other nonzero module exits are ordinary completed test
+actions. See [ADR-0015](../decisions/0015-module-platform-failure-exit-code.md).
+
 After results and artifacts have been acknowledged and persisted, shut down and delete the linked clone and overlay. Cleanup must work after timeout, agent loss and host/engine restart. Preserve only bounded diagnostics needed to explain a failure. A cleanup error remains visible and blocks unsafe reuse; never delete the base template or another project's VM while reconciling a student clone.
 
 ## Synthetic fast test project
@@ -123,7 +133,7 @@ The smoke path is real and was exercised on the test host, but it is a purpose-b
 | Project configuration | The CLI reads shared `thot-core::sandbox_project::SandboxProject` types, rejects unknown schema fields, and validates IDs, paths, resource ceilings, test ordering, and rubric references before host side effects. | Add schema compatibility tests, path/directory-transfer limits, and support additional platform kinds only through explicit provider implementations. |
 | Template and baseline | Pinned cloud qcow2 is SHA-512 verified and copied to a named template disk. A linked project overlay runs cloud-init preparation and becomes the baseline after shutdown. | Create/own an actual named template VM and named libvirt snapshot as designed, or explicitly revise the contract to define disk overlays as the baseline. Verify baseline boot completion and preparation success rather than relying on a fixed wait. Verify provenance before reuse and handle changed preparation inputs. |
 | Guest agent | Static Alpine-compatible agent connects through VSOCK using a per-student token and run/unit IDs. It stages bounded files with SHA-256 verification and runs tasks sequentially as locked UID/GID 1001 with supplementary groups cleared, timeout, and capped stdout/stderr. | Agent is injected by cloud-init for each student, not installed into the reusable template. Verify peer CID against libvirt domain identity; verify handshake replay/version behavior; implement disconnect/retry semantics. Add process, CPU, memory, and writable-disk limits. |
-| Isolation policy | Student domains are launched with `--network none`; preparation has the default libvirt network. Student scripts run as UID 1000 inside a disposable KVM guest. | Enforce host ceilings, disk quotas, pids, and guest policy. Test that no student access to host or other guests is possible. Define whether the assessor guest needs any capabilities beyond the current unprivileged task user. |
+| Isolation policy | Student domains are launched with `--network none`; preparation has the default libvirt network. Test modules run as UID 1001 inside a disposable KVM guest. | Enforce host ceilings, disk quotas, pids, and guest policy. Test that no student access to host or other guests is possible. Define whether the assessor guest needs any capabilities beyond the current unprivileged task user. |
 | Assessment | The CLI delegates exact test checks and weighted rubric scoring to `thot-engine`; the guest agent only reports observations. The current run repository keeps technical/infrastructure outcomes separate from academic grades. | Route assessments into the engine's legacy expedient store and expose sandbox status/reports through `thotd`; extend recovery semantics beyond the local CLI run repository. |
 | Evidence and portability | The verified run folder persists immutable configuration/input/artifact references, content hashes, task/test results, bounded streams, diagnostics, preparation/module provenance, and cleanup state. A professor-owned archive can be moved as a folder. | Define supported archive import/export compatibility and project-level retention. Publish reports through `thotd` and legacy expedients, and document version upgrade/migration behavior. |
 | Ownership and recovery | Student cleanup checks that the domain references the expected overlay before destroying/undefining it; a drop guard attempts cleanup on errors. The run repository has a writer lock, journal/revision verification, and marks incomplete runs interrupted. | Add a provider-level durable VM ownership registry, daemon/startup reconciliation, idempotent provider operations, and tested recovery after host/daemon termination. Audit cleanup failures rather than ignoring them. |
@@ -173,6 +183,45 @@ Observed results were student1 **10/10**, student2 **2/10**, and student3 **0/10
 This is a smoke-test pass, not full POC closure. Important limits remain: the project image is a linked qcow2 overlay rather than a named libvirt snapshot; no managed provider or named template VM is maintained; the guest agent is injected by cloud-init for each student rather than installed into the reusable template; the CLI does not submit observations to a daemon run service or persist legacy expedients; resource limits beyond configured VM resources, output caps, and per-task timeout are not comprehensively enforced; and agent-disconnect recovery is incomplete. The initial `posix-shell-script-v1` module has no asset bundles and is not yet portable to Debian/Docker adapters. Resource measurements and repeated-run reuse have not been characterized. The VSOCK handshake binds a one-use token and run/unit IDs but does not attest the guest.
 
 The current closure work should continue by integrating the passing lifecycle into the frozen provider contract, enforcing ownership and host policy, persisting full evidence through the engine, adding failure/recovery tests, and measuring resources. The passing synthetic scores establish the narrow Alpine execution path only.
+
+## Libvirt OVA module smoke update (2026-11-24)
+
+The example project `examples/ova-screening-kvm-alpine/` now carries a pinned
+portable `thot.libvirt.ova-vm` module with `import_ova`, `start_vm`, `stop_vm`,
+and `destroy_vm` actions. The module safely extracts a single OVF descriptor,
+checks optional OVA manifest hashes, supports VDI/VMDK conversion to qcow2,
+maps CPU/memory/disks and BIOS/EFI where understood, and defines an offline
+libvirt domain. Importing an actual student operating system and validating
+its boots is outside this lifecycle module's current test coverage.
+
+Alpine 3.24 preparation installs QEMU/libvirt, OVMF, D-Bus, and PolicyKit. It
+creates a named unprivileged UID/GID 1001 identity, enables the system services,
+makes `virtproxyd`'s network dependency optional for offline student clones,
+and grants the guest-local `libvirt` group `org.libvirt.unix.manage` through a
+PolicyKit rule. When a pinned module requests `libvirt.system@1`, the Alpine
+agent starts the fixed guest-local service list and adds the `libvirt`
+supplementary group to just that child process after checking socket ownership
+and mode. It does not expose the host libvirt socket. The module reserves exit
+75 for infrastructure failures so a platform issue remains pending rather
+than becoming a student zero.
+
+The final smoke run on the test host used a synthetic 70 KiB OVA containing a
+64 MiB VMDK. All four actions returned exit 0, the report was 10/10, the
+cleanup status was clean, and the host had no remaining test domains. The
+preserved run is
+`/home/sysadmin/ova-screening-kvm-alpine/results/libvirt-module-smoke/results/d8bf796b-5e8c-4e58-aead-9f76a831963a`.
+Earlier failed smoke runs were also retained; they exposed missing D-Bus,
+PolicyKit policy, guest NSS identity, invalid libvirt XML, and JSON path
+serialization issues.
+
+The supplied 8.49 GB OVA has not been imported on this host with the final
+module. The earlier actual-OVA run stopped at unavailable guest-local libvirt
+before module execution. Current host free space is insufficient for another
+full OVA intake plus guest staging. The OVA's OVF declares a 60 GiB virtual
+disk, so the example config now requests a 100 GiB Alpine guest and requires a
+host with correspondingly larger free storage. The synthetic smoke does not
+qualify actual OVF compatibility, EFI startup, nested KVM acceleration,
+multiboot menu behavior, Windows, or shared-data access.
 
 ## Suggested POC success criteria
 

@@ -138,7 +138,10 @@ impl ProjectRunRepository {
     }
 
     /// Persist an acquired delivery immutably and bind its source provenance to
-    /// the copied bytes. A changed digest rejects the intake before execution.
+    /// the copied bytes. When source and run storage share a filesystem, a
+    /// hardlink avoids a second physical copy of large immutable inputs; a
+    /// cross-filesystem or unsupported link falls back to a verified copy. A
+    /// changed digest rejects the intake before execution.
     pub fn persist_input(
         &mut self,
         student_unit_id: &str,
@@ -159,10 +162,32 @@ impl ProjectRunRepository {
             return Err("run input destination already exists".into());
         }
         let temporary = student_dir.join(format!(".input-pending-{}", uuid::Uuid::new_v4()));
-        let digest = copy_and_digest(source, &temporary)?;
+        let source_metadata = fs::symlink_metadata(source)
+            .map_err(|error| format!("cannot inspect acquired input: {error}"))?;
+        if !source_metadata.is_file() || source_metadata.file_type().is_symlink() {
+            return Err("acquired input must be a regular non-symlink file".into());
+        }
+        let digest = match fs::hard_link(source, &temporary) {
+            Ok(()) => match hash_file(&temporary) {
+                Ok(digest) => digest,
+                Err(error) => {
+                    remove_any(&temporary);
+                    return Err(format!("cannot verify linked input: {error}"));
+                }
+            },
+            Err(_) => copy_and_digest(source, &temporary)?,
+        };
         if digest != provenance.sha256 {
             remove_any(&temporary);
             return Err("delivery SHA-256 changed while snapshotting the input".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(error) = fs::set_permissions(&temporary, fs::Permissions::from_mode(0o444)) {
+                remove_any(&temporary);
+                return Err(format!("cannot make persisted input immutable: {error}"));
+            }
         }
         fs::rename(&temporary, &destination)
             .map_err(|error| format!("cannot publish immutable input: {error}"))?;

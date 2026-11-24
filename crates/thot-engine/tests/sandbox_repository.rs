@@ -63,7 +63,16 @@ fn run_package_persists_input_evidence_and_verifies_revision() {
             },
         )
         .unwrap();
-    assert!(repository.run_dir().join(persisted).is_file());
+    assert!(repository.run_dir().join(&persisted).is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let source_metadata = fs::metadata(&source).unwrap();
+        let persisted_metadata = fs::metadata(repository.run_dir().join(&persisted)).unwrap();
+        assert_eq!(source_metadata.dev(), persisted_metadata.dev());
+        assert_eq!(source_metadata.ino(), persisted_metadata.ino());
+        assert_eq!(persisted_metadata.permissions().mode() & 0o222, 0);
+    }
 
     let output = repository
         .put_artifact(b"captured stdout", "text/plain", true)

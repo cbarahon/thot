@@ -1,0 +1,12 @@
+{
+  "manifest_version": 1,
+  "module_id": "thot.libvirt.ova-vm",
+  "version": "1.0.0",
+  "package_sha256": "31c8e8de65b96d47f8041b9bc98c1e57668a296a3bff6aa698a80c43651bf69b",
+  "capabilities": [
+    { "id": "process.argv", "version": 1 },
+    { "id": "module.posix-shell", "version": 1 },
+    { "id": "libvirt.system", "version": 1 }
+  ],
+  "assets": []
+}

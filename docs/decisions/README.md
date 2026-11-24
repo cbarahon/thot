@@ -16,3 +16,5 @@ Each record states its own decision status and implementation limits.
 - [ADR-0012: Alpine preparation and portable POSIX test modules](0012-alpine-preparation-and-posix-test-modules.md)
 - [ADR-0013: Independent evaluation items for sandbox schema v3](0013-v3-independent-evaluation-items.md)
 - [ADR-0014: Portable verified sandbox run archives](0014-portable-sandbox-run-archives.md)
+- [ADR-0015: Portable module platform-failure exit code](0015-module-platform-failure-exit-code.md)
+- [ADR-0016: Guest-local libvirt authority for pinned modules](0016-guest-local-libvirt-capability.md)
