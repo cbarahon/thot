@@ -59,9 +59,10 @@ sudo apt update
 sudo apt install qemu-system-x86 libvirt-daemon-system libvirt-clients virtinst \
   libguestfs-tools cloud-image-utils curl
 sudo systemctl enable --now libvirtd
+sudo virsh net-start default
 sudo virsh net-autostart default
 test -c /dev/kvm
-sudo virsh net-list --all
+sudo env LC_ALL=C virsh net-info default
 thot sandbox --help
 ```
 
@@ -69,8 +70,9 @@ The CLI must be able to access system libvirt and its storage. In this
 implementation, run it with the privileges needed by the local KVM provider.
 Set `THOT_KVM_ALPINE_ROOT` to a libvirt-accessible directory (for example
 `/var/lib/libvirt/images/thot-ova-screening`), and set `TMPDIR` there as well
-if `/tmp` is a small tmpfs. Do not place VM storage under a private home
-directory that the libvirt service account cannot traverse.
+if `/tmp` is a small tmpfs; Thot creates the configured temporary directory
+when it is missing. Do not place VM storage under a private home directory
+that the libvirt service account cannot traverse.
 
 ## Create the professor project
 
@@ -175,14 +177,26 @@ Final synthetic lifecycle smoke run:
 - `virsh list --all` was empty after cleanup. The run and fixture are retained
   under `/home/sysadmin/ova-screening-kvm-alpine/results/`.
 
-The actual supplied OVA has not been rerun after these fixes. The host had
-about 11 GiB free after retaining prior OVA copies, run inputs, smoke baselines,
-and logs, which is insufficient for another 8.49 GiB run input plus the
-student-clone staging copy. Its declared 60 GiB disk also cannot be imported
-into the earlier 20 GiB outer guest. This is a host-capacity limitation, not a
-student result. A properly sized host still needs a real run to qualify OVF
-compatibility, EFI boot, multiboot behavior, nested acceleration, Windows, and
-shared-data checks.
+The supplied OVA was retried after the module fixes, using a 100 GiB Alpine
+guest and the matching `0.1.46 protocol=2` agent pin. Run
+`cd9ec275-0e79-48ec-87f3-797b31afea85` transferred the complete OVA and reached
+`import_ova`, which exposed a standard OVF manifest whitespace format that the
+parser rejected. The parser now accepts optional spaces around the manifest
+algorithm, filename, and equals sign.
+
+Run `6a7cdddc-7d95-4a15-8e81-9fea4da9a143` retried the supplied OVA with that
+parser correction. During extraction and disk conversion, the 59 GiB host
+filesystem filled to 100%. To protect the host, the disposable student VM was
+stopped; Thot removed its linked overlay, and 26 GiB of host free space was
+restored. The interrupted run retains its delivery input and journal but has
+no final student report. The first completed run's `0/10` is a parser
+compatibility failure, not an evaluation of the student's work.
+
+The current project configuration and agent pin are aligned at version
+`0.1.46`, protocol 2. A host with substantially more free disk is still
+required before the real OVA import can complete safely. The OVA's OVF declares
+a 60 GiB disk and 4 GiB RAM; the real startup and EFI/multiboot behavior,
+Windows, and shared-data checks remain unqualified.
 
 See the [platform roadmap](../planning/platform-roadmap.md),
 [OVA multiboot plan](../planning/ova-multiboot.md), and

@@ -214,13 +214,14 @@ Earlier failed smoke runs were also retained; they exposed missing D-Bus,
 PolicyKit policy, guest NSS identity, invalid libvirt XML, and JSON path
 serialization issues.
 
-The supplied 8.49 GB OVA has not been imported on this host with the final
-module. The earlier actual-OVA run stopped at unavailable guest-local libvirt
-before module execution. Current host free space is insufficient for another
-full OVA intake plus guest staging. The OVA's OVF declares a 60 GiB virtual
-disk, so the example config now requests a 100 GiB Alpine guest and requires a
-host with correspondingly larger free storage. The synthetic smoke does not
-qualify actual OVF compatibility, EFI startup, nested KVM acceleration,
+The supplied 8.49 GB OVA has not completed import on this host. With the final
+`0.1.46 protocol=2` agent pin and 100 GiB outer disk, a first retry exposed and
+then fixed manifest whitespace handling. A second retry reached extraction
+and conversion, but the host's 59 GiB filesystem filled. The disposable
+student clone was stopped and its overlay removed; the interrupted run input
+and journal remain. Its OVF declares a 60 GiB disk and 4 GiB RAM, so a host
+with substantially more free storage is required. The synthetic smoke does
+not qualify actual disk conversion, EFI startup, nested KVM acceleration,
 multiboot menu behavior, Windows, or shared-data access.
 
 ## Suggested POC success criteria

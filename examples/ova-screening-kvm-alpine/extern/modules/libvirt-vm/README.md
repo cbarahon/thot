@@ -39,9 +39,11 @@ up to 64 regular tar members, VDI or VMDK disks, up to 128 GiB combined virtual
 disk capacity, and bounded OVA/extracted sizes. It rejects unsafe archive paths,
 links, duplicate members, DTD/entity declarations, unsupported disk formats,
 and insufficient free guest storage before extraction/conversion. The current
-sample's 60 GiB virtual disk cannot fit the earlier 20 GiB outer Alpine disk.
-The example now configures a 100 GiB outer guest; host storage must also cover
-the source OVA, run evidence, and the guest's allocated overlay.
+sample's 60 GiB virtual disk needs more storage than the 59 GiB test host can
+provide. The example configures a 100 GiB outer guest, but host storage must
+also cover the source OVA, run evidence, staged OVA, extracted disk, converted
+disk, and guest overlay. The actual OVA trial filled the host filesystem
+during conversion, so use a host with substantially more free space.
 
 The four actions validate import/lifecycle mechanics only. They do not yet
 inspect EFI partitions, OS filesystems, GRUB entries, or shared-data mounts.

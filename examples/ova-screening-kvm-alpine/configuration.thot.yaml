@@ -34,7 +34,7 @@ sandbox_platforms:
         firmware: bios
       agent:
         install_from: pinned-static-binary
-        version: "0.1.45"
+        version: "0.1.46"
         listen: guest-initiated-only
       project_clone:
         name: thot-ova-libvirt-prepared-100g
