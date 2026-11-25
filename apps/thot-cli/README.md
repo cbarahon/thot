@@ -66,8 +66,10 @@ The current local provider supports one `kvm-alpine` platform per project.
 Student guests have no virtual network device. The preparation guest uses the
 libvirt `default` network to install configured Alpine packages; professor
 preparation scripts run with guest root access. Treat project configuration
-and those scripts as trusted instructor input. Infrastructure failures stop
-the CLI and do not create a student grade.
+and those scripts as trusted instructor input. Ensure the network is active
+with `sudo virsh net-start default` and enabled at boot with
+`sudo virsh net-autostart default`. Infrastructure failures stop the CLI and
+do not create a student grade.
 
 `thot deliveries list PROJECT_DIR` previews the configured source and reports
 deliverable names, sizes, and available dates. `thot deliveries get NAME

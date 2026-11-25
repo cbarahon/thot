@@ -104,6 +104,17 @@ pub fn run_project(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/lib/libvirt/images/thot-alpine-poc"));
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    if let Some(temp_dir) = std::env::var_os("TMPDIR") {
+        let temp_dir = PathBuf::from(temp_dir);
+        fs::create_dir_all(&temp_dir)
+            .map_err(|error| format!("cannot create TMPDIR `{}`: {error}", temp_dir.display()))?;
+        if !temp_dir.is_dir() {
+            return Err(format!(
+                "TMPDIR `{}` is not a directory",
+                temp_dir.display()
+            ));
+        }
+    }
     check_disk_capacity(&root)?;
     let _lock = RunLock::acquire(root.join(".thot-alpine.lock"))?;
     let image = root.join(format!(
@@ -800,6 +811,11 @@ pub fn run_project(
 fn run(args: &[&str]) -> Result<String, String> {
     let output = Command::new(args[0])
         .args(&args[1..])
+        // Libvirt's human-readable status labels are localized. Preflight
+        // parses `virsh net-info`, so force stable English output regardless
+        // of the professor's host locale.
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
@@ -852,7 +868,7 @@ fn preflight_host(guest_memory_mib: u32) -> Result<(), String> {
         })
     }) {
         return Err(
-            "libvirt default network is inactive; start it before running preparation".into(),
+            "libvirt default network is inactive; run `sudo virsh net-start default` to start it and `sudo virsh net-autostart default` to keep it active after reboot".into(),
         );
     }
     let available_kib = fs::read_to_string("/proc/meminfo")
