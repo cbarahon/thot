@@ -107,7 +107,9 @@ def verify_ova_manifest(directory, members):
         return {"present": False, "verified_entries": 0}
     if len(manifest_members) != 1:
         fail("OVA contains more than one manifest")
-    pattern = re.compile(r"^(SHA1|SHA256|SHA512)\(([^)]+)\)=\s*([0-9a-fA-F]+)\s*$")
+    pattern = re.compile(
+        r"^(SHA1|SHA256|SHA512)\s*\(([^)]+)\)\s*=\s*([0-9a-fA-F]+)\s*$"
+    )
     verified = 0
     for line in manifest_members[0].read_text(encoding="utf-8", errors="strict").splitlines():
         if not line.strip():
