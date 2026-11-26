@@ -270,7 +270,10 @@ pub struct SandboxInfrastructurePolicy {
 
 impl SandboxProject {
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(self.schema_version.as_str(), "thot.dev/v2" | "thot.dev/v3") {
+        if !matches!(
+            self.schema_version.as_str(),
+            "thot.dev/v2" | "thot.dev/v3" | "thot.dev/v4"
+        ) {
             return Err(format!(
                 "unsupported sandbox schema version `{}`",
                 self.schema_version
@@ -466,8 +469,10 @@ impl SandboxProject {
                     ));
                 }
                 if let Some(module) = &test.module
-                    && (module.runtime != "posix-shell-script-v1"
-                        || !safe_project_path(&module.manifest)
+                    && (!matches!(
+                        module.runtime.as_str(),
+                        "posix-shell-script-v1" | "linux-x86_64-elf-v1"
+                    ) || !safe_project_path(&module.manifest)
                         || !safe_project_path(&module.package))
                 {
                     return Err(format!(
@@ -521,12 +526,22 @@ impl SandboxProject {
                     }
                 }
             }
+            // v4 is an explicit new document version, normalized into the
+            // existing v3 assessment model. This initial compatibility slice
+            // keeps the v3 execution contract intact while the concise v4
+            // authoring form is introduced by the next schema adapter.
             let is_v2 = self.schema_version == "thot.dev/v2";
-            if (is_v2
-                && (platform.evaluation.rubric.is_none() || !platform.evaluation.items.is_empty()))
-                || (!is_v2
-                    && (platform.evaluation.rubric.is_some()
-                        || platform.evaluation.items.is_empty()))
+            let is_v4 = self.schema_version == "thot.dev/v4";
+            let invalid_assessment_shape = if is_v2 {
+                platform.evaluation.rubric.is_none() || !platform.evaluation.items.is_empty()
+            } else if is_v4 {
+                // v4's compact authoring adapter supports either one rubric or
+                // independent items during migration, but never both at once.
+                platform.evaluation.rubric.is_some() == !platform.evaluation.items.is_empty()
+            } else {
+                platform.evaluation.rubric.is_some() || platform.evaluation.items.is_empty()
+            };
+            if invalid_assessment_shape
                 || platform.evaluation.infrastructure_errors.grade != "pending"
                 || !platform
                     .evaluation

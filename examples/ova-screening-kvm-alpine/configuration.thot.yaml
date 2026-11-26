@@ -1,131 +1,52 @@
-schema_version: thot.dev/v2
+schema_version: thot.dev/v4
 project_id: ova-screening-archlinux-dualboot-libvirt
 name: Arch Linux dualboot OVA libvirt screening
-language: en
-students_file: students.yaml
-assignments_file: assignments.yaml
-delivery_agent:
-  kind: local
-  path: /home/sysadmin
-delivery_limits:
-  max_bytes: 21474836480 # 20 GiB intake limit
-  max_files: 100
-delivery_folder: /home/sysadmin
+delivery_folder: deliveries
+delivery_limits: {max_bytes: 21474836480} # Accept submissions up to 20 GiB.
 
-# This profile is sized for the supplied OVA's 60 GiB virtual disk. The
-# conservative importer needs space for the OVA, extracted source disk, and
-# converted disk at once. Confirm host free space before starting a run.
 sandbox_platforms:
-  - id: alpine-libvirt-ova
+  - id: ova-screening
     kind: kvm-alpine
-    isolation_scope: kvm-guest
-    lifecycle:
-      template_name: thot-ova-libvirt-template-100g
-      template_image:
-        distribution: Alpine Linux
-        release: 3.24.1
-        architecture: x86_64
-        image_url: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-x86_64-bios-cloudinit-r0.qcow2
-        sha512: 8d756f6fc7653daa4fb4e2e213d8a66007bcb1e5a846e28891af62c47b90685c694486c2746099ad99e9e8f5278db76b69d11dfe1e9361aa4c8406df16929a9c
-      template_vm:
-        vcpu: 1
-        memory_mib: 1024
-        disk_gib: 100
-        firmware: bios
-      agent:
-        install_from: pinned-static-binary
-        version: "0.1.46"
-        listen: guest-initiated-only
-      project_clone:
-        name: thot-ova-libvirt-prepared-100g
-        linked: true
-        source_snapshot: prepared-baseline
-      preparation:
-        timeout_seconds: 900
-        packages:
-          - bash
-          - python3
-          - dbus
-          - dbus-openrc
-          - polkit
-          - polkit-openrc
-          - libvirt
-          - libvirt-client
-          - libvirt-daemon
-          - libvirt-daemon-openrc
-          - libvirt-qemu
-          - qemu-img
-          - qemu-system-x86_64
-          - ovmf
-        scripts:
-          - path: extern/preparation/install-libvirt.sh
-            sha256: 744cc2fe2469e4c2eae5f3efff828fbde766968aa4df2e53aac9e904607730e1
-            timeout_seconds: 180
-      student_clone:
-        name_prefix: thot-libvirt-student-100g
-        linked: true
-        reset_from: prepared-baseline
-        cleanup: always
-    limits:
-      vcpu: 1
-      memory_mib: 1024
+    profile: alpine-ova
+    resources:
+      cpus: 4
+      memory_mib: 6144
       disk_gib: 100
-      preparation_timeout_seconds: 900
-      student_timeout_seconds: 3600
-      stdout_bytes: 16384
-      stderr_bytes: 16384
-    network:
-      template_install: allow-configured-alpine-mirror-only
-      preparation: allow-configured-alpine-mirror-only
-      student_tests: deny
-    inputs:
-      - role: student-deliverable
-        copy_to: /work/submission.ova
-        read_only: true
+    preparation:
+      timeout_seconds: 900
+      packages:
+        - bash
+        - python3
+        - dbus
+        - dbus-openrc
+        - polkit
+        - polkit-openrc
+        - libvirt
+        - libvirt-client
+        - libvirt-daemon
+        - libvirt-daemon-openrc
+        - libvirt-qemu
+        - qemu-img
+        - qemu-system-x86_64
+        - ovmf
+      scripts:
+        - path: extern/preparation/install-libvirt.sh
+          sha256: bf4f0518895e231bba301594a5e2739f2995f5976b42bb0d48c0bc732a902bbe
+          timeout_seconds: 180
     tests:
       - id: libvirt-import-ova
-        action: module
-        module:
-          runtime: posix-shell-script-v1
-          manifest: extern/modules/libvirt-vm/manifest.json
-          package: extern/modules/libvirt-vm/entrypoint.sh
-        argv: [import_ova, archlinux-dualboot, /work/submission.ova]
+        argv: [import_ova, archlinux-dualboot, /work/submission.ova, --max-vcpus, '2', --max-memory-mib, '2048']
         timeout_seconds: 3600
-        capture: [stdout, stderr, exit_code, duration_ms]
-        expect_exit_code: 0
       - id: libvirt-start-vm
-        action: module
         requires: [libvirt-import-ova]
-        module:
-          runtime: posix-shell-script-v1
-          manifest: extern/modules/libvirt-vm/manifest.json
-          package: extern/modules/libvirt-vm/entrypoint.sh
         argv: [start_vm, archlinux-dualboot]
         timeout_seconds: 180
-        capture: [stdout, stderr, exit_code, duration_ms]
-        expect_exit_code: 0
       - id: libvirt-stop-vm
-        action: module
         requires: [libvirt-start-vm]
-        module:
-          runtime: posix-shell-script-v1
-          manifest: extern/modules/libvirt-vm/manifest.json
-          package: extern/modules/libvirt-vm/entrypoint.sh
         argv: [stop_vm, archlinux-dualboot]
-        timeout_seconds: 60
-        capture: [stdout, stderr, exit_code, duration_ms]
-        expect_exit_code: 0
       - id: libvirt-destroy-vm
-        action: module
         requires: [libvirt-import-ova]
-        module:
-          runtime: posix-shell-script-v1
-          manifest: extern/modules/libvirt-vm/manifest.json
-          package: extern/modules/libvirt-vm/entrypoint.sh
         argv: [destroy_vm, archlinux-dualboot]
-        timeout_seconds: 60
-        capture: [stdout, stderr, exit_code, duration_ms]
-        expect_exit_code: 0
     evaluation:
       import_check:
         tests: [libvirt-import-ova]
@@ -137,6 +58,3 @@ sandbox_platforms:
         criteria:
           - {check: import_check, points: 4}
           - {check: lifecycle_check, points: 6}
-      infrastructure_errors:
-        grade: pending
-        never_convert_to_zero: true

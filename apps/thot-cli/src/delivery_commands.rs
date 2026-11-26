@@ -4,11 +4,68 @@ use reqwest::Method;
 use serde_json::{Value, json};
 use std::path::Path;
 
+pub(crate) async fn select_run(
+    client: &ApiClient,
+    id: Option<&String>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(id) = id {
+        return Ok(id.clone());
+    }
+    let runs: Value = client.request(Method::GET, "/api/v1/runs", None).await?;
+    let project = current_project_path()?
+        .map(|path| thot_engine::vm_activity::project_identifier_for_path(Path::new(&path)))
+        .transpose()?;
+    runs.as_array()
+        .into_iter()
+        .flatten()
+        .find(|r| {
+            project
+                .as_ref()
+                .is_none_or(|p| r["project_id"].as_str() == Some(p))
+        })
+        .and_then(|r| r["run_id"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "no evaluation found for this project".into())
+}
+
 pub async fn handle(
     args: &[String],
     settings: &Settings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = ApiClient::new(settings)?;
+    if matches!(args.first().map(String::as_str), Some("summary" | "log")) && args.len() <= 2 {
+        let id = select_run(&client, args.get(1)).await?;
+        let run: Value = client
+            .request(Method::GET, &format!("/api/v1/runs/{id}"), None)
+            .await?;
+        if args[0] == "summary" {
+            println!("Run {id}   {}", run["status"].as_str().unwrap_or("unknown"));
+            if let Some(e) = run["error"].as_str() {
+                println!("{e}");
+            }
+            for row in run["expedients"].as_array().into_iter().flatten() {
+                println!(
+                    "{}   {}",
+                    row["student_name"].as_str().unwrap_or("Student"),
+                    row["status"].as_str().unwrap_or("unknown")
+                );
+            }
+        } else {
+            print_yaml(&run)?;
+            for exp in run["expedient_ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                let details: Value = client
+                    .request(Method::GET, &format!("/api/v1/expedients/{exp}"), None)
+                    .await?;
+                print_yaml(&details)?;
+            }
+        }
+        return Ok(());
+    }
     if matches!(args, [action] if action == "status") {
         let runs: Value = client.request(Method::GET, "/api/v1/runs", None).await?;
         let active = runs
@@ -102,7 +159,19 @@ pub async fn handle(
         _ => return Err("usage: thot run [list] | create <project-file> [--deliveries DIR] | status [RUN_ID] | checks [RUN_ID] | delete RUN_ID | expedient EXPEDIENT_ID | cancel RUN_ID | cleanup EXPEDIENT_ID".into()),
     };
     let value: Value = client.request(method, &path, body).await?;
-    print_yaml(&value)?;
+    if path == "/api/v1/runs" && args.first().is_some_and(|s| s == "create") {
+        println!(
+            "Started project {} in the background\nRun {}   {}",
+            value["project_id"].as_str().unwrap_or("unknown"),
+            value["run_id"].as_str().unwrap_or("unknown"),
+            value["status"].as_str().unwrap_or("queued")
+        );
+        for warning in value["warnings"].as_array().into_iter().flatten() {
+            println!("{}", warning.as_str().unwrap_or_default());
+        }
+    } else {
+        print_yaml(&value)?;
+    }
     Ok(())
 }
 
@@ -116,7 +185,7 @@ fn absolute_path(path: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(absolute.to_string_lossy().into_owned())
 }
 
-fn discover_project() -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) fn discover_project() -> Result<String, Box<dyn std::error::Error>> {
     let current_dir = std::env::current_dir()?;
     let mut sources = Vec::new();
 

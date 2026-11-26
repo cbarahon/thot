@@ -1,5 +1,7 @@
 # Data model
 
+> The [local evaluation migration target](local-evaluation.md) adds original/effective configuration and redacted setting provenance, sequenced progress, independent run/cleanup state and target-specific module identities. These additions are planned; current persisted formats are not silently migrated.
+
 Status: Mixed. The broad relational model below remains a target design. P1 shared sandbox contracts and the portable run folder described below are implemented as initial Rust APIs; local sandbox runs can be integrity-verified and rendered as table, JSON, CSV, or offline HTML. This does not replace legacy POC SQLite or provide run archive import/regrade editing yet.
 
 ## Entities and identity
@@ -30,7 +32,7 @@ erDiagram
 | Input | `input_id`, type, selector/role, source, SHA-256, and size; Git adds URL without credential, ref requested and commit resolved |
 | DeliveryAgent | `kind` (`local` or `gdrive`), non-secret source selector, version; local stores a path, Google Drive stores a folder URL only |
 | DeliveryMetadata | exact `name`, `size_bytes`, optional `created_at`/`modified_at`, stable provider file ID/revision where available, MIME type and provider checksum; no OAuth secret or token |
-| AcquiredDelivery | `name`, source kind and selector, provider ID/revision, fetched SHA-256, byte size, available source dates, acquisition time; points to the materialized immutable run input |
+| AcquiredDelivery | `name`, source kind and selector, provider ID/revision, fetched SHA-256, byte size, available source dates and acquisition time; payload is staged only for execution and is not retained in the run |
 | Assignment | `student_internal_id`, `submission_id`; unique pairs, N×N; an individual correction does not alter shared results |
 | ExecutionUnit | `unit_id`, ordered set of deliveries/inputs, effective workflow and footprint; a unit shares a laboratory |
 | Run | `run_id`, UTC date, status, current revision, units and snapshot references |
@@ -77,20 +79,25 @@ single-writer while open:
 results/<run-id>/
   run.json                         # status and current committed revision
   snapshot/                         # exact configuration, roster, assignments
-  inputs/<student-unit>/<name>      # immutable acquired deliverable bytes
-  deliveries/<student-unit>.json    # source ID/revision/checksum + acquired SHA-256
+  results/<student-unit>.json       # assessment and delivery provenance; no payload
   artifacts/sha256/<prefix>/<hash>  # content-addressed stdout/stderr/evidence
   journal/events.jsonl              # fsynced sequence with previous/event hashes
   revisions/<revision-id>/revision.json
 ```
 
 The repository creates a project-wide nonblocking writer lock, snapshots
-bounded input metadata before execution, records acquired inputs by verified
-SHA-256, stores output blobs by digest, and atomically publishes a revision
-pointer only after its result paths exist. A committed revision contains the
-configuration hash and evidence-manifest hash. `verify_run` checks the
-configuration snapshot, journal chain, revision metadata, result presence and
-evidence hashes. Reopening a repository marks prior `created`/`running` runs
+bounded project metadata before execution, records delivery provenance
+(source identity, name, size, timestamps when available, acquisition time and
+SHA-256) in each student result, stores output blobs by digest, and atomically
+publishes a revision pointer only after its result paths exist. Deliverable
+bytes are staged for the current student, transferred to the sandbox, and
+removed after that student's tests. The engine does not retain deliverable
+backups; instructors keep the source in their own local folder or Drive. The
+hash lets an instructor check later whether a source file matches the one
+evaluated. A committed revision contains the configuration hash and
+evidence-manifest hash. `verify_run` checks the configuration snapshot,
+journal chain, revision metadata, result presence and evidence hashes.
+Reopening a repository marks prior `created`/`running` runs
 `interrupted`; it does not resume or replay uncertain external work. Run and
 journal hashes detect accidental corruption, not malicious rewriting by a
 person who can edit the whole folder. The folder is not safe for concurrent
@@ -126,7 +133,6 @@ actividad/
   runs/<run-id>/
     run.yaml                    # status and pointer to committed revision
     snapshot/<revision-id>/     # configuration, roster and effective assignments
-    inputs/<sha256>/            # materialized copies, including Git tree
     revisions/<revision-id>.yaml
     journal/events.jsonl        # secuencia confirmada, sin secretos
     tests/<unit-id>/<step-id>/<attempt-id>/
@@ -139,7 +145,7 @@ actividad/
     integrity.yaml             # export inventory and hashes
 ```
 
-`configuration.yaml` is supported as legacy with notice; both names together are error. Roster YAML takes precedence over CSV with notice; the snapshot preserves which one was used and the effective conversion. `assignments.yaml` is canonical; JSON is converted explicitly and the coexistence is error. `submissions.yaml` groups various inputs and preserves roles such as `source`, `disk`, `report`. Selection by role/type and exact cardinality or rank, never by incidental directory order. The scheme validates extensions as hints, not as proof of the actual format.
+`configuration.yaml` is supported as legacy with notice; both names together are error. Roster YAML takes precedence over CSV with notice; the snapshot preserves which one was used and the effective conversion. `assignments.yaml` is canonical; JSON is converted explicitly and the coexistence is error. `submissions.yaml` groups various inputs and preserves roles such as `source`, `disk`, `report`. Selection by role/type and exact cardinality or rank, never by incidental directory order. Deliverable payloads are temporary execution inputs, not run-package evidence; only source metadata and a content hash persist. The scheme validates extensions as hints, not as proof of the actual format.
 
 For the current `thot.dev/v2` sandbox CLI, optional `delivery_agent` is a tagged configuration object: `{kind: local, path: ./submissions}` or `{kind: gdrive, folder_url: https://drive.google.com/drive/folders/ID}`. When omitted, `delivery_folder` (or its documented student-input-root fallback) selects local intake, then `delivery` is the final default. Assignment `deliverable` fields are exact names returned by `list`. OAuth client credentials and tokens are user-level secrets and are excluded from this model and all project snapshots.
 

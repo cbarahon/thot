@@ -14,6 +14,7 @@ name = "thot-alpine-poc"
 path = "src/bin.rs"
 
 [dependencies]
+dotenvy = "0.15"
 thot-core = { path = "../../crates/thot-core" }
 thot-engine = { path = "../../crates/thot-engine" }
 thot-delivery = { path = "../../crates/thot-delivery" }

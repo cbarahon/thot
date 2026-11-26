@@ -41,16 +41,20 @@ pub async fn execute_task(
         },
         None => (PathBuf::from(&task.argv[0]), task.argv[1..].to_vec()),
     };
-    let supplementary_gids = match module_supplementary_gids(task.module.as_ref()) {
-        Ok(groups) => groups,
-        Err(diagnostic) => {
-            return Ok(early_result(
-                &task,
-                ExecutionStatus::PlatformError,
-                &diagnostic,
-            ));
-        }
-    };
+    let module = task.module.clone();
+    let supplementary_gids =
+        match tokio::task::spawn_blocking(move || module_supplementary_gids(module.as_ref()))
+            .await?
+        {
+            Ok(groups) => groups,
+            Err(diagnostic) => {
+                return Ok(early_result(
+                    &task,
+                    ExecutionStatus::PlatformError,
+                    &diagnostic,
+                ));
+            }
+        };
     let cwd = task.working_dir.canonicalize()?;
     if !cwd.starts_with("/work") || !cwd.is_dir() {
         return Err("working directory is outside /work".into());
@@ -89,11 +93,22 @@ pub async fn execute_task(
             });
         }
     }
-    let mut child = command.spawn()?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) if task.module.is_some() => {
+            return Ok(early_result(
+                &task,
+                ExecutionStatus::PlatformError,
+                &format!("cannot launch test module: {e}"),
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
     let stdout = child.stdout.take().ok_or("stdout pipe unavailable")?;
     let stderr = child.stderr.take().ok_or("stderr pipe unavailable")?;
     let out_limit = task.stdout_limit.min(task.limits.output_limits.stdout);
     let err_limit = task.stderr_limit.min(task.limits.output_limits.stderr);
+    let process_group = child.id();
     let out = tokio::spawn(read_capped(stdout, out_limit));
     let err = tokio::spawn(read_capped(stderr, err_limit));
     let (status, timed_out) =
@@ -104,8 +119,22 @@ pub async fn execute_task(
                 (None, true)
             }
         };
-    let (stdout, stdout_truncated) = out.await??;
-    let (stderr, stderr_truncated) = err.await??;
+    // Allow descendants that redirected their output to continue inside this student's VM.
+    let captures = async { tokio::try_join!(out, err) };
+    tokio::pin!(captures);
+    let (out_result, err_result) = match timeout(Duration::from_secs(2), &mut captures).await {
+        Ok(result) => result?,
+        Err(_) => {
+            if let Some(pid) = process_group {
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
+            timeout(Duration::from_secs(3), captures).await??
+        }
+    };
+    let (stdout, stdout_truncated) = out_result?;
+    let (stderr, stderr_truncated) = err_result?;
     let exit_code = status.and_then(|s| s.code());
     let signal = status.and_then(|s| {
         #[cfg(unix)]
@@ -223,6 +252,15 @@ fn validate_module_launch_at(
             "module path resolves outside its staging area".into(),
         ));
     }
+    if module
+        .capabilities
+        .iter()
+        .any(|c| c.id == "module.linux-x86_64-elf" && c.version == 1)
+    {
+        fs::set_permissions(&canonical, fs::Permissions::from_mode(0o555))
+            .map_err(|e| (ExecutionStatus::PlatformError, e.to_string()))?;
+        return Ok((canonical, module_args.to_vec()));
+    }
     let mut args = vec![canonical.to_string_lossy().into_owned()];
     args.extend_from_slice(module_args);
     Ok((PathBuf::from("/bin/sh"), args))
@@ -255,6 +293,14 @@ fn early_result(
 
 pub fn capabilities() -> Vec<PlatformCapability> {
     let mut available = vec![
+        PlatformCapability {
+            id: "module.linux-x86_64-elf".into(),
+            version: 1,
+        },
+        PlatformCapability {
+            id: "task.progress".into(),
+            version: 1,
+        },
         PlatformCapability {
             id: "process.argv".into(),
             version: 1,
@@ -349,8 +395,16 @@ fn ensure_guest_libvirt_services() -> Result<(), String> {
         "virtqemud",
         "virtproxyd",
     ] {
-        let result = StdCommand::new(service_manager)
-            .args([service, "start"])
+        let result = StdCommand::new("/bin/busybox")
+            .args([
+                "timeout",
+                "-s",
+                "KILL",
+                "30",
+                service_manager,
+                service,
+                "start",
+            ])
             .output()
             .map_err(|error| {
                 format!("could not start Alpine libvirt service {service}: {error}")
@@ -739,6 +793,25 @@ mod tests {
             }],
         };
         assert!(validate_module_launch_at(&module, &["arg".into()], &root).is_ok());
+
+        // Exercise the native launch path with a real ELF and argv, preserving the shell fixture above.
+        let native_path = root.join("module");
+        fs::copy("/bin/echo", &native_path).unwrap();
+        let native = ModuleLaunch {
+            package_path: native_path.clone(),
+            package_sha256: hash_file(&native_path).unwrap(),
+            capabilities: vec![PlatformCapability {
+                id: "module.linux-x86_64-elf".into(),
+                version: 1,
+            }],
+            ..module.clone()
+        };
+        let (program, args) =
+            validate_module_launch_at(&native, &["native-ok".into()], &root).unwrap();
+        assert_eq!(
+            StdCommand::new(program).args(args).output().unwrap().stdout,
+            b"native-ok\n"
+        );
 
         let mut bad_digest = module.clone();
         bad_digest.package_sha256 = "0".repeat(64);

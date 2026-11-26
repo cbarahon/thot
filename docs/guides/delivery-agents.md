@@ -65,11 +65,11 @@ thot deliveries get assignment-17.zip ./course-project --output ./review/assignm
 sudo thot sandbox run ./course-project
 ```
 
-`get` refuses to overwrite an existing output. `sandbox run` fetches the assigned deliverable into a private temporary directory, hashes it, stages it into the student VM, and removes the temporary host copy after processing. The result JSON records name, size, timestamps, and SHA-256 so the professor can identify the evaluated source.
+`get` refuses to overwrite an existing output. `thot run` processes one student at a time. For a local source it hashes and reads the professor's file directly, without making a host-side payload copy. For Google Drive it downloads only the current student's deliverable into private temporary staging, transfers it to the guest, then deletes that staged download after the student's tests. The original Drive file is never deleted. Results keep the name, size, available timestamps, provider identifiers/revision, and SHA-256, but not the deliverable bytes. The standalone `thot deliveries get` command intentionally writes a copy to the professor's requested output path.
 
 ## Boundaries and open work
 
-- The local filesystem agent trusts the professor's selected root and reads it without modifying its source. The runner copies the source before sandbox transfer.
+- The local filesystem agent trusts the professor's selected root and reads it without modifying its source. Evaluation hashes the selected source and streams it into the guest; the guest verifies the transfer hash. If the source changes during transfer, the guest rejects the mismatch.
 - Google Drive credentials are user credentials, not a service-account credential. Access is limited to read-only OAuth permission, but `drive.readonly` grants the application read access to all files visible to that professor's Google account. A narrower scope that can read a pre-existing instructor-selected folder is not currently available with this simple installed-app flow.
 - OAuth token revocation, expired/revoked consent, account changes, network loss, and Google API quota errors are reported as intake failures and do not create a grade.
 - HTTP responses are downloaded with bounded size and request timeouts. Retry/backoff, resumable downloads, shared-drive drive-ID selection, and duplicate-name disambiguation by file ID remain future work.

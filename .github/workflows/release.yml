@@ -54,6 +54,7 @@ jobs:
           mkdir -p "${package_dir}" dist
           install -m 0755 target/release/thot "${package_dir}/thot"
           install -m 0755 target/release/thotd "${package_dir}/thotd"
+          install -m 0644 deploy/*.socket deploy/sandbox-defaults.yaml "${package_dir}/"
           install -m 0644 deploy/thotd.service "${package_dir}/thotd.service"
           install -m 0644 deploy/thotd.env.example "${package_dir}/thotd.env.example"
           install -m 0755 target/release/thot-virtualbox-agent "${package_dir}/thot-virtualbox-agent"
@@ -63,7 +64,7 @@ jobs:
           printf '%s\n' "${GITHUB_REF_NAME}" > "${package_dir}/VERSION"
           install -m 0755 deploy/install.sh dist/thot-install.sh
           tar -C "${package_dir}" -czf dist/thot-linux-x86_64-unknown-linux-gnu.tar.gz \
-            thot thotd thotd.service thotd.env.example \
+            thot thotd thotd.service thotd.env.example thotd.socket thot-virtualbox-agent.socket sandbox-defaults.yaml \
             thot-virtualbox-agent thot-alpine-agent thot-virtualbox-agent.service \
             thot-virtualbox-agent.config.yaml.example VERSION
           cd dist

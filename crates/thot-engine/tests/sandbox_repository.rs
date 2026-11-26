@@ -102,6 +102,60 @@ fn run_package_persists_input_evidence_and_verifies_revision() {
 }
 
 #[test]
+fn directory_deliverable_is_persisted_as_a_safe_read_only_tree() {
+    let scratch = Scratch::new();
+    let source = scratch.0.join("student1");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("sum.sh"), b"echo 42\n").unwrap();
+    let digest = format!(
+        "{:x}",
+        sha2::Sha256::digest([b"sum.sh\0".as_slice(), b"echo 42\n"].concat())
+    );
+    let mut repository =
+        ProjectRunRepository::begin(&scratch.0, "run-dir", "project-1", &snapshot_files()).unwrap();
+    repository.start().unwrap();
+    let persisted = repository
+        .persist_input(
+            "student-1",
+            &source,
+            DeliveryProvenance {
+                source_kind: "local".into(),
+                selector: "student1".into(),
+                provider_id: None,
+                revision: None,
+                name: "student1".into(),
+                mime_type: None,
+                source_checksum: None,
+                source_checksum_algorithm: None,
+                size_bytes: 8,
+                created_at: None,
+                modified_at: None,
+                acquired_at: "2026-11-25T00:00:00Z".into(),
+                sha256: digest,
+            },
+        )
+        .unwrap();
+    let persisted = repository.run_dir().join(persisted);
+    assert_eq!(fs::read(persisted.join("sum.sh")).unwrap(), b"echo 42\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&persisted).unwrap().permissions().mode() & 0o222,
+            0
+        );
+        assert_eq!(
+            fs::metadata(persisted.join("sum.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o222,
+            0
+        );
+    }
+}
+
+#[test]
 fn repository_rejects_a_second_writer_and_marks_unfinished_run_interrupted() {
     let scratch = Scratch::new();
     let first =

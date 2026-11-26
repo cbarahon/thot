@@ -88,7 +88,7 @@ fn manifest_parser_rejects_unversioned_unknown_fields() {
 }
 
 #[test]
-fn schema_v3_accepts_independent_evaluation_items_and_v2_stays_legacy() {
+fn schemas_v3_and_v4_accept_items_and_v2_stays_legacy() {
     use thot_core::sandbox_project::{SandboxCriterion, SandboxEvaluationItem, SandboxProject};
 
     let source = include_str!("../../../examples/kvm-alpine-poc/configuration.thot.yaml");
@@ -118,6 +118,13 @@ fn schema_v3_accepts_independent_evaluation_items_and_v2_stays_legacy() {
             }],
         },
     ];
+    project.validate().unwrap();
+
+    // v4 is initially an explicitly versioned compatibility envelope over
+    // the same normalized assessment representation. This fixture ensures
+    // v2/v3 behavior remains available while the concise authoring adapter is
+    // built without changing rubric semantics.
+    project.schema_version = "thot.dev/v4".into();
     project.validate().unwrap();
 
     project.sandbox_platforms[0].evaluation.items[1].id = "system-layout".into();

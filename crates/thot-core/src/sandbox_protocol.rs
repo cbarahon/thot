@@ -21,6 +21,7 @@ pub enum AgentRequest {
     StageFileChunk(StageFileChunkRequest),
     InstallPackage(InstallPackageRequest),
     ExecuteTask(ExecuteTaskRequest),
+    ExecuteTaskWithProgress(ExecuteTaskRequest),
     Sync(SyncRequest),
     Acknowledge(AcknowledgeRequest),
 }
@@ -31,6 +32,10 @@ pub enum AgentResponse {
     InstallPackageResult(InstallPackageResult),
     StageFileChunkResult(StageFileChunkResult),
     ExecuteTaskResult(ExecuteTaskResult),
+    TaskProgress {
+        task_id: String,
+        elapsed_seconds: u64,
+    },
     SyncResult(SyncResult),
     AcknowledgeResult(AcknowledgeResult),
     ProtocolError(ProtocolErrorResponse),

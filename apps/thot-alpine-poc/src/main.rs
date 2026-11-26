@@ -1,3 +1,4 @@
+pub mod settings;
 use sha2::{Digest, Sha256, Sha512};
 use std::{
     fs,
@@ -8,20 +9,74 @@ use std::{
 };
 use thot_core::{sandbox_contracts::*, sandbox_project::*, sandbox_protocol::*};
 use thot_delivery::{DeliveryInfo, build_agent, default_student_input_root};
-type Config = SandboxProject;
+thread_local! {
+    static TEMP_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static HOST_TIMEOUT: std::cell::Cell<u32> = const { std::cell::Cell::new(300) };
+}
+fn host_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new("timeout");
+    cmd.arg("--kill-after=5s")
+        .arg(HOST_TIMEOUT.get().to_string())
+        .arg(program);
+    if std::env::var_os("LIBVIRT_DEFAULT_URI").is_none() {
+        cmd.env("LIBVIRT_DEFAULT_URI", "qemu:///system");
+    }
+    TEMP_DIR.with(|v| {
+        if let Some(p) = v.borrow().as_ref() {
+            cmd.env("TMPDIR", p);
+        }
+    });
+    cmd
+}
+fn progress(message: impl std::fmt::Display) {
+    eprintln!(
+        "{}  {}",
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        message
+    );
+}
 
 pub fn run_project(
     project_path: &std::path::Path,
     agent_path: &std::path::Path,
 ) -> Result<(), String> {
-    let project = project_path.canonicalize().map_err(|e| e.to_string())?;
-    let config_path = project.join("configuration.thot.yaml");
-    let config_bytes = fs::read(&config_path).map_err(|e| e.to_string())?;
-    if config_bytes.len() > 1024 * 1024 {
-        return Err("configuration.thot.yaml exceeds the 1 MiB limit".into());
+    run_with_id(project_path, agent_path, uuid::Uuid::new_v4(), None)
+}
+pub fn run_with_id(
+    project_path: &std::path::Path,
+    agent_path: &std::path::Path,
+    id: uuid::Uuid,
+    delivery: Option<&str>,
+) -> Result<(), String> {
+    let mut repository = None;
+    let result = execute_project(project_path, agent_path, id, delivery, &mut repository);
+    if let Err(error) = &result
+        && let Some(mut repo) = repository
+    {
+        repo.mark_failed(error)?;
     }
-    let config: Config = serde_yaml::from_slice(&config_bytes).map_err(|e| e.to_string())?;
-    config.validate()?;
+    result
+}
+
+fn execute_project(
+    project_path: &std::path::Path,
+    agent_path: &std::path::Path,
+    id: uuid::Uuid,
+    delivery: Option<&str>,
+    repository: &mut Option<thot_engine::sandbox_repository::ProjectRunRepository>,
+) -> Result<(), String> {
+    let project = project_path.canonicalize().map_err(|e| e.to_string())?;
+    progress("Loading project and checking submission inventory");
+    let (mut config, runtime) = settings::load(&project)?;
+    if let Some(path) = delivery {
+        config.delivery_agent = Some(DeliveryAgentConfig::Local {
+            path: Some(path.to_owned()),
+        });
+    }
+    HOST_TIMEOUT.set(runtime.host_command_timeout_seconds);
+    let config_bytes = serde_yaml::to_string(&config)
+        .map_err(|e| e.to_string())?
+        .into_bytes();
     let p = &config.sandbox_platforms[0];
     let preparation_scripts = resolve_preparation_scripts(&project, p)?;
     let test_modules = resolve_test_modules(&project, p)?;
@@ -46,11 +101,13 @@ pub fn run_project(
             let _ = project_input(&project, path)?;
         }
     }
-    preflight_host(p.limits.memory_mib)?;
+    progress("Checking KVM host tools, memory and libvirt network");
+    preflight_host(p.lifecycle.template_vm.memory_mib)?;
     let agent = agent_path
         .canonicalize()
         .map_err(|error| format!("guest agent binary unavailable: {error}"))?;
-    let agent_version = Command::new(&agent)
+    progress("Checking the installed guest agent");
+    let agent_version = host_command(&agent)
         .arg("--version")
         .output()
         .map_err(|error| format!("cannot execute the Alpine guest agent: {error}"))?;
@@ -63,9 +120,13 @@ pub fn run_project(
             p.lifecycle.agent.version
         ));
     }
-    let evaluation_id = uuid::Uuid::new_v4().to_string();
+    let evaluation_id = id.to_string();
     let snapshot_files = vec![
-        ("configuration.thot.yaml".to_owned(), config_bytes.clone()),
+        ("configuration.thot.yaml".to_owned(), config_bytes),
+        (
+            "authored-configuration.yaml".to_owned(),
+            read_project_file(&project, "configuration.thot.yaml")?,
+        ),
         (
             config.students_file.clone(),
             read_project_file(&project, &config.students_file)?,
@@ -75,19 +136,28 @@ pub fn run_project(
             read_project_file(&project, &config.assignments_file)?,
         ),
     ];
-    let mut run_repository = thot_engine::sandbox_repository::ProjectRunRepository::begin(
-        &project,
-        &evaluation_id,
-        &config.project_id,
-        &snapshot_files,
-    )?;
+    let run_repository = repository.insert(
+        thot_engine::sandbox_repository::ProjectRunRepository::begin(
+            &project,
+            &evaluation_id,
+            &config.project_id,
+            &snapshot_files,
+        )?,
+    );
     let result_dir = run_repository.run_dir().to_path_buf();
     run_repository.start()?;
     for module in test_modules.values() {
         let manifest_artifact =
             run_repository.put_artifact(&module.manifest_bytes, "application/json", true)?;
-        let package_artifact =
-            run_repository.put_artifact(&module.package_bytes, "text/x-shellscript", true)?;
+        let package_artifact = run_repository.put_artifact(
+            &module.package_bytes,
+            if module.guest_path.ends_with(".sh") {
+                "text/x-shellscript"
+            } else {
+                "application/octet-stream"
+            },
+            true,
+        )?;
         run_repository.append_event(
             "test_module.pinned",
             serde_json::json!({
@@ -100,27 +170,31 @@ pub fn run_project(
             }),
         )?;
     }
-    let root = std::env::var_os("THOT_KVM_ALPINE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/libvirt/images/thot-alpine-poc"));
-    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    if let Some(temp_dir) = std::env::var_os("TMPDIR") {
-        let temp_dir = PathBuf::from(temp_dir);
-        fs::create_dir_all(&temp_dir)
-            .map_err(|error| format!("cannot create TMPDIR `{}`: {error}", temp_dir.display()))?;
-        if !temp_dir.is_dir() {
-            return Err(format!(
-                "TMPDIR `{}` is not a directory",
-                temp_dir.display()
-            ));
-        }
+    let root = runtime.storage_root;
+    fs::create_dir_all(&root)
+        .map_err(|e| format!("cannot create storage {}: {e}", root.display()))?;
+    let temp_dir = runtime.temp_dir.unwrap_or_else(|| root.join("tmp"));
+    fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("cannot create {}: {e}", temp_dir.display()))?;
+    TEMP_DIR.with(|v| *v.borrow_mut() = Some(temp_dir.clone()));
+    let _lock = RunLock::acquire(root.join(".thot-alpine.lock"))?;
+    let removed = clean_stale_delivery_temps(&temp_dir)?;
+    if removed > 0 {
+        let unit = if removed == 1 {
+            "directory"
+        } else {
+            "directories"
+        };
+        progress(format!(
+            "Removed {removed} abandoned delivery staging {unit}"
+        ));
     }
     check_disk_capacity(&root)?;
-    let _lock = RunLock::acquire(root.join(".thot-alpine.lock"))?;
     let image = root.join(format!(
         "alpine-{}.qcow2",
         p.lifecycle.template_image.release
     ));
+    progress("Verifying Alpine image and preparing the project VM");
     ensure_image(
         &image,
         &p.lifecycle.template_image.image_url,
@@ -317,6 +391,8 @@ pub fn run_project(
             &p.lifecycle.template_vm.memory_mib.to_string(),
             "--vcpus",
             &p.lifecycle.template_vm.vcpu.to_string(),
+            "--cpu",
+            "host-passthrough",
             "--disk",
             baseline_disk.to_str().unwrap(),
             "--disk",
@@ -350,7 +426,7 @@ pub fn run_project(
         atomic_write(&baseline_manifest, desired_manifest.as_bytes())?;
     }
     persist_preparation_record(
-        &mut run_repository,
+        run_repository,
         &baseline_disk,
         &p.lifecycle.preparation.packages,
         &preparation_scripts,
@@ -369,12 +445,20 @@ pub fn run_project(
         }),
     )?;
     let mut domain_names = std::collections::HashSet::new();
-    for (id, selector) in roster {
+    let total = roster.len();
+    for (index, (id, selector)) in roster.into_iter().enumerate() {
+        progress(format!(
+            "Student {}/{} ({id}): acquiring deliverable",
+            index + 1,
+            total
+        ));
         let intake = TemporaryDirectory::create()?;
         let acquired = match &selector {
-            DeliverySelector::Name(name) => delivery_agent.get(name, &intake.0.join("submission")),
+            DeliverySelector::Name(name) => {
+                delivery_agent.get_for_execution(name, &intake.0.join("submission"))
+            }
             DeliverySelector::ProviderId(provider_id) => {
-                delivery_agent.get_by_id(provider_id, &intake.0.join("submission"))
+                delivery_agent.get_by_id_for_execution(provider_id, &intake.0.join("submission"))
             }
         }
         .map_err(|error| error.to_string())?;
@@ -402,7 +486,10 @@ pub fn run_project(
             acquired_at: acquired_at.clone(),
             sha256: acquired.sha256.clone(),
         };
-        let persisted_input = run_repository.persist_input(&id, &acquired.path, provenance)?;
+        progress(format!(
+            "{id}: verified staged delivery ({} bytes, sha256 {})",
+            acquired.info.size_bytes, acquired.sha256
+        ));
         let domain = format!(
             "{}-{}",
             p.lifecycle.student_clone.name_prefix,
@@ -496,9 +583,11 @@ pub fn run_project(
             "--osinfo",
             "generic",
             "--memory",
-            &p.limits.memory_mib.to_string(),
+            &p.lifecycle.template_vm.memory_mib.to_string(),
             "--vcpus",
-            &p.limits.vcpu.to_string(),
+            &p.lifecycle.template_vm.vcpu.to_string(),
+            "--cpu",
+            "host-passthrough",
             "--disk",
             disk.to_str().unwrap(),
             "--disk",
@@ -511,7 +600,10 @@ pub fn run_project(
             "none",
             "--noautoconsole",
         ])?;
-        let (mut stream, peer) = accept_vsock(&listener)?;
+        progress(format!("{id}: waiting for the Alpine guest agent"));
+        socket_deadline(&listener, runtime.guest_boot_timeout_seconds)?;
+        let (mut stream, peer) = accept_vsock(&listener, runtime.guest_boot_timeout_seconds)?;
+        socket_deadline(&stream, runtime.agent_idle_seconds)?;
         if peer == libc::VMADDR_CID_ANY {
             return Err("unexpected wildcard VSOCK peer CID".into());
         }
@@ -535,6 +627,12 @@ pub fn run_project(
             }
             _ => return Err("agent handshake rejected".into()),
         };
+        if !guest_capabilities
+            .iter()
+            .any(|c| c.id == "task.progress" && c.version == 1)
+        {
+            return Err("the Alpine agent lacks task heartbeats; install the guest agent shipped with this CLI".into());
+        }
         for module in test_modules.values() {
             for required in &module.reference.capabilities {
                 if !guest_capabilities.iter().any(|available| {
@@ -553,6 +651,7 @@ pub fn run_project(
                 .max_bytes
                 .saturating_add(32 * 1024 * 1024),
             config.delivery_limits.max_files.saturating_add(100),
+            runtime.transfer_timeout_seconds,
         );
         for input in &p.inputs {
             let source_path = if input.role == "student-deliverable" {
@@ -594,13 +693,19 @@ pub fn run_project(
                 {
                     return Err("submission, instructor inputs and module packages exceed the configured staging budget".into());
                 }
-                stage_path(&mut stream, &module.source_path, &module.guest_path)?;
+                stage_path(
+                    &mut stream,
+                    &module.source_path,
+                    &module.guest_path,
+                    staging_budget.deadline,
+                )?;
             }
         }
         let mut test_results: Vec<(String, bool, serde_json::Value)> = Vec::new();
         let mut test_json = Vec::new();
         let mut infrastructure_pending = false;
         for test in &p.tests {
+            progress(format!("{id}: checking {}", test.id));
             let blocked = test.requires.iter().any(|dependency| {
                 !test_results
                     .iter()
@@ -650,13 +755,37 @@ pub fn run_project(
                 is_preparation: false,
                 module: module_launch,
             };
-            write_frame(&mut stream, &AgentRequest::ExecuteTask(request.clone()))
-                .map_err(|e| e.to_string())?;
-            let response: AgentResponse = read_frame(&mut stream).map_err(|e| e.to_string())?;
-            let result = match response {
-                AgentResponse::ExecuteTaskResult(r) => r,
-                _ => return Err("unexpected agent response".into()),
+            let deadline = Instant::now() + Duration::from_secs(u64::from(request.timeout) + 15);
+            write_frame(
+                &mut stream,
+                &AgentRequest::ExecuteTaskWithProgress(request.clone()),
+            )
+            .map_err(|e| e.to_string())?;
+            let result = loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(format!("{}: guest exceeded task deadline", test.id));
+                }
+                let wait = remaining.as_secs().max(1) as u32;
+                socket_deadline(&stream, wait.min(runtime.agent_idle_seconds))?;
+                match read_frame(&mut stream)
+                    .map_err(|e| format!("{}: lost contact with Alpine agent: {e}", test.id))?
+                {
+                    AgentResponse::TaskProgress {
+                        task_id,
+                        elapsed_seconds,
+                    } if task_id == request.task_id => {
+                        check_disk_capacity(&root)?;
+                        progress(format!(
+                            "{id}: {} running in Alpine ({elapsed_seconds}s)",
+                            test.id
+                        ));
+                    }
+                    AgentResponse::ExecuteTaskResult(r) => break r,
+                    _ => return Err("unexpected guest task response".into()),
+                }
             };
+            socket_deadline(&stream, runtime.agent_idle_seconds)?;
             if result.task_id != request.task_id
                 || result.run_id != request.run_id
                 || result.student_unit_id != request.student_unit_id
@@ -688,6 +817,17 @@ pub fn run_project(
             } else {
                 "failed"
             };
+            progress(format!(
+                "{id}: {} {assessment} (exit {:?}, {} ms)",
+                test.id, result.exit_code, result.elapsed_ms
+            ));
+            if !passed {
+                eprintln!(
+                    "  diagnostic: {:?}   stderr: {:?}",
+                    result.diagnostics.chars().take(512).collect::<String>(),
+                    result.stderr.chars().take(1024).collect::<String>()
+                );
+            }
             let stdout_artifact = run_repository.put_artifact(
                 result.stdout.as_bytes(),
                 "text/plain; charset=utf-8",
@@ -702,6 +842,12 @@ pub fn run_project(
             test_json.push(serde_json::json!({"test_id":test.id,"result":v}));
             test_results.push((test.id.clone(), passed, v));
         }
+        // The guest has its own copy by this point. Release the acquired
+        // staging file before grading/report work; the enclosing temporary
+        // directory remains a fallback cleanup if an earlier step failed.
+        delivery_agent
+            .release(&acquired)
+            .map_err(|error| format!("could not remove staged deliverable for {id}: {error}"))?;
         let checks = p
             .evaluation
             .checks
@@ -758,10 +904,11 @@ pub fn run_project(
             let item_results = evaluated.iter().map(|item| serde_json::json!({"id":item.id,"title":item.title,"status":match item.status {SandboxItemStatus::Complete => "complete", SandboxItemStatus::Pending => "pending"},"grade":item.grade,"scale":item.scale,"criteria":item.criteria.iter().map(|criterion| serde_json::json!({"check":criterion.check,"status":if criterion.pending{"pending"}else{"complete"},"points":if criterion.pending{None}else{Some(criterion.earned_points)},"maximum":criterion.maximum_points})).collect::<Vec<_>>()})).collect::<Vec<_>>();
             (grade, grade_scale, earned, item_results, grade_pending)
         };
-        let provenance = serde_json::json!({"source_kind":source_kind,"selector":match selector { DeliverySelector::Name(name) => name, DeliverySelector::ProviderId(provider_id) => provider_id },"provider_id":acquired.info.provider_id,"revision":acquired.info.revision,"name":acquired.info.name,"mime_type":acquired.info.mime_type,"source_checksum":acquired.info.source_checksum,"source_checksum_algorithm":acquired.info.source_checksum_algorithm,"size_bytes":acquired.info.size_bytes,"created_at":acquired.info.created_at,"modified_at":acquired.info.modified_at,"acquired_at":acquired_at,"sha256":acquired.sha256,"archived_input":persisted_input});
+        let provenance = serde_json::to_value(provenance).map_err(|error| error.to_string())?;
         let result_path = result_dir.join(format!("{id}.json"));
         let seed_path = root.join(format!("seed-{id}.iso"));
         let work_path = root.join(format!("seed-{id}"));
+        progress(format!("{id}: removing the disposable student VM"));
         drop(cleanup);
         let cleanup_clean = matches!(disk_in_use(&disk), Ok(false))
             && !disk.exists()
@@ -790,7 +937,6 @@ pub fn run_project(
             change_owner(&result_path, uid, gid)?;
         }
         if !cleanup_clean {
-            run_repository.mark_failed("student_cleanup_failed")?;
             return Err(format!(
                 "cleanup failed for `{id}`; run was left incomplete and no later delivery was started"
             ));
@@ -809,7 +955,14 @@ pub fn run_project(
 }
 
 fn run(args: &[&str]) -> Result<String, String> {
-    let output = Command::new(args[0])
+    if !matches!(args, ["virsh", "list" | "domstate", ..]) {
+        progress(format!(
+            "Host operation: {} {}",
+            args[0],
+            args.get(1).unwrap_or(&"")
+        ));
+    }
+    let output = host_command(args[0])
         .args(&args[1..])
         // Libvirt's human-readable status labels are localized. Preflight
         // parses `virsh net-info`, so force stable English output regardless
@@ -836,12 +989,8 @@ fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn preflight_host(guest_memory_mib: u32) -> Result<(), String> {
-    if unsafe { libc::geteuid() } != 0 {
-        return Err(
-            "run `thot sandbox run` with sudo so libvirt can create isolated KVM guests".into(),
-        );
-    }
     for tool in [
+        "timeout",
         "curl",
         "qemu-img",
         "virt-install",
@@ -928,7 +1077,7 @@ fn ensure_image(path: &std::path::Path, url: &str, expected_sha512: &str) -> Res
         ));
     }
     let temporary = path.with_extension(format!("download-{}", uuid::Uuid::new_v4()));
-    let output = Command::new("curl")
+    let output = host_command("curl")
         .args([
             "--fail",
             "--location",
@@ -976,7 +1125,7 @@ fn sha512_file(path: &std::path::Path) -> Result<String, String> {
 fn disk_in_use(path: &std::path::Path) -> Result<bool, String> {
     let domains = run(&["virsh", "list", "--all", "--name"])?;
     for domain in domains.lines().filter(|domain| !domain.trim().is_empty()) {
-        let output = Command::new("virsh")
+        let output = host_command("virsh")
             .args(["domblklist", domain, "--details"])
             .output()
             .map_err(|error| format!("cannot inspect VM `{domain}` disk attachments: {error}"))?;
@@ -999,7 +1148,15 @@ fn wait_for_domain_shutdown(
     timeout_seconds: u32,
 ) -> Result<(), String> {
     let started = Instant::now();
+    let mut last_report = Instant::now();
     loop {
+        if last_report.elapsed().as_secs() >= 15 {
+            progress(format!(
+                "Preparing {name} ({}s of {timeout_seconds}s)",
+                started.elapsed().as_secs()
+            ));
+            last_report = Instant::now();
+        }
         let domains = run(&["virsh", "list", "--all", "--name"])?;
         if !domains.lines().any(|domain| domain.trim() == name) {
             return Ok(());
@@ -1065,8 +1222,8 @@ struct OwnedDomainCleanup {
 impl Drop for OwnedDomainCleanup {
     fn drop(&mut self) {
         if disk_in_use(&self.disk).unwrap_or(false) {
-            let _ = Command::new("virsh").args(["destroy", &self.name]).status();
-            let _ = Command::new("virsh")
+            let _ = host_command("virsh").args(["destroy", &self.name]).status();
+            let _ = host_command("virsh")
                 .args(["undefine", &self.name])
                 .status();
         }
@@ -1228,7 +1385,7 @@ fn read_prepared_guest_file(
     baseline_disk: &std::path::Path,
     guest_path: &str,
 ) -> Result<Vec<u8>, String> {
-    let output = Command::new("guestfish")
+    let output = host_command("guestfish")
         .args(["--ro", "-a"])
         .arg(baseline_disk)
         .args(["-i", "cat", guest_path])
@@ -1269,7 +1426,22 @@ fn resolve_test_modules(
         let source_path = project_input(project, &configured.package)?;
         let package_bytes =
             read_project_file_bounded(project, &configured.package, 32 * 1024 * 1024)?;
-        if !package_bytes.starts_with(b"#!/bin/sh\n") {
+        let native = configured.runtime == "linux-x86_64-elf-v1";
+        let declares_native = manifest
+            .capabilities
+            .iter()
+            .any(|c| c.id == "module.linux-x86_64-elf" && c.version == 1);
+        if native != declares_native
+            || (native
+                && (!package_bytes.starts_with(b"\x7fELF\x02\x01")
+                    || package_bytes.get(18..20) != Some(&[62, 0])))
+        {
+            return Err(format!(
+                "test {} requires an x86_64 ELF binary and matching manifest capability",
+                test.id
+            ));
+        }
+        if !native && !package_bytes.starts_with(b"#!/bin/sh\n") {
             return Err(format!(
                 "test `{}` module must use the portable `#!/bin/sh` entrypoint for posix-shell-script-v1",
                 test.id
@@ -1285,8 +1457,9 @@ fn resolve_test_modules(
             })?;
         let reference = manifest.reference().map_err(|error| error.to_string())?;
         let guest_path = format!(
-            "/work/.thot/modules/{}/entrypoint.sh",
-            reference.package_sha256
+            "/work/.thot/modules/{}/{}",
+            reference.package_sha256,
+            if native { "module" } else { "entrypoint.sh" }
         );
         let module = ResolvedTestModule {
             reference,
@@ -1541,12 +1714,63 @@ fn change_owner(path: &std::path::Path, uid: u32, gid: u32) -> Result<(), String
     Ok(())
 }
 
+fn clean_stale_delivery_temps(temp_root: &std::path::Path) -> Result<usize, String> {
+    let entries = fs::read_dir(temp_root).map_err(|error| error.to_string())?;
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(id) = name.strip_prefix("thot-delivery-") else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(id).is_err() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if !metadata.file_type().is_dir() {
+            continue;
+        }
+        let owner = match fs::read_to_string(entry.path().join(".thot-owner")) {
+            Ok(owner) => owner,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => continue,
+        };
+        let Ok(pid) = owner.trim().parse::<i32>() else {
+            continue;
+        };
+        if pid <= 0 || process_is_alive(pid) {
+            continue;
+        }
+        fs::remove_dir_all(entry.path()).map_err(|error| {
+            format!(
+                "cannot remove abandoned delivery directory {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+fn process_is_alive(pid: i32) -> bool {
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
 struct TemporaryDirectory(PathBuf);
 
 impl TemporaryDirectory {
     fn create() -> Result<Self, String> {
-        let path = std::env::temp_dir().join(format!("thot-delivery-{}", uuid::Uuid::new_v4()));
+        let path = TEMP_DIR
+            .with(|v| v.borrow().clone())
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("thot-delivery-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&path).map_err(|error| error.to_string())?;
+        fs::write(path.join(".thot-owner"), std::process::id().to_string())
+            .map_err(|error| error.to_string())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1574,10 +1798,10 @@ impl Drop for StudentCleanup {
         match disk_in_use(&self.disk) {
             Ok(false) => {}
             Ok(true) => {
-                let _ = Command::new("virsh")
+                let _ = host_command("virsh")
                     .args(["destroy", &self.domain])
                     .status();
-                let _ = Command::new("virsh")
+                let _ = host_command("virsh")
                     .args(["undefine", &self.domain, "--nvram"])
                     .status();
                 match disk_in_use(&self.disk) {
@@ -1630,19 +1854,6 @@ fn vsock_listener(port: u16) -> Result<std::fs::File, String> {
         svm_cid: libc::VMADDR_CID_ANY,
         svm_zero: [0; 4],
     };
-    let timeout = libc::timeval {
-        tv_sec: 180,
-        tv_usec: 0,
-    };
-    let _ = unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_RCVTIMEO,
-            &timeout as *const _ as *const libc::c_void,
-            std::mem::size_of_val(&timeout) as libc::socklen_t,
-        )
-    };
     let ok = unsafe {
         libc::bind(
             fd,
@@ -1659,25 +1870,86 @@ fn vsock_listener(port: u16) -> Result<std::fs::File, String> {
     Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
-fn accept_vsock(listener: &std::fs::File) -> Result<(std::fs::File, u32), String> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of_val(&addr) as libc::socklen_t;
-    let fd = unsafe {
-        libc::accept4(
-            listener.as_raw_fd(),
-            &mut addr as *mut _ as *mut libc::sockaddr,
-            &mut len,
-            libc::SOCK_CLOEXEC,
-        )
+fn socket_deadline(socket: &fs::File, seconds: u32) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    let t = libc::timeval {
+        tv_sec: seconds.into(),
+        tv_usec: 0,
     };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error().to_string());
+    for option in [libc::SO_RCVTIMEO, libc::SO_SNDTIMEO] {
+        if unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                option,
+                (&t as *const libc::timeval).cast(),
+                std::mem::size_of_val(&t) as _,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
     }
-    Ok((unsafe { std::fs::File::from_raw_fd(fd) }, addr.svm_cid))
+    Ok(())
+}
+fn accept_vsock(
+    listener: &std::fs::File,
+    timeout_seconds: u32,
+) -> Result<(std::fs::File, u32), String> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let deadline = Instant::now() + Duration::from_secs(u64::from(timeout_seconds));
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "guest agent did not connect over VSOCK within {timeout_seconds} seconds"
+            ));
+        }
+        let mut poll_fd = libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let millis = remaining.as_millis().min(i32::MAX as u128).max(1) as i32;
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, millis) };
+        if ready == 0 {
+            return Err(format!(
+                "guest agent did not connect over VSOCK within {timeout_seconds} seconds"
+            ));
+        }
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(format!("cannot wait for guest VSOCK connection: {error}"));
+        }
+        let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of_val(&addr) as libc::socklen_t;
+        let fd = unsafe {
+            libc::accept4(
+                listener.as_raw_fd(),
+                &mut addr as *mut _ as *mut libc::sockaddr,
+                &mut len,
+                libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd >= 0 {
+            return Ok((unsafe { std::fs::File::from_raw_fd(fd) }, addr.svm_cid));
+        }
+        let error = std::io::Error::last_os_error();
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        ) {
+            continue;
+        }
+        return Err(format!("cannot accept guest VSOCK connection: {error}"));
+    }
 }
 
 struct StagingBudget {
+    deadline: Instant,
     bytes: u64,
     files: usize,
     max_bytes: u64,
@@ -1685,8 +1957,9 @@ struct StagingBudget {
 }
 
 impl StagingBudget {
-    fn new(max_bytes: u64, max_files: usize) -> Self {
+    fn new(max_bytes: u64, max_files: usize, seconds: u32) -> Self {
         Self {
+            deadline: Instant::now() + Duration::from_secs(u64::from(seconds)),
             bytes: 0,
             files: 0,
             max_bytes,
@@ -1714,7 +1987,7 @@ fn stage_input(
                 budget.max_bytes, budget.max_files
             ));
         }
-        return stage_path(stream, source, destination);
+        return stage_path(stream, source, destination, budget.deadline);
     }
     if !metadata.is_dir() {
         return Err(format!("unsupported project input `{}`", source.display()));
@@ -1739,6 +2012,7 @@ fn stage_path(
     stream: &mut std::fs::File,
     source: &std::path::Path,
     destination: &str,
+    deadline: Instant,
 ) -> Result<(), String> {
     use std::io::Read;
     const CHUNK_BYTES: usize = 64 * 1024;
@@ -1750,10 +2024,16 @@ fn stage_path(
         ));
     }
     let file_size = metadata.len();
+    progress(format!("Staging {destination} ({file_size} bytes)"));
     let mut input = open_staging_source(source)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; CHUNK_BYTES];
     loop {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "input transfer deadline exceeded while staging {destination}"
+            ));
+        }
         let count = input.read(&mut buffer).map_err(|error| error.to_string())?;
         if count == 0 {
             break;
@@ -1763,9 +2043,15 @@ fn stage_path(
     let digest = format!("{:x}", hasher.finalize());
     let mut input = open_staging_source(source)?;
     let transfer_id = uuid::Uuid::new_v4().to_string();
+    let mut last_update = Instant::now();
     let mut chunk_index = 0u64;
     let mut sent = 0u64;
     loop {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "input transfer deadline exceeded while staging {destination}"
+            ));
+        }
         let count = input.read(&mut buffer).map_err(|error| error.to_string())?;
         if count == 0 && (file_size != 0 || chunk_index > 0) {
             break;
@@ -1790,6 +2076,12 @@ fn stage_path(
                     && r.complete == final_chunk
                     && (!final_chunk || r.sha256.as_deref() == Some(digest.as_str())) => {}
             _ => return Err("unexpected staging response".into()),
+        }
+        if last_update.elapsed() >= Duration::from_secs(10) || final_chunk {
+            progress(format!(
+                "{destination}: guest acknowledged {sent} of {file_size} bytes"
+            ));
+            last_update = Instant::now();
         }
         chunk_index += 1;
         if final_chunk {
@@ -1870,6 +2162,27 @@ mod tests {
         }
         let _ = fs::remove_file(outside);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_delivery_cleanup_removes_only_dead_owned_directories() {
+        let root = std::env::temp_dir().join(format!("thot-temp-cleanup-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let stale = root.join(format!("thot-delivery-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&stale).unwrap();
+        fs::write(stale.join(".thot-owner"), i32::MAX.to_string()).unwrap();
+        fs::write(stale.join("submission"), b"temporary").unwrap();
+        let active = root.join(format!("thot-delivery-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&active).unwrap();
+        fs::write(active.join(".thot-owner"), std::process::id().to_string()).unwrap();
+        let unmarked = root.join(format!("thot-delivery-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&unmarked).unwrap();
+
+        assert_eq!(clean_stale_delivery_temps(&root).unwrap(), 1);
+        assert!(!stale.exists());
+        assert!(active.exists());
+        assert!(unmarked.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

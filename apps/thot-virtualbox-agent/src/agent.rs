@@ -32,6 +32,15 @@ pub struct TaskEntry {
     status: AgentTaskStatus,
 }
 
+impl TaskEntry {
+    pub fn active(&self) -> bool {
+        matches!(
+            self.status.state.as_str(),
+            "queued" | "running" | "cancellation_requested"
+        )
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,

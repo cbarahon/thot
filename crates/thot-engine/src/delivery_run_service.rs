@@ -919,6 +919,11 @@ impl DeliveryRunService {
         }))
     }
 
+    pub async fn active_run_exists(&self) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM vm_activity_runs WHERE status IN ('queued','running','cancelling'))")
+            .fetch_one(&self.pool).await
+    }
+
     pub async fn list_runs(&self) -> Result<Vec<RunRecord>, ServiceError> {
         let rows = sqlx::query_as::<_, (String,String,String,String,String,String,Option<String>)>(
             "SELECT run_id, project_id, created_at, delivery_directory, status, expedient_ids, error FROM vm_activity_runs ORDER BY created_at DESC, run_id DESC",

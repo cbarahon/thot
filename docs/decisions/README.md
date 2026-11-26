@@ -18,3 +18,4 @@ Each record states its own decision status and implementation limits.
 - [ADR-0014: Portable verified sandbox run archives](0014-portable-sandbox-run-archives.md)
 - [ADR-0015: Portable module platform-failure exit code](0015-module-platform-failure-exit-code.md)
 - [ADR-0016: Guest-local libvirt authority for pinned modules](0016-guest-local-libvirt-capability.md)
+- [ADR-0017: Unified local evaluations with on-demand supervision](0017-local-evaluation-cli.md)

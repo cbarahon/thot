@@ -9,6 +9,7 @@ name = "thot-virtualbox-agent"
 path = "src/main.rs"
 
 [dependencies]
+thot-service = { path = "../../crates/thot-service" }
 axum.workspace = true
 tokio = { workspace = true, features = ["process", "time", "fs"] }
 serde.workspace = true

@@ -2,7 +2,8 @@
 
 This portable Thot module implements four sequential actions for an OVA:
 
-1. `import_ova <name> <path>` validates/extracts the OVA, verifies its optional
+1. `import_ova <name> <path> [--max-vcpus N] [--max-memory-mib N]`
+   validates/extracts the OVA, verifies its optional
    `.mf` checksums, interprets its OVF, converts supported VDI/VMDK disks to
    qcow2, and defines a libvirt domain.
 2. `start_vm <name>` starts that owned domain.
@@ -21,11 +22,13 @@ Other module launches receive no supplementary groups. The Alpine VM never
 mounts or forwards the professor host's libvirt socket. Student code is never
 run by this module.
 
-The import maps OVF CPU count, memory, disk capacity, and EFI/BIOS choice. EFI
+The import maps OVF disk capacity and EFI/BIOS choice. By default it uses the
+OVF CPU/RAM values; the optional `--max-vcpus` and `--max-memory-mib` settings
+clamp higher requests to professor-selected limits and record both requested
+and applied values. EFI
 uses fresh OVMF variables; the VirtualBox NVRAM file is retained only as
 provenance and is not imported. All network interfaces are intentionally
-omitted to keep the student VM offline. The domain uses QEMU TCG emulation
-because this test host does not expose nested `/dev/kvm` to Alpine.
+omitted to keep the student VM offline. The domain requires KVM acceleration inside Alpine. The preparation phase loads the CPU-specific KVM module and configures access for QEMU; missing nested KVM is an infrastructure failure.
 
 The module reserves exit code 75 for platform/infrastructure failures such as
 insufficient sandbox storage or unavailable libvirt. The Alpine agent maps
@@ -36,7 +39,9 @@ expected exit-code contract.
 
 This first implementation is intentionally conservative: one OVF descriptor,
 up to 64 regular tar members, VDI or VMDK disks, up to 128 GiB combined virtual
-disk capacity, and bounded OVA/extracted sizes. It rejects unsafe archive paths,
+disk capacity, and bounded OVA/extracted sizes. After all disks have been
+converted successfully, it deletes the staged OVA and extracted source files
+before the VM is started. It rejects unsafe archive paths,
 links, duplicate members, DTD/entity declarations, unsupported disk formats,
 and insufficient free guest storage before extraction/conversion. The current
 sample's 60 GiB virtual disk needs more storage than the 59 GiB test host can

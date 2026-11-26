@@ -1,5 +1,4 @@
-use std::{error::Error, fs, path::PathBuf};
-use thot_core::sandbox_project::SandboxProject;
+use std::{error::Error, path::PathBuf};
 use thot_delivery::{build_agent, default_student_input_root};
 
 pub fn handle(args: &[String]) -> Result<(), Box<dyn Error>> {
@@ -57,12 +56,7 @@ pub fn handle(args: &[String]) -> Result<(), Box<dyn Error>> {
         ),
     };
     let project_dir = project_dir.canonicalize()?;
-    let bytes = fs::read(project_dir.join("configuration.thot.yaml"))?;
-    if bytes.len() > 1024 * 1024 {
-        return Err("configuration.thot.yaml exceeds the 1 MiB limit".into());
-    }
-    let config: SandboxProject = serde_yaml::from_slice(&bytes)?;
-    config.validate()?;
+    let (config, _) = thot_kvm_alpine::settings::load(&project_dir)?;
     let input_root = default_student_input_root(&config);
     let mut agent = build_agent(
         config.delivery_agent.as_ref(),

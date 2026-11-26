@@ -1,8 +1,20 @@
 # `thot` command-line client
 
-Most CLI commands talk to `thotd`; the local sandbox command below invokes the
-configured Linux KVM provider directly. Its default API endpoint for server
-commands is `http://127.0.0.1:8081`.
+Start in the project directory. Use the same commands for a KVM project or a daemon evaluation.
+
+```sh
+thot run
+thot validate
+thot status --watch
+thot log --follow
+thot report
+```
+
+The configuration selects the backend. The launch command returns a run ID and releases the terminal. For sandbox projects, status and log select the last launch in the current project. Specify a run ID to inspect an earlier launch. A worker that exits unexpectedly shows as interrupted. The technical log is under `results/.jobs/<id>/worker.log`; verified evidence is under `results/<id>/`. Read an older or imported run directly with `thot sandbox report RUN_DIR`. Daemon status selects the latest run for the current project and daemon logs include its expedients. Use `--host` and `--port` before the command to select a daemon endpoint.
+
+The worker updates its heartbeat every ten seconds. A separate five-second heartbeat comes from the Alpine guest during a test. The KVM defaults are in `/etc/thot/sandbox-defaults.yaml` or `${XDG_CONFIG_HOME:-~/.config}/thot/sandbox-defaults.yaml`. Override individual keys in the project. For working paths and timeouts the precedence from lowest to highest is installed defaults, project `runtime`, project `.env`, process environment. Supported keys are `THOT_KVM_ALPINE_ROOT`, `TMPDIR`, `THOT_HOST_COMMAND_TIMEOUT_SECONDS`, `THOT_AGENT_IDLE_SECONDS`, `THOT_GUEST_BOOT_TIMEOUT_SECONDS` and `THOT_TRANSFER_TIMEOUT_SECONDS`. The project can override CPU, RAM and disk once under `sandbox_platforms[].lifecycle.template_vm`. Limits govern execution times and output sizes. [OVA example](../../examples/ova-screening-kvm-alpine/configuration.thot.yaml)
+
+## Command reference
 
 ```text
 thot [-h HOST] [-p PORT] import students <file.csv>
@@ -10,7 +22,14 @@ thot [-h HOST] [-p PORT] get students [csv]
 thot [-h HOST] [-p PORT] assignments guess [--json]
 thot [-h HOST] [-p PORT] assignments get [--json]
 thot [-h HOST] [-p PORT] assignments import <FILE.yaml|json> [--json]
-thot [-h HOST] [-p PORT] run [list]
+thot run [PROJECT] [--deliveries DIR] [--agent PATH]
+thot status [RUN_ID] [--watch]
+thot log [RUN_ID] [--follow]
+thot validate [PROJECT]
+thot config show [PROJECT] --effective
+thot report [RUN_ID] [--json|--csv|--html FILE]  # sandbox
+thot archive export RUN_DIR ARCHIVE.zip | import ARCHIVE.zip DEST_DIR
+thot run list
 thot [-h HOST] [-p PORT] run create <PROJECT_PATH> [--deliveries DIR]
 thot [-h HOST] [-p PORT] run create --project <PROJECT_PATH> [--deliveries DIR]
 thot [-h HOST] [-p PORT] run status [RUN_ID]
@@ -38,13 +57,13 @@ thot [-h HOST] [-p PORT] prune
 thot [-h HOST] [-p PORT] reset
 ```
 
-`thot sandbox run` is the local Linux KVM workflow for `kind: kvm-alpine`. It
+`thot sandbox run` is a compatibility alias for `thot run`. The local Linux KVM workflow uses `kind: kvm-alpine`. It
 loads `configuration.thot.yaml`, the configured student and assignment files,
 the selected delivery agent, and instructor tests from the project directory. It does not need
 `thotd`; it launches disposable KVM guests and delegates test and rubric
 evaluation to `thot-engine`. Result JSON is written under
 `PROJECT_DIR/results/<evaluation-id>/`, preserving earlier evaluations.
-After a run, `thot sandbox report PROJECT_DIR/results/<run-id>` verifies the
+After a run, `thot report` in the project directory verifies the
 committed run journal and evidence hashes before displaying a compact
 student/item summary. Use `--json` or `--csv` for spreadsheet/import workflows,
 or `--html report.html` to write a self-contained offline report. The HTML
@@ -55,7 +74,7 @@ links, duplicates, and oversized archives, then verifies the run before
 accepting it. Imported evidence can be reported with the same command; it does
 not restore a VM or replay tests.
 
-Run it from the project directory with `sudo thot sandbox run .`. The KVM host
+Run it from the project directory with `thot run` after the one-time [host setup](../../deploy/README.md). The KVM host
 needs `/dev/kvm`, libvirt/QEMU, `virt-install`, `qemu-img`, `cloud-localds`,
 `guestfish`, and `curl`. Install the static `thot-alpine-agent` beside `thot`,
 or pass its path with `--agent`. The runner checks its configured version and
@@ -68,7 +87,7 @@ libvirt `default` network to install configured Alpine packages; professor
 preparation scripts run with guest root access. Treat project configuration
 and those scripts as trusted instructor input. Ensure the network is active
 with `sudo virsh net-start default` and enabled at boot with
-`sudo virsh net-autostart default`. Infrastructure failures stop the CLI and
+`sudo virsh net-autostart default`. Infrastructure failures stop the worker and
 do not create a student grade.
 
 `thot deliveries list PROJECT_DIR` previews the configured source and reports

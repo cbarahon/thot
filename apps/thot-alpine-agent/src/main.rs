@@ -62,6 +62,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     capabilities: executor::capabilities(),
                 })
             }
+            AgentRequest::ExecuteTaskWithProgress(task) => {
+                let id = task.task_id.clone();
+                let started = std::time::Instant::now();
+                let execution = executor::execute_task(task);
+                tokio::pin!(execution);
+                loop {
+                    tokio::select! {
+                        result=&mut execution => break AgentResponse::ExecuteTaskResult(result?),
+                        _=tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                            write_frame(&mut stream,&AgentResponse::TaskProgress{task_id:id.clone(),elapsed_seconds:started.elapsed().as_secs()})?;
+                        }
+                    }
+                }
+            }
             AgentRequest::ExecuteTask(task) => {
                 AgentResponse::ExecuteTaskResult(executor::execute_task(task).await?)
             }

@@ -1,6 +1,6 @@
 # KVM Alpine POC fixture
 
-This is a runnable synthetic project for `thot sandbox run` on Linux/KVM. The command uses the shared `thot-core` v2 configuration and `thot-engine` check/rubric evaluator. It is not yet managed by `thotd` or the canonical lifecycle provider interface.
+This is a runnable synthetic project for `thot run` on Linux/KVM. The command uses the shared `thot-core` v2 configuration and `thot-engine` check/rubric evaluator. It is not yet managed by `thotd` or the canonical lifecycle provider interface.
 
 The CLI uses a pinned Alpine 3.24.1 x86_64 cloud-init qcow2 image and its configured SHA-512 digest. It creates a prepared linked qcow2 overlay, then one student overlay per roster entry. Student domains have no virtual network device. A per-clone cloud-init seed injects the static guest agent and one-use VSOCK token; submissions, instructor tests, and pinned test modules stream in acknowledged chunks with SHA-256 verification. Assignments point to deliverable directories, a suitable layout for checked-out repositories. Results and test evidence are saved in a portable, verified run folder under `results/<run-id>/`.
 
@@ -24,7 +24,9 @@ cargo build -p thot-cli --release
 sudo install -m 0755 target/release/thot /usr/local/bin/thot
 sudo install -m 0755 target/x86_64-unknown-linux-musl/release/thot-alpine-agent /usr/local/bin/thot-alpine-agent
 cd examples/kvm-alpine-poc
-sudo thot sandbox run .
+thot run
+thot status
+thot log
 ```
 
 See [configuration.thot.yaml](configuration.thot.yaml), [synthetic roster](students.yaml), [assignments](assignments.yaml), [test expectations](extern/tests/README.md), and the [architecture and closure gaps](../../docs/implementation/kvm-alpine.md).

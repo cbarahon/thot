@@ -75,6 +75,28 @@ pub trait DeliveryAgent {
     fn list(&mut self) -> Result<Vec<DeliveryInfo>, DeliveryError>;
     fn get(&mut self, name: &str, destination: &Path) -> Result<RetrievedDelivery, DeliveryError>;
 
+    /// Acquire a deliverable for one evaluation. Backends may avoid a staging
+    /// copy when the source is already a safe read-only input.
+    fn get_for_execution(
+        &mut self,
+        name: &str,
+        destination: &Path,
+    ) -> Result<RetrievedDelivery, DeliveryError> {
+        self.get(name, destination)
+    }
+
+    fn get_by_id_for_execution(
+        &mut self,
+        provider_id: &str,
+        destination: &Path,
+    ) -> Result<RetrievedDelivery, DeliveryError> {
+        self.get_by_id(provider_id, destination)
+    }
+
+    /// Remove the staged copy acquired by this agent. Implementations must
+    /// never delete the local source file or the remote provider object.
+    fn release(&mut self, delivery: &RetrievedDelivery) -> Result<(), DeliveryError>;
+
     fn get_by_id(
         &mut self,
         provider_id: &str,
@@ -141,6 +163,8 @@ pub fn default_student_input_root(
 pub struct LocalFilesystemAgent {
     root: PathBuf,
     limits: DeliveryLimits,
+    staged_paths: std::collections::HashSet<PathBuf>,
+    borrowed_paths: std::collections::HashSet<PathBuf>,
 }
 
 impl LocalFilesystemAgent {
@@ -188,6 +212,8 @@ impl LocalFilesystemAgent {
         Ok(Self {
             root,
             limits: limits.clone(),
+            staged_paths: std::collections::HashSet::new(),
+            borrowed_paths: std::collections::HashSet::new(),
         })
     }
 
@@ -274,12 +300,72 @@ impl DeliveryAgent for LocalFilesystemAgent {
         let mut budget = CopyBudget::new(&self.limits);
         copy_tree(&source, destination, &mut budget)?;
         let sha256 = digest_tree(destination)?;
+        self.staged_paths.insert(destination.to_path_buf());
         Ok(RetrievedDelivery {
             info,
             sha256,
             path: destination.to_path_buf(),
         })
     }
+
+    fn release(&mut self, delivery: &RetrievedDelivery) -> Result<(), DeliveryError> {
+        if self.borrowed_paths.remove(&delivery.path) {
+            return Ok(());
+        }
+        release_staged_path(&mut self.staged_paths, delivery)
+    }
+
+    fn get_for_execution(
+        &mut self,
+        name: &str,
+        _destination: &Path,
+    ) -> Result<RetrievedDelivery, DeliveryError> {
+        let source = self.resolve(name)?;
+        let info = self
+            .list()?
+            .into_iter()
+            .find(|item| item.name == name)
+            .ok_or_else(|| DeliveryError::Source(format!("deliverable {name:?} disappeared")))?;
+        if info.size_bytes > self.limits.max_bytes {
+            return Err(DeliveryError::Source(format!(
+                "deliverable {:?} exceeds the configured {} byte intake limit",
+                info.name, self.limits.max_bytes
+            )));
+        }
+        if tree_file_count(&source, self.limits.max_files)? > self.limits.max_files {
+            return Err(DeliveryError::Source(format!(
+                "deliverable {name:?} exceeds the configured {} file intake limit",
+                self.limits.max_files
+            )));
+        }
+        let sha256 = digest_tree(&source)?;
+        self.borrowed_paths.insert(source.clone());
+        Ok(RetrievedDelivery {
+            info,
+            sha256,
+            path: source,
+        })
+    }
+}
+
+fn release_staged_path(
+    staged_paths: &mut std::collections::HashSet<PathBuf>,
+    delivery: &RetrievedDelivery,
+) -> Result<(), DeliveryError> {
+    if !staged_paths.remove(&delivery.path) {
+        return Err(DeliveryError::Source(
+            "refusing to remove a path not staged by this delivery agent".into(),
+        ));
+    }
+    match fs::symlink_metadata(&delivery.path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            fs::remove_dir_all(&delivery.path)?;
+        }
+        Ok(_) => fs::remove_file(&delivery.path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 fn tree_size_and_modified(path: &Path) -> Result<(u64, Option<String>), DeliveryError> {
@@ -471,6 +557,7 @@ pub struct GoogleDriveAgent {
     credentials: DriveCredentials,
     client: Client,
     limits: DeliveryLimits,
+    staged_paths: std::collections::HashSet<PathBuf>,
 }
 
 impl GoogleDriveAgent {
@@ -492,6 +579,7 @@ impl GoogleDriveAgent {
             credentials,
             client,
             limits: limits.clone(),
+            staged_paths: std::collections::HashSet::new(),
         })
     }
 
@@ -607,7 +695,9 @@ impl DeliveryAgent for GoogleDriveAgent {
                 )
             }));
         }
-        download_drive_file(self, matches.into_iter().next().unwrap(), destination)
+        let delivery = download_drive_file(self, matches.into_iter().next().unwrap(), destination)?;
+        self.staged_paths.insert(delivery.path.clone());
+        Ok(delivery)
     }
 
     fn get_by_id(
@@ -624,7 +714,13 @@ impl DeliveryAgent for GoogleDriveAgent {
                     "Google Drive has no deliverable with file ID {provider_id:?}"
                 ))
             })?;
-        download_drive_file(self, file, destination)
+        let delivery = download_drive_file(self, file, destination)?;
+        self.staged_paths.insert(delivery.path.clone());
+        Ok(delivery)
+    }
+
+    fn release(&mut self, delivery: &RetrievedDelivery) -> Result<(), DeliveryError> {
+        release_staged_path(&mut self.staged_paths, delivery)
     }
 }
 

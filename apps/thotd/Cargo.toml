@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+thot-service = { path = "../../crates/thot-service" }
 axum.workspace = true
 thot-api = { path = "../../crates/thot-api" }
 thot-engine = { path = "../../crates/thot-engine" }

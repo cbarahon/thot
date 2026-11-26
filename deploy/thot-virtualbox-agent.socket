@@ -1,0 +1,8 @@
+[Unit]
+Description=Activate thot-virtualbox-agent for local Thot requests
+
+[Socket]
+ListenStream=127.0.0.1:8090
+
+[Install]
+WantedBy=sockets.target

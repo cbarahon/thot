@@ -1,5 +1,7 @@
 # Contracts and interfaces
 
+> For planned unified run commands, progress/deadline envelopes, configuration resolution and the native executable ABI, see [Local evaluation architecture](local-evaluation.md). These are migration contracts, not current API or parser behavior; existing v2/v3 and protocol-v2 contracts remain supported.
+
 Status: Mixed contract reference. The P1 Rust sandbox contract and run repository are implemented as initial internal APIs; they are not yet wired to a production sandbox provider or public HTTP endpoint. The YAML examples and most workflow DSL remain target design. The existing `/api/v1` API and `thot-virtualbox-agent` HTTP v1 protocol do not change.
 
 ## Common rules

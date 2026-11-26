@@ -18,6 +18,27 @@ if ! grep -q '^thot:' /etc/passwd; then
 fi
 addgroup thot libvirt
 
+# The import module runs as thot and must remove the staged archive after
+# conversion. The agent remains able to stage files as root.
+mkdir -p /work
+chown thot:thot /work
+chmod 0755 /work
+
+# Load the nested hypervisor on every boot of the prepared student clone.
+if grep -qw vmx /proc/cpuinfo; then
+  kvm_module=kvm_intel
+elif grep -qw svm /proc/cpuinfo; then
+  kvm_module=kvm_amd
+else
+  echo 'Nested virtualization CPU support is unavailable in Alpine' >&2
+  exit 1
+fi
+modprobe "$kvm_module"
+test -c /dev/kvm || { echo 'Nested KVM device is unavailable' >&2; exit 1; }
+grep -q "^$kvm_module$" /etc/modules || echo "$kvm_module" >> /etc/modules
+grep -q '^kvm:' /etc/group || addgroup -S kvm
+addgroup qemu kvm
+
 for config in /etc/libvirt/libvirtd.conf /etc/libvirt/virtproxyd.conf; do
   touch "$config"
   sed -i -E \
@@ -77,6 +98,6 @@ command -v qemu-img >/dev/null
 command -v qemu-system-x86_64 >/dev/null
 test -r /usr/share/OVMF/OVMF_CODE.fd
 test -r /usr/share/OVMF/OVMF_VARS.fd
-qemu-system-x86_64 -accel help 2>&1 | grep -q tcg
-printf 'libvirt-ready socket=%s group=%s mode=%s accel=tcg\n' \
+qemu-system-x86_64 -accel help 2>&1 | grep -q kvm
+printf 'libvirt-ready socket=%s group=%s mode=%s accel=kvm\n' \
   "$socket" "$(stat -c %G "$socket")" "$mode"

@@ -1,5 +1,7 @@
 # Proposed architecture and justification
 
+> The current migration target is [Local evaluation architecture](local-evaluation.md). It supersedes this older proposal where command entry points, service lifetime, configuration defaults, module packaging and ordinary classroom threat assumptions differ; it does not change the implemented contracts by itself.
+
 Status: target design v2, 2026-11-15. [Requirements](requirements.md), [model](data-model.md), [contracts](contracts.md), [plan](../planning/platform-roadmap.md) and [ADR](../decisions/README.md) form a coherent proposal; They do not describe already published functionalities.
 
 ## Starting point
@@ -10,7 +12,7 @@ The objective is to keep the evaluation reproducible from evidence, replacing th
 
 ## Deliverable intake agents
 
-Student work enters through a read-only delivery-agent boundary before it reaches a sandbox. The project chooses one provider per evaluation: local filesystem or Google Drive. `list` returns exact names, sizes, and available dates; `get(name)` materializes one bounded item into private host staging. The runner hashes the acquired bytes and sends only the selected submission into the student environment. Assignments reference names from the inventory, not machine-specific source paths. Local filesystem remains the default when the project omits an agent declaration.
+Student work enters through a read-only delivery-agent boundary before it reaches a sandbox. The project chooses one provider per evaluation: local filesystem or Google Drive. `list` returns exact names, sizes, and available dates. Evaluation reads and hashes local submissions in place; Google Drive downloads only the current student's item into private host staging. The runner sends only that selected submission into the student environment and releases any staged download after the student's tests. Results store delivery provenance and SHA-256, not deliverable bytes. Assignments reference names from the inventory, not machine-specific source paths. Local filesystem remains the default when the project omits an agent declaration.
 
 Google Drive OAuth is performed as the professor through a loopback desktop-app callback and requests a read-only scope. The refresh/access token cache is outside the project and result archive. Sandbox agents never receive Google credentials. The current `kvm-alpine` CLI uses this contract; the legacy daemon delivery-folder flow has not yet migrated.
 

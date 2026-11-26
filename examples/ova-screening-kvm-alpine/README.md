@@ -1,5 +1,7 @@
 # OVA screening with libvirt on KVM-Alpine
 
+From the project folder, run `thot run`, follow the evaluation with `thot status` and `thot log`, then read the grades with `thot report`. The `alpine-ova` profile supplies the VM settings, preparation and module defaults.
+
 This project fixture replaces the earlier unsupported VirtualBox dependency
 with a pinned `libvirt-vm` portable module. It configures the Alpine outer VM
 to install `libvirt`, QEMU, `qemu-img`, Python, and OVMF during preparation,

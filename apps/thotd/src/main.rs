@@ -49,13 +49,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = thot_api::router_with_runs(
         StudentService::new(student_repository),
-        run_service,
+        run_service.clone(),
         assignment_service,
     );
     let bind_ip = config.bind_host.parse()?;
     let address = SocketAddr::new(bind_ip, config.bind_port);
-    let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, %database, "thotd started");
-    axum::serve(listener, app).await?;
+    thot_service::serve(address, app, move || {
+        let service = run_service.clone();
+        async move { service.active_run_exists().await.unwrap_or(true) }
+    })
+    .await?;
     Ok(())
 }

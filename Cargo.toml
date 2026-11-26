@@ -4,6 +4,7 @@ members = [
   "crates/thot-core",
   "crates/thot-engine",
   "crates/thot-api",
+  "crates/thot-service",
   "apps/thotd",
   "apps/thot-cli",
   "crates/thot-runner",
@@ -14,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.46"
+version = "0.1.47"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 

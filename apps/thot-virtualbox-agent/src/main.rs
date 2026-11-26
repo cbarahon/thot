@@ -48,10 +48,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/v1/tasks/{task_id}",
             get(agent::task_status).delete(agent::cancel_task),
         )
-        .with_state(state);
+        .with_state(state.clone());
     let address = config.socket_addr().map_err(std::io::Error::other)?;
-    let listener = tokio::net::TcpListener::bind(address).await?;
+
     tracing::info!(%address, "thot-virtualbox-agent started");
-    axum::serve(listener, app).await?;
+    thot_service::serve(address, app, move || {
+        let state = state.clone();
+        async move {
+            state
+                .tasks
+                .read()
+                .await
+                .values()
+                .any(agent::TaskEntry::active)
+        }
+    })
+    .await?;
     Ok(())
 }

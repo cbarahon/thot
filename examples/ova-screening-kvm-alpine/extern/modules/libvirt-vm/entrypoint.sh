@@ -263,8 +263,8 @@ def parse_ovf(descriptor):
     for disk_id in disks:
         if disk_id not in ordered_disk_ids:
             ordered_disk_ids.append(disk_id)
-    if cpu < 1 or cpu > MAX_VCPUS or memory_mib < 128 or memory_mib > MAX_VIRTUAL_MEMORY_MIB:
-        fail("OVF CPU/memory values are outside the supported range", vcpus=cpu,
+    if cpu < 1 or memory_mib < 128:
+        fail("OVF CPU/memory values are invalid", vcpus=cpu,
              memory_mib=memory_mib)
     machine = root.find(".//vbox:Machine", NS)
     firmware = "bios"
@@ -274,6 +274,8 @@ def parse_ovf(descriptor):
             firmware = "efi"
     return {
         "descriptor": descriptor.name,
+        "requested_vcpus": cpu,
+        "requested_memory_mib": memory_mib,
         "vcpus": cpu,
         "memory_mib": memory_mib,
         "firmware": firmware,
@@ -305,7 +307,9 @@ def define_domain(name, directory, summary):
     emulator = shutil.which("qemu-system-x86_64")
     if not emulator:
         fail("qemu-system-x86_64 is missing from the prepared Alpine baseline")
-    domain = ET.Element("domain", {"type": "qemu"})
+    if not Path("/dev/kvm").exists():
+        fail("nested KVM is unavailable in the Alpine guest", infrastructure=True)
+    domain = ET.Element("domain", {"type": "kvm"})
     ET.SubElement(domain, "name").text = domain_name
     ET.SubElement(domain, "memory", {"unit": "MiB"}).text = str(summary["memory_mib"])
     ET.SubElement(domain, "currentMemory", {"unit": "MiB"}).text = str(summary["memory_mib"])
@@ -348,7 +352,11 @@ def define_domain(name, directory, summary):
     return domain_name, uuid.strip()
 
 
-def import_ova(ova, name):
+def import_ova(ova, name, max_vcpus, max_memory_mib):
+    if max_vcpus < 1 or max_vcpus > MAX_VCPUS:
+        fail("--max-vcpus must be between 1 and {}".format(MAX_VCPUS))
+    if max_memory_mib < 128 or max_memory_mib > MAX_VIRTUAL_MEMORY_MIB:
+        fail("--max-memory-mib must be between 128 and {}".format(MAX_VIRTUAL_MEMORY_MIB))
     directory = workdir(name)
     if directory.exists() or directory.is_symlink():
         fail("a libvirt OVA workspace with this name already exists")
@@ -359,6 +367,12 @@ def import_ova(ova, name):
     save_manifest(directory, manifest)
     descriptor, extracted, verified_manifest, ova_bytes = extract_ova(ova, directory)
     summary = parse_ovf(descriptor)
+    summary["vcpus"] = min(summary["requested_vcpus"], max_vcpus)
+    summary["memory_mib"] = min(summary["requested_memory_mib"], max_memory_mib)
+    summary["resource_limits"] = {
+        "max_vcpus": max_vcpus,
+        "max_memory_mib": max_memory_mib,
+    }
     total_virtual = 0
     converted = []
     for disk in summary["disks"]:
@@ -390,11 +404,17 @@ def import_ova(ova, name):
         os.chmod(output, 0o644)
         disk["qcow2_size_bytes"] = output.stat().st_size
         converted.append(output)
-    # Retain the original OVA as input evidence in Thot's run folder; remove only
-    # extracted source members after the converted disks are verified.
+    # The converted disks are now the source of truth for this disposable VM.
+    # Remove extracted source members and the staged archive to free guest
+    # storage before the imported VM is started.
     for path in extracted:
         if path.is_file() and path.suffix.lower() in (".vmdk", ".vdi", ".ovf", ".mf", ".nvram"):
             path.unlink()
+    try:
+        Path(ova).unlink()
+    except OSError as error:
+        fail("cannot remove staged OVA after disk conversion",
+             path=str(ova), detail=str(error), infrastructure=True)
     summary["ova_size_bytes"] = ova_bytes
     summary["verified_manifest"] = verified_manifest
     summary["converted_disks"] = [str(path) for path in converted]
@@ -439,7 +459,7 @@ def start_vm(name):
         method = "started"
     print(json.dumps({"operation": "libvirt/start_vm", "status": "running",
                       "domain_name": domain_name, "domain_uuid": manifest["domain_uuid"],
-                      "start_method": method, "acceleration": "qemu-tcg"}, sort_keys=True))
+                      "start_method": method, "acceleration": "kvm"}, sort_keys=True))
 
 
 def stop_vm(name):
@@ -491,10 +511,26 @@ def destroy_vm(name):
 
 def main():
     if len(sys.argv) < 3:
-        fail("usage: entrypoint.sh <import_ova|start_vm|stop_vm|destroy_vm> <name> [ova_path]")
+        fail("usage: entrypoint.sh <import_ova|start_vm|stop_vm|destroy_vm> <name> [ova_path] [--max-vcpus N] [--max-memory-mib N]")
     action, name = sys.argv[1], safe_name(sys.argv[2])
-    if action == "import_ova" and len(sys.argv) == 4:
-        import_ova(sys.argv[3], name)
+    if action == "import_ova" and len(sys.argv) >= 4:
+        max_vcpus = MAX_VCPUS
+        max_memory_mib = MAX_VIRTUAL_MEMORY_MIB
+        options = sys.argv[4:]
+        if len(options) % 2 != 0:
+            fail("import_ova resource limits require option/value pairs")
+        for option, value in zip(options[::2], options[1::2]):
+            try:
+                parsed = int(value)
+            except ValueError:
+                fail("import_ova resource limits must be integers", option=option)
+            if option == "--max-vcpus":
+                max_vcpus = parsed
+            elif option == "--max-memory-mib":
+                max_memory_mib = parsed
+            else:
+                fail("unknown import_ova option", option=option)
+        import_ova(sys.argv[3], name, max_vcpus, max_memory_mib)
     elif action == "start_vm" and len(sys.argv) == 3:
         start_vm(name)
     elif action == "stop_vm" and len(sys.argv) == 3:

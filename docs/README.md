@@ -14,6 +14,8 @@ Start with [implementation status](status.md) to see which workflows run today, 
 
 ## Architecture and decisions
 
+The next product architecture is [Unified local evaluations](architecture/local-evaluation.md): one background run command, on-demand workers, understandable progress, simpler configuration and reusable native modules. Follow the [agile migration backlog](planning/local-evaluation-migration.md) for ordered slices and acceptance criteria. These are planned changes, not current CLI features.
+
 Read the [architecture overview](architecture/overview.md) for the engine, providers, execution agents and isolation boundaries. Use the [requirements](architecture/requirements.md), [data model](architecture/data-model.md) and [interface contracts](architecture/contracts.md) for the target design. The [decision register](decisions/README.md) records the rationale and status of individual choices.
 
 ## Implementation and planning

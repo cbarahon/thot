@@ -4,6 +4,7 @@ mod assignment_commands;
 mod delivery_agent_commands;
 mod delivery_commands;
 mod grade_reports;
+mod jobs;
 mod maintenance_commands;
 mod output;
 mod report_commands;
@@ -46,42 +47,147 @@ struct FileConfig {
     port: Option<u16>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    run().await
-}
-
-async fn run() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_args(std::env::args().skip(1))?;
-    if options.help {
+    if options.help || options.command.is_empty() || options.command.iter().any(|s| s == "--help") {
         print_usage();
         return Ok(());
     }
+    // Intake uses blocking HTTP. Build the async runtime only for API commands.
+    match options.command.as_slice() {
+        [cmd, ..] if cmd == "validate" && options.command.len() <= 2 => {
+            let project = options
+                .command
+                .get(1)
+                .map_or_else(|| PathBuf::from("."), PathBuf::from);
+            jobs::validate_project(&project, false)?;
+            Ok(())
+        }
+        [cmd, sub, project, flag] if cmd == "config" && sub == "show" && flag == "--effective" => {
+            jobs::validate_project(Path::new(project), true)?;
+            Ok(())
+        }
+        [cmd, sub, flag] if cmd == "config" && sub == "show" && flag == "--effective" => {
+            jobs::validate_project(Path::new("."), true)?;
+            Ok(())
+        }
+        [cmd, project, id, agent, extra @ ..] if cmd == "__sandbox-worker" && extra.len() <= 1 => {
+            jobs::worker(
+                Path::new(project),
+                id.parse()?,
+                Path::new(agent),
+                extra.first().map(String::as_str),
+            )
+        }
+        [cmd, args @ ..] if cmd == "deliveries" => delivery_agent_commands::handle(args),
+        _ => run(options),
+    }
+}
 
+#[tokio::main]
+async fn run(options: CliOptions) -> Result<(), Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     let settings = resolve_settings(&options, &cwd, home_dir().as_deref())?;
     match options.command.as_slice() {
+        [cmd, args @ ..] if cmd == "status" || cmd == "log" => {
+            let follow = cmd == "log" && args.iter().any(|arg| arg == "--follow");
+            let watch = cmd == "status" && args.iter().any(|arg| arg == "--watch");
+            let ids = args
+                .iter()
+                .filter(|arg| !matches!(arg.as_str(), "--follow" | "--watch"))
+                .collect::<Vec<_>>();
+            if ids.len() > 1 {
+                return Err("usage: thot status [RUN_ID] | thot log [RUN_ID] [--follow]".into());
+            }
+            if jobs::is_sandbox(&cwd)?
+                || ids
+                    .first()
+                    .is_some_and(|id| cwd.join("results/.jobs").join(id.as_str()).is_dir())
+            {
+                if watch {
+                    jobs::watch(&cwd, ids.first().map(|id| id.as_str()))?;
+                } else {
+                    jobs::inspect(
+                        &cwd,
+                        ids.first().map(|id| id.as_str()),
+                        cmd == "log",
+                        follow,
+                    )?;
+                }
+            } else {
+                let mut status = vec![if cmd == "log" { "log" } else { "summary" }.into()];
+                status.extend(ids.iter().map(|id| id.to_string()));
+                delivery_commands::handle(&status, &settings).await?;
+            }
+        }
+        [cmd, args @ ..]
+            if cmd == "archive" && args.first().is_some_and(|s| s == "export" || s == "import") =>
+        {
+            sandbox_commands::handle(args)?
+        }
+        [cmd, args @ ..]
+            if cmd == "report"
+                && jobs::is_sandbox(&cwd)?
+                && (args.is_empty()
+                    || args[0].starts_with('-')
+                    || uuid::Uuid::parse_str(&args[0]).is_ok()) =>
+        {
+            let has_id = args.first().is_some_and(|s| !s.starts_with('-'));
+            let id = jobs::selected(&cwd, if has_id { Some(&args[0]) } else { None })?;
+            let mut report = vec![
+                "report".into(),
+                cwd.join("results")
+                    .join(id.to_string())
+                    .to_string_lossy()
+                    .into_owned(),
+            ];
+            report.extend_from_slice(&args[usize::from(has_id)..]);
+            sandbox_commands::handle(&report)?;
+        }
         [command] if matches!(command.as_str(), "clean" | "prune" | "reset") => {
             maintenance_commands::handle(command, &settings).await?;
         }
         [command, ..] if command == "assignments" => {
             assignment_commands::handle(&options.command[1..], &settings).await?;
         }
-        [command, ..] if command == "deliveries" => {
-            delivery_agent_commands::handle(&options.command[1..])?;
-        }
         [command, ..] if command == "report" => {
-            if options.command.get(1).is_some_and(|arg| arg == "grades") {
+            if options.command.get(1).is_none_or(|s| {
+                !matches!(
+                    s.as_str(),
+                    "runs"
+                        | "deliveries"
+                        | "expedients"
+                        | "grades"
+                        | "checks_stats"
+                        | "rubric_stats"
+                        | "test_stats"
+                )
+            }) {
+                let args = &options.command[1..];
+                let explicit = args.first().filter(|s| !s.starts_with('-'));
+                let id = delivery_commands::select_run(
+                    &api_client::ApiClient::new(&settings)?,
+                    explicit,
+                )
+                .await?;
+                let mut report = vec!["expedients".into(), id];
+                report.extend_from_slice(&args[usize::from(explicit.is_some())..]);
+                report_commands::handle(&report, &settings).await?;
+            } else if options.command.get(1).is_some_and(|arg| arg == "grades") {
                 grade_reports::handle(&options.command[2..], &settings).await?;
             } else {
                 report_commands::handle(&options.command[1..], &settings).await?;
             }
         }
         [run, ..] if run == "run" => {
-            delivery_commands::handle(&options.command[1..], &settings).await?;
+            jobs::run(&options.command[1..], &settings).await?;
         }
         [sandbox, ..] if sandbox == "sandbox" => {
-            sandbox_commands::handle(&options.command[1..])?;
+            if options.command.get(1).is_some_and(|s| s == "run") {
+                jobs::run(&options.command[2..], &settings).await?;
+            } else {
+                sandbox_commands::handle(&options.command[1..])?;
+            }
         }
         [import, students, path] if import == "import" && students == "students" => {
             let (records, malformed) = read_students_csv(Path::new(path))?;
@@ -643,18 +749,40 @@ fn write_csv_record(output: &mut impl Write, fields: &[&str]) -> io::Result<()> 
 }
 
 fn print_usage() {
-    println!(
-        "Uso:\n  thot [-h servidor] [-p puerto] import students <fichero.csv>\n  thot [-h servidor] [-p puerto] get students [csv]\n  thot assignments guess [--json]\n  thot assignments get [--json]\n  thot assignments import <fichero.yaml|json> [--json]\n  thot clean\n  thot prune\n  thot reset\n  thot report runs [--csv|--yaml|--json]\n  thot report deliveries [RUN_ID] [--csv|--yaml|--json]\n  thot report deliveries tests [RUN_ID] [--csv|--yaml|--json]\n  thot report deliveries checks [RUN_ID] [--csv|--yaml|--json]\n  thot report test_stats [RUN_ID] [--csv|--yaml|--json]\n  thot report checks_stats [RUN_ID] [--csv|--yaml|--json]\n  thot report rubric_stats [RUN_ID] [--csv|--yaml|--json]\n  thot report expedients [RUN_ID] [--csv|--yaml|--json]\n  thot run [list]\n  thot run create <ruta-proyecto> [--deliveries DIR]\n  thot run create --project <ruta-proyecto> [--deliveries DIR]\n  thot run status [RUN_ID]\n  thot run checks [RUN_ID]\n  thot run delete RUN_ID\n  thot run expedient EXPEDIENT_ID\n  thot run cancel RUN_ID\n  thot run cleanup EXPEDIENT_ID\n\nLos informes se muestran como tabla; use --csv, --yaml o --json para exportarlos.\n\nOpciones:\n  -h, --host <servidor>  Servidor thotd (por defecto: 127.0.0.1)\n  -p, --port <puerto>    Puerto thotd (por defecto: 8081)\n      --help             Muestra esta ayuda\n\nConfiguración YAML: ./thot-config.yaml, ./.thot-config.yaml o ~/.config/thot/thot-config.yaml"
+    print!(
+        r#"Start in your project directory
+
+  thot run [PROJECT]              Start an evaluation in the background
+  thot status [RUN_ID]            See the last update
+  thot log [RUN_ID]               Read diagnostic details
+  thot report                     Show grades
+  thot run list                   List evaluations
+
+Submissions and rosters
+  thot deliveries list [PROJECT] | get NAME [PROJECT] [--output FILE]
+  thot import students CSV | get students [csv]
+  thot assignments guess | get | import FILE [--json]
+
+Reports and archives
+  thot report [RUN_ID] [--json | --csv | --html FILE]              (sandbox)
+  thot archive export RUN_DIR ARCHIVE.zip | import ARCHIVE.zip DEST_DIR
+  thot report runs | deliveries [tests|checks] | expedients
+  thot report test_stats | checks_stats | rubric_stats [RUN_ID] [--csv|--yaml|--json]
+  thot report grades --all [RUN_ID] [--output-dir DIR]
+  thot report grades --students|--professor --pdf [RUN_ID] [--output-dir DIR]
+  thot report grades --evaluation-items --csv [RUN_ID]
+
+Daemon run management
+  thot run checks [RUN_ID] | cancel RUN_ID | delete RUN_ID
+  thot run expedient EXPEDIENT_ID | cleanup EXPEDIENT_ID
+  thot clean | prune | reset
+
+Advanced options
+  thot run [PROJECT] [--deliveries DIR] [--agent PATH]
+  thot [--host HOST] [--port PORT] COMMAND
+  thot sandbox report RUN_DIR [--json|--csv|--html FILE]
+"#
     );
-    println!(
-        "  thot report grades --all [RUN_ID] [--output-dir DIR]\n  thot report grades --students --pdf [RUN_ID] [--output-dir DIR]\n  thot report grades --professor --pdf [RUN_ID] [--output-dir DIR]\n  thot report grades --evaluation-items --csv [RUN_ID]"
-    );
-    println!("  thot sandbox run [PROJECT_DIR] [--agent PATH]");
-    println!("  thot sandbox report <RUN_DIR> [--json|--csv|--html FILE]");
-    println!("  thot sandbox export <RUN_DIR> <ARCHIVE.zip>");
-    println!("  thot sandbox import <ARCHIVE.zip> <DEST_DIR>");
-    println!("  thot deliveries list [PROJECT_DIR]");
-    println!("  thot deliveries get <NAME> [PROJECT_DIR] [--output PATH]");
 }
 
 #[cfg(test)]

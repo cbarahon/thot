@@ -38,11 +38,11 @@ awk -v asset="${ASSET}" '$2 == asset { print; count++ } END { if (count != 1) ex
 (cd "${temporary_dir}" && sha256sum --check --status asset-checksum) || fail "release archive checksum verification failed"
 
 tar -tzf "${temporary_dir}/${ASSET}" | awk '
-    $0 !~ /^(thot|thotd|thotd\.service|thotd\.env\.example|thot-virtualbox-agent|thot-alpine-agent|thot-virtualbox-agent\.service|thot-virtualbox-agent\.config\.yaml\.example|VERSION)$/ { bad=1 }
+    $0 !~ /^(thot|thotd|thotd\.socket|thot-virtualbox-agent\.socket|sandbox-defaults\.yaml|thotd\.service|thotd\.env\.example|thot-virtualbox-agent|thot-alpine-agent|thot-virtualbox-agent\.service|thot-virtualbox-agent\.config\.yaml\.example|VERSION)$/ { bad=1 }
     END { exit bad }
 ' || fail "release archive contains an unexpected path"
 tar -xzf "${temporary_dir}/${ASSET}" -C "${temporary_dir}"
-for file_name in thot thotd thotd.service thotd.env.example thot-virtualbox-agent thot-alpine-agent thot-virtualbox-agent.service thot-virtualbox-agent.config.yaml.example VERSION; do
+for file_name in thot thotd thotd.socket thot-virtualbox-agent.socket sandbox-defaults.yaml thotd.service thotd.env.example thot-virtualbox-agent thot-alpine-agent thot-virtualbox-agent.service thot-virtualbox-agent.config.yaml.example VERSION; do
     [[ -f "${temporary_dir}/${file_name}" ]] || fail "release archive is missing ${file_name}"
 done
 installed_version="$(cat "${temporary_dir}/VERSION")"
@@ -88,11 +88,21 @@ install -o root -g root -m 0644 "${temporary_dir}/VERSION" "${INSTALL_ROOT}/shar
 install -o root -g root -m 0644 "${temporary_dir}/thotd.service" /etc/systemd/system/thotd.service
 install -o root -g root -m 0644 "${temporary_dir}/thot-virtualbox-agent.service" /etc/systemd/system/thot-virtualbox-agent.service
 
+install -o root -g root -m 0644 "${temporary_dir}"/*.socket /etc/systemd/system/
+chmod 0751 /etc/thot
+if [[ ! -e /etc/thot/sandbox-defaults.yaml ]]; then
+    install -m 0644 "${temporary_dir}/sandbox-defaults.yaml" /etc/thot/sandbox-defaults.yaml
+fi
 systemctl daemon-reload
-systemctl enable --now thotd thot-virtualbox-agent
-systemctl restart thotd thot-virtualbox-agent
-systemctl --no-pager --full status thotd || fail "Thot was installed but the daemon did not start; inspect systemctl status and journalctl -u thotd"
-systemctl --no-pager --full status thot-virtualbox-agent || fail "Thot was installed but the VirtualBox agent did not start; inspect systemctl status and journalctl -u thot-virtualbox-agent"
+for service in thotd thot-virtualbox-agent; do
+    if systemctl is-enabled --quiet "${service}.socket"; then
+        systemctl start "${service}.socket"
+    elif systemctl is-active --quiet "${service}.service" || systemctl is-enabled --quiet "${service}.service"; then
+        echo "Existing ${service}.service retained. After active work finishes, switch with: sudo systemctl disable --now ${service}.service && sudo systemctl enable --now ${service}.socket"
+    else
+        systemctl enable --now "${service}.socket"
+    fi
+done
 
 cat <<EOF
 

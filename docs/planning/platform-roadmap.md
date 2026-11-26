@@ -1,5 +1,7 @@
 # Implementation plan
 
+> The next local product workstream is [Unified CLI and on-demand evaluation migration](local-evaluation-migration.md), implementing [ADR-0017](../decisions/0017-local-evaluation-cli.md). Its S0–S6 slices coordinate configuration, engine/provider integration, progress, service lifetime and native modules. They do not mark existing phases complete. Apply the ordinary classroom safety profile from the new architecture; retain historical P0/P2 findings as risks and separate adversarial qualification from classroom release requirements.
+
 Status: P1 contracts and initial persistence are implemented; P3 has a passing Alpine smoke; P5–P7 have initial v3 evaluation, local report, and verified run archive slices. P0 and P2 remain active release gates for hostile/nested OVA qualification. No student OVA virtual disk is parsed or booted before P2 boundary validation. Dependencies: P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7. See the [P0 viability evidence and threat register](platform-p0-viability.md).
 
 | Phase | Orderly work | Dependency/testable output |

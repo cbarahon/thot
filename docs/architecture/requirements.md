@@ -1,5 +1,7 @@
 # Thot platform requirements
 
+> The next usability and reliability requirements are defined in [Local evaluation architecture](local-evaluation.md) with acceptance criteria in the [migration backlog](../planning/local-evaluation-migration.md). For the ordinary classroom profile these replace older mandatory adversarial-hardening assumptions, while retaining isolation, bounded execution, safe intake and verified cleanup.
+
 These requirements describe the target platform. See the [implementation status](../status.md) for current coverage.
 
 ## Purpose and users

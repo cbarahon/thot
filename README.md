@@ -8,10 +8,7 @@ local folders and Google Drive. The included Alpine KVM workflow is a
 lightweight, usable CLI path; it is still a limited platform implementation,
 not the complete managed sandbox service described in the architecture docs.
 
-Thot also includes `thotd`, an HTTP service for the existing project, roster,
-assignment, report, and VirtualBox activity workflows. These workflows are
-separate from `thot sandbox run`; read the relevant guides before selecting a
-deployment model.
+Run an evaluation with `thot run` from its project directory. The project selects the KVM worker or HTTP engine. The command returns immediately with a run ID. Use `thot status`, `thot log` and `thot report` from the same folder.
 
 ## Install
 
@@ -36,9 +33,11 @@ sudo apt install qemu-system-x86 libvirt-daemon-system libvirt-clients virtinst 
   libguestfs-tools cloud-image-utils curl
 sudo systemctl enable --now libvirtd
 sudo virsh net-autostart default
+sudo usermod -aG kvm,libvirt "$USER"
+sudo install -d -o "$USER" -g libvirt -m 2775 /var/lib/libvirt/images/thot-alpine-poc
 ```
 
-Confirm `/dev/kvm` exists and the libvirt `default` network is active. The
+Log out and back in for the group changes. Confirm `/dev/kvm` exists and the libvirt `default` network is active. The
 network is used for the Alpine preparation phase; student guests have no
 network device. The installer places the static `thot-alpine-agent` next to the
 CLI. See [deployment instructions](deploy/README.md) for details and the
@@ -73,7 +72,10 @@ running it so generated results stay with your copy.
 ```sh
 cp -a examples/kvm-alpine-poc "$HOME/thot-course-project"
 thot deliveries list "$HOME/thot-course-project"
-sudo thot sandbox run "$HOME/thot-course-project"
+cd "$HOME/thot-course-project"
+thot run
+thot status
+thot log
 ```
 
 The first run downloads and verifies a pinned Alpine cloud image, prepares a
@@ -107,7 +109,7 @@ before using it for consequential grading.
 ## Other workflows
 
 - **Daemon and existing project runs:** install the service, configure a
-  project, then use `thot run create PROJECT_PATH` and the `thot run status`,
+  project, then use `thot run PROJECT_PATH` and the `thot run status`,
   `thot run expedient`, and `thot report` commands. See the
   [CLI guide](apps/thot-cli/README.md) and [deployment guide](deploy/README.md).
 - **VirtualBox activity evaluation:** the daemon and VirtualBox agent support

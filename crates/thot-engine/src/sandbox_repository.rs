@@ -164,18 +164,25 @@ impl ProjectRunRepository {
         let temporary = student_dir.join(format!(".input-pending-{}", uuid::Uuid::new_v4()));
         let source_metadata = fs::symlink_metadata(source)
             .map_err(|error| format!("cannot inspect acquired input: {error}"))?;
-        if !source_metadata.is_file() || source_metadata.file_type().is_symlink() {
-            return Err("acquired input must be a regular non-symlink file".into());
+        if source_metadata.file_type().is_symlink()
+            || !(source_metadata.is_file() || source_metadata.is_dir())
+        {
+            return Err("acquired input must be a regular file or directory tree".into());
         }
-        let digest = match fs::hard_link(source, &temporary) {
-            Ok(()) => match hash_file(&temporary) {
-                Ok(digest) => digest,
-                Err(error) => {
-                    remove_any(&temporary);
-                    return Err(format!("cannot verify linked input: {error}"));
-                }
-            },
-            Err(_) => copy_and_digest(source, &temporary)?,
+        let digest = if source_metadata.is_dir() {
+            copy_tree(source, &temporary)?;
+            hash_tree(&temporary)?
+        } else {
+            match fs::hard_link(source, &temporary) {
+                Ok(()) => match hash_file(&temporary) {
+                    Ok(digest) => digest,
+                    Err(error) => {
+                        remove_any(&temporary);
+                        return Err(format!("cannot verify linked input: {error}"));
+                    }
+                },
+                Err(_) => copy_and_digest(source, &temporary)?,
+            }
         };
         if digest != provenance.sha256 {
             remove_any(&temporary);
@@ -183,8 +190,12 @@ impl ProjectRunRepository {
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(error) = fs::set_permissions(&temporary, fs::Permissions::from_mode(0o444)) {
+            let mode = if source_metadata.is_dir() {
+                0o555
+            } else {
+                0o444
+            };
+            if let Err(error) = set_tree_permissions(&temporary, mode) {
                 remove_any(&temporary);
                 return Err(format!("cannot make persisted input immutable: {error}"));
             }
@@ -906,6 +917,111 @@ fn copy_and_digest(source: &Path, destination: &Path) -> Result<String, String> 
         return Err("acquired input must be a regular file or directory".into());
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "refusing symlink in delivery tree: {}",
+            source.display()
+        ));
+    }
+    if metadata.is_file() {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut input = File::open(source).map_err(|e| e.to_string())?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .map_err(|e| e.to_string())?;
+        io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+        output.sync_all().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "unsupported file type in delivery tree: {}",
+            source.display()
+        ));
+    }
+    fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+    let mut entries = fs::read_dir(source)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        copy_tree(&entry.path(), &destination.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+fn hash_tree(root: &Path) -> Result<String, String> {
+    fn visit(root: &Path, path: &Path, hash: &mut Sha256) -> Result<(), String> {
+        let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "refusing symlink in delivery tree: {}",
+                path.display()
+            ));
+        }
+        if metadata.is_file() {
+            let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
+            hash.update(relative.to_string_lossy().as_bytes());
+            hash.update([0]);
+            let mut file = File::open(path).map_err(|e| e.to_string())?;
+            let mut buffer = [0u8; 32 * 1024];
+            loop {
+                let read = file.read(&mut buffer).map_err(|e| e.to_string())?;
+                if read == 0 {
+                    break;
+                }
+                hash.update(&buffer[..read]);
+            }
+            return Ok(());
+        }
+        if !metadata.is_dir() {
+            return Err(format!(
+                "unsupported file type in delivery tree: {}",
+                path.display()
+            ));
+        }
+        let mut entries = fs::read_dir(path)
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            visit(root, &entry.path(), hash)?;
+        }
+        Ok(())
+    }
+    let mut hash = Sha256::new();
+    visit(root, root, &mut hash)?;
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+#[cfg(unix)]
+fn set_tree_permissions(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("refusing symlink in delivery tree".into());
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+            set_tree_permissions(&entry.map_err(|e| e.to_string())?.path(), mode)?;
+        }
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())
+}
+
+#[cfg(not(unix))]
+fn set_tree_permissions(_path: &Path, _mode: u32) -> Result<(), String> {
+    Ok(())
 }
 
 fn copy_directory(
