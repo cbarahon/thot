@@ -590,7 +590,7 @@ impl GoogleDriveAgent {
         let client_id = self.credentials.client_id.clone();
         let client_secret = self.credentials.client_secret.clone();
         if client_id.is_empty() || client_secret.is_empty() {
-            return Err(DeliveryError::Authorization("set THOT_GDRIVE_CLIENT_ID and THOT_GDRIVE_CLIENT_SECRET for the professor's Google OAuth desktop application, then run `thot deliveries list` to authorize".into()));
+            return Err(DeliveryError::Authorization("Google OAuth client credentials are unavailable; configure the developer OAuth client at build time or set THOT_GDRIVE_CLIENT_ID and THOT_GDRIVE_CLIENT_SECRET, then run `thot deliveries list` to authorize".into()));
         }
         if let Some(refresh_token) = self.credentials.refresh_token.clone() {
             let response = self
@@ -847,8 +847,12 @@ impl DriveCredentials {
 
     fn load() -> Result<Self, DeliveryError> {
         let path = Self::path()?;
-        let env_client_id = std::env::var("THOT_GDRIVE_CLIENT_ID").ok();
-        let env_client_secret = std::env::var("THOT_GDRIVE_CLIENT_SECRET").ok();
+        let env_client_id = std::env::var("THOT_GDRIVE_CLIENT_ID")
+            .ok()
+            .or_else(|| option_env!("THOT_GDRIVE_BUNDLED_CLIENT_ID").map(str::to_owned));
+        let env_client_secret = std::env::var("THOT_GDRIVE_CLIENT_SECRET")
+            .ok()
+            .or_else(|| option_env!("THOT_GDRIVE_BUNDLED_CLIENT_SECRET").map(str::to_owned));
         let cached = match open_source_file(&path) {
             Ok(mut file) => {
                 #[cfg(unix)]

@@ -49,13 +49,39 @@ delivery_agent:
 
 Only one source is selected per project. Platforms in one evaluation share the configured intake source, while platform execution remains isolated. The local source can list files and directories. Google Drive currently lists and downloads ordinary uploaded files; nested folders, Google Docs/Sheets/Slides native documents, shortcuts, and shared-drive edge cases are not represented as deliverables yet.
 
-## Google OAuth setup
+## Google Drive professor setup
 
-The professor creates or selects a Google Cloud project, enables Google Drive API, and creates an OAuth client of type **Desktop app**. The client ID and secret are supplied to Thot on first authorization as `THOT_GDRIVE_CLIENT_ID` and `THOT_GDRIVE_CLIENT_SECRET`. Running `thot deliveries list PROJECT` opens the browser consent flow and requests the read-only `drive.readonly` scope. The local loopback callback validates a one-use state value. Access and refresh tokens are stored under the professor's config directory in `~/.config/thot/google-drive-token.json` with owner-only permissions; token files are not stored in the project or result archive. When the command runs under `sudo`, Thot resolves the invoking user's home through `SUDO_USER` so it reuses that user's token cache.
+The developer registers the OAuth application and builds Thot with its client credentials. Ask the developer to add your Google account as a test user for a pilot. Builds without a bundled client require the `THOT_GDRIVE_CLIENT_ID` and `THOT_GDRIVE_CLIENT_SECRET` environment variables. See the [developer guide](google-drive-developer.md).
 
-For a headless host, run `thot deliveries list` on the professor's desktop once with the same token file and Google OAuth client configured. The authorization callback still requires a browser on the machine performing the authorization; token transfer to another host should use a secure user-managed channel. Do not include OAuth secrets or token files in shared project directories, Git, or student deliverables.
+Set the Drive folder URL above, then run as your normal user:
 
-Google's consent-screen publishing and verification rules depend on the Google Cloud project and its selected scopes. An OAuth application left in Testing mode may have refresh-token lifetime restrictions. The professor is responsible for configuring an approved OAuth client for the intended use.
+```sh
+thot deliveries list PROJECT
+```
+
+Replace `PROJECT` with the project directory. Thot opens a browser or prints a
+link; open it on the same computer, sign in to the Google account that can
+read the folder and consent. A Testing app can show an unverified-app warning;
+proceed only if you recognize the app provided by the developer. Return to the
+terminal and check that the expected files are listed. The browser message alone
+does not confirm a successful token exchange. If authorization fails, share
+only the non-secret error with the developer; test-user configuration, an
+expired authorization or Workspace policy may require attention.
+
+Thot requests `drive.readonly`: it can read **all files visible to the account**,
+not only the selected folder. It does not need your Google password. Tokens and
+the client values are cached in `~/.config/thot/google-drive-token.json`
+(or the configured user token path), outside the project, with owner-only
+permissions. Later runs by the same user can reuse the cache; Testing consent
+may expire after seven days. Existing caches tied to a different client ID
+require reauthorization: move the old cache to a private backup before using the
+new client. Never put tokens in a project, container image, guest or results.
+
+For a headless host, authorize on a desktop with the same OAuth client, then
+securely transfer the private cache to the user running Thot on the host. A
+container needs a private persistent token volume. This is currently manual;
+Thot does not provide a guided transfer or headless device-code login. The
+browser callback must reach localhost on the machine performing authorization.
 
 ## CLI
 
@@ -72,5 +98,5 @@ sudo thot sandbox run ./course-project
 - The local filesystem agent trusts the professor's selected root and reads it without modifying its source. Evaluation hashes the selected source and streams it into the guest; the guest verifies the transfer hash. If the source changes during transfer, the guest rejects the mismatch.
 - Google Drive credentials are user credentials, not a service-account credential. Access is limited to read-only OAuth permission, but `drive.readonly` grants the application read access to all files visible to that professor's Google account. A narrower scope that can read a pre-existing instructor-selected folder is not currently available with this simple installed-app flow.
 - OAuth token revocation, expired/revoked consent, account changes, network loss, and Google API quota errors are reported as intake failures and do not create a grade.
-- HTTP responses are downloaded with bounded size and request timeouts. Retry/backoff, resumable downloads, shared-drive drive-ID selection, and duplicate-name disambiguation by file ID remain future work.
+- HTTP responses are downloaded with bounded size and request timeouts. Retry/backoff, resumable downloads and shared-drive drive-ID selection remain future work. Assignments can disambiguate by provider ID, but standalone `deliveries get` accepts names only.
 - The feature currently integrates with the local `kvm-alpine` professor CLI. Legacy daemon run creation still reads its configured local `delivery_folder`; migrating that API workflow to this agent contract is a separate integration task.

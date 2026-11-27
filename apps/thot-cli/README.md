@@ -99,13 +99,8 @@ student-deliverable path template or defaults to `delivery`. Assignments in
 the KVM sandbox project refer to exact names from this inventory.
 
 For Google Drive, configure `delivery_agent.kind: gdrive` and a folder URL.
-Create a Google Cloud OAuth Desktop application, enable Drive API, and set
-`THOT_GDRIVE_CLIENT_ID` and `THOT_GDRIVE_CLIENT_SECRET` for first
-authorization. The first `thot deliveries list` opens browser consent and
-requests read-only Drive access. Tokens stay in the professor's private Thot
-configuration directory, outside project files. See
-[`docs/guides/delivery-agents.md`](../../docs/guides/delivery-agents.md) for setup and scope
-limitations.
+The developer registers the OAuth Desktop app and can bundle its client credentials in the release; professors consent individually. See the [professor instructions](../../docs/guides/delivery-agents.md#google-drive-professor-setup)
+and [developer setup](../../docs/guides/google-drive-developer.md).
 
 Bare `thot run` searches the current directory for exactly one supported
 `.thot` archive or a root `configuration.thot.yaml` / legacy

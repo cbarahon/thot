@@ -95,9 +95,9 @@ thot deliveries get student1 "$HOME/thot-course-project" --output /tmp/student1
 The project YAML selects the delivery source. If `delivery_agent` is omitted,
 Thot uses the configured local `delivery_folder`; if that is omitted, it uses
 the project’s existing local delivery layout. The Google Drive agent reads a
-configured Drive folder with read-only OAuth. It requires a Google Cloud OAuth
-Desktop client, Drive API enabled, and professor consent. See
-[`docs/guides/delivery-agents.md`](docs/guides/delivery-agents.md) before configuring it.
+configured Drive folder with read-only OAuth. The intended model uses a
+developer-registered Desktop client and each professor’s consent. Release builds can bundle the developer client; professors consent individually. See the [professor guide](docs/guides/delivery-agents.md#google-drive-professor-setup)
+and [developer setup](docs/guides/google-drive-developer.md).
 
 To adapt the sample for a course, edit `configuration.thot.yaml`, the roster,
 assignments, instructor tests, and delivery folder. Assignments refer to exact

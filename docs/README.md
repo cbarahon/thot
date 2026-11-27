@@ -9,6 +9,7 @@ Start with [implementation status](status.md) to see which workflows run today, 
 | Install Thot on a fresh host | [Deployment and host setup](../deploy/README.md) |
 | Run my first sandbox assessment | [KVM Alpine starter project](../examples/kvm-alpine-poc/README.md) |
 | Configure local or Google Drive submissions | [Delivery agents and OAuth](guides/delivery-agents.md) |
+| Register the Google Drive OAuth app for a pilot or release | [Developer OAuth setup](guides/google-drive-developer.md) |
 | Screen a submitted OVA using the existing daemon | [VirtualBox screening tutorial](guides/ova-screening.md) |
 | Find a command or export grades | [CLI reference](../apps/thot-cli/README.md) |
 

@@ -128,7 +128,7 @@ Dependencies: S4 and first libvirt slice of S5. Additional provider qualificatio
 | Wire compatibility | Test additive heartbeat/cancel negotiation; bump protocol if old sequencing cannot safely interoperate. Decide in S0, implement S3. |
 | Dynamic native dependencies | Select musl/static only when supported by dependencies; record target/tool ABI and prove packaging in S5. |
 | Legacy reports | Map fields explicitly; retain readers and unavailable indicators. No fabricated equivalent evidence. Close format matrix in S4. |
-| Drive OAuth distribution | Guided per-install client configuration first; decide whether distributing a registered OAuth client is appropriate separately. Login availability must not require environment variables. |
+| Drive OAuth distribution | Target a developer-registered Desktop client distributed with Thot, with per-professor consent and an override for testing or self-hosting. Client bundling and environment overrides are implemented; a guided login remains to be implemented. See the [developer guide](../guides/google-drive-developer.md). |
 | Full multiboot assessment | Still requires actual layout/GRUB/OS/shared-volume test logic and suitable hardware. Track in the existing multiboot plan; do not bury it inside CLI success. |
 
 ## Rollout and rollback

@@ -41,7 +41,7 @@ Thot preserves the workflow: submission → tests and evidence → checks → ru
 | FR-25 | Communicate platform assurance and failure clearly | Reports name the platform kind, isolation scope, image/runtime identity, preparation status, cleanup status, and any infrastructure error |
 | FR-26 | Distinguish Debian and low-resource Alpine KVM profiles | `kvm-debian` and `kvm-alpine` have independent pinned templates, agents, preparations, and resource limits while sharing the provider result contract |
 | FR-27 | Read deliverables through a configured agent | The local agent is the default; local and Google Drive agents provide exact-name list/get operations with size and available timestamps |
-| FR-28 | Authorize Google Drive read-only access for the professor | OAuth uses a local loopback callback, stores tokens outside project data, and never exposes credentials to student VMs |
+| FR-28 | Authorize Google Drive read-only access for the professor | OAuth uses a local loopback callback, stores tokens outside project data, and never exposes credentials to student VMs; builds can bundle a developer-owned client with environment overrides |
 | FR-29 | Bind assignments to deliverable inventory names and record fetched provenance | Missing or ambiguous names fail before guest execution; result records include source name, size, dates, and SHA-256 |
 
 ## Non-functional requirements

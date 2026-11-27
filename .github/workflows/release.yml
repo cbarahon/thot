@@ -43,7 +43,11 @@ jobs:
           fi
 
       - name: Build release binaries
+        env:
+          THOT_GDRIVE_CLIENT_ID: ${{ secrets.THOT_GDRIVE_CLIENT_ID }}
+          THOT_GDRIVE_CLIENT_SECRET: ${{ secrets.THOT_GDRIVE_CLIENT_SECRET }}
         run: |
+          test -n "$THOT_GDRIVE_CLIENT_ID" && test -n "$THOT_GDRIVE_CLIENT_SECRET" || { echo "Configure Google OAuth release secrets" >&2; exit 1; }
           cargo build --release --locked -p thot-cli -p thotd -p thot-virtualbox-agent
           cargo build --release --locked --target x86_64-unknown-linux-musl -p thot-alpine-agent
 

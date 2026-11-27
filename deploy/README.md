@@ -33,7 +33,11 @@ After logging in again to apply group membership, confirm `/dev/kvm` exists and 
 
 ### Google Drive deliverables
 
-In Google Cloud, enable Drive API and create an OAuth client of type **Desktop app**. Configure `THOT_GDRIVE_CLIENT_ID` and `THOT_GDRIVE_CLIENT_SECRET` in the professor's shell, then run `thot deliveries list PROJECT_DIR` without sudo to authorize the account. Project YAML stores only the Drive folder URL. The private token cache lives in the professor's `~/.config/thot/` directory and is reused by `thot run`. Google Drive authorization requires browser access on the machine doing initial consent; ordinary local delivery-agent use requires no OAuth setup.
+The developer registers the Google OAuth Desktop application and bundles its client credentials at build time. A professor configures a Drive folder and consents as their own account. See the [professor instructions](../docs/guides/delivery-agents.md#google-drive-professor-setup)
+and [developer testing and production setup](../docs/guides/google-drive-developer.md).
+The private token cache is outside the project. Initial consent currently uses a
+browser and a localhost callback; headless use requires the documented manual
+cache transfer. Workspace policies can still block institutional accounts.
 
 ## Configure the VirtualBox agent
 

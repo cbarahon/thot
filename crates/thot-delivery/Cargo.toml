@@ -3,6 +3,7 @@ name = "thot-delivery"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
 base64 = "0.22"
@@ -16,3 +17,6 @@ thiserror.workspace = true
 thot-core = { path = "../thot-core" }
 url = "2"
 uuid.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true

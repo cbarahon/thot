@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "thot-alpine-agent"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "libc",
  "serde",
@@ -2422,7 +2422,7 @@ dependencies = [
 
 [[package]]
 name = "thot-api"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "axum",
  "serde",
@@ -2437,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "thot-cli"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "axum",
  "flate2",
@@ -2458,7 +2458,7 @@ dependencies = [
 
 [[package]]
 name = "thot-core"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "chrono",
  "serde",
@@ -2470,7 +2470,7 @@ dependencies = [
 
 [[package]]
 name = "thot-delivery"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2487,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "thot-engine"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "chrono",
  "flate2",
@@ -2514,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "thot-kvm-alpine"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2535,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "thot-runner"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "async-trait",
  "libc",
@@ -2550,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "thot-service"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "axum",
  "tokio",
@@ -2558,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "thot-virtualbox-agent"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "axum",
  "chrono",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "thotd"
-version = "0.1.47"
+version = "0.1.48"
 dependencies = [
  "axum",
  "thot-api",
